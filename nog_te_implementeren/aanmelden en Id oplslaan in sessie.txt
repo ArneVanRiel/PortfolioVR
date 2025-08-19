@@ -1,0 +1,35 @@
+# AANMELDEN MET gebruikersnaam
+
+import pyodbc
+from flask import Flask, request, jsonify, session
+from werkzeug.security import check_password_hash
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'jouw geheime sleutel'
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    conn = pyodbc.connect('jouw verbindingsstring')
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, wachtwoord FROM Gebruikers WHERE gebruikersnaam = ?", data['gebruikersnaam'])
+    row = cursor.fetchone()
+    if row and check_password_hash(row.wachtwoord, data['wachtwoord']):
+        session['gebruiker_id'] = row.id
+        return jsonify({'message': 'Succesvol aangemeld'}), 200
+    else:
+        return jsonify({'message': 'Onjuiste gebruikersnaam of wachtwoord'}), 401
+
+
+# AANMELDEN MET gebruikersnaam OF email
+
+@app.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    gebruiker = Gebruiker.query.filter((Gebruiker.gebruikersnaam == data['gebruikersnaam']) | (Gebruiker.email == data['gebruikersnaam'])).first()
+    if gebruiker and check_password_hash(gebruiker.wachtwoord, data['wachtwoord']):
+        session['gebruiker_id'] = gebruiker.id
+        return jsonify({'message': 'Succesvol aangemeld'}), 200
+    else:
+        return jsonify({'message': 'Onjuiste gebruikersnaam of wachtwoord'}), 401
+

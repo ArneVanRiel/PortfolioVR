@@ -1,0 +1,25 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function Prijsgegevens() {
+  const [aandeelticker, setAandeelticker] = useState('');
+  const [prijsgegevens, setPrijsgegevens] = useState(null);
+
+  const haalPrijsgegevensOp = async () => {
+    const result = await axios.get(`/historical_price?aandeelticker=${aandeelticker}`);
+    setPrijsgegevens(result.data);
+  };
+
+  useEffect(() => {
+    haalPrijsgegevensOp();
+  }, [aandeelticker]);
+
+  return (
+    <div>
+      <input type="text" value={aandeelticker} onChange={e => setAandeelticker(e.target.value)} placeholder="Aandeelticker" />
+      {prijsgegevens && <p>Prijsgegevens: {JSON.stringify(prijsgegevens)}</p>}
+    </div>
+  );
+}
+
+export default Prijsgegevens;

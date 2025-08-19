@@ -1,0 +1,53 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+import { Line } from 'react-chartjs-2';
+
+function EmaGrafiek() {
+  const [aandeelticker, setAandeelticker] = useState('');
+  const [data, setData] = useState({});
+
+  const haalEmaOp = async () => {
+    const result = await axios.get(`/ema?aandeelticker=${aandeelticker}`);
+    const emaData = result.data;
+    const labels = emaData.map(dag => dag.Date);
+    const ema10 = emaData.map(dag => dag.ema10);
+    const ema20 = emaData.map(dag => dag.ema20);
+    const ema30 = emaData.map(dag => dag.ema30);
+    setData({
+      labels: labels,
+      datasets: [
+        {
+          label: 'EMA10',
+          data: ema10,
+          borderColor: 'rgba(255,99,132,1)',
+          fill: false
+        },
+        {
+          label: 'EMA20',
+          data: ema20,
+          borderColor: 'rgba(75,192,192,1)',
+          fill: false
+        },
+        {
+          label: 'EMA30',
+          data: ema30,
+          borderColor: 'rgba(255,206,86,1)',
+          fill: false
+        }
+      ]
+    });
+  };
+
+  useEffect(() => {
+    haalEmaOp();
+  }, [aandeelticker]);
+
+  return (
+    <div>
+      <input type="text" value={aandeelticker} onChange={e => setAandeelticker(e.target.value)} placeholder="Aandeelticker" />
+      <Line data={data} />
+    </div>
+  );
+}
+
+export default EmaGrafiek;

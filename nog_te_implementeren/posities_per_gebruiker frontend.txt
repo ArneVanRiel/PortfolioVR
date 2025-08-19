@@ -1,0 +1,64 @@
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function Posities() {
+  const [posities, setPosities] = useState([]);
+
+  const haalPositiesOp = async () => {
+    const result = await axios.get('/posities');
+    setPosities(result.data.posities);
+  };
+
+  useEffect(() => {
+    haalPositiesOp();
+  }, []);
+
+  return (
+    <div>
+      <ul>
+        {posities.map((positie, index) => <li key={index}>{positie.aandeelticker}: {positie.totale_eenheden}</li>)}
+      </ul>
+    </div>
+  );
+}
+
+export default Posities;
+
+
+
+import React, { useState, useEffect } from 'react';
+import axios from 'axios';
+
+function Posities() {
+  const [aandeelticker, setAandeelticker] = useState('');
+  const [datum, setDatum] = useState('');
+  const [positie, setPositie] = useState(0);
+  const [totalePositie, setTotalePositie] = useState(0);
+
+  const haalPositieOp = async () => {
+    const result = await axios.get(`/positie/${aandeelticker}?datum=${datum}`);
+    setPositie(result.data.posities[0].totale_eenheden);
+  };
+
+  const haalTotalePositieOp = async () => {
+    const result = await axios.get(`/totale_positie?datum=${datum}`);
+    setTotalePositie(result.data.totale_positie);
+  };
+
+  useEffect(() => {
+    haalPositieOp();
+    haalTotalePositieOp();
+  }, [aandeelticker, datum]);
+
+  return (
+    <div>
+      <input type="text" value={aandeelticker} onChange={e => setAandeelticker(e.target.value)} placeholder="Aandeelticker" />
+      <input type="date" value={datum} onChange={e => setDatum(e.target.value)} placeholder="Datum" />
+      <p>Positie in {aandeelticker}: {positie}</p>
+      <p>Totale positie: {totalePositie}</p>
+    </div>
+  );
+}
+
+export default Posities;
+

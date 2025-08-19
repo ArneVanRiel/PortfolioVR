@@ -1,0 +1,30 @@
+import React, { useState } from 'react';
+import axios from 'axios';
+
+function TransactieFormulier() {
+  const [aandeelticker, setAandeelticker] = useState('');
+  const [eenheden, setEenheden] = useState('');
+  const [hoeveelheid, setHoeveelheid] = useState('');
+  const [tijdstip, setTijdstip] = useState('');
+
+  const voegTransactieToe = async () => {
+    const result = await axios.post('/transacties', { aandeelticker, eenheden, hoeveelheid, tijdstip });
+    if (result.status === 201) {
+      alert('Transactie toegevoegd');
+    } else {
+      alert('Er is een fout opgetreden bij het toevoegen van de transactie');
+    }
+  };
+
+  return (
+    <div>
+      <input type="text" value={aandeelticker} onChange={e => setAandeelticker(e.target.value)} placeholder="Aandeelticker" />
+      <input type="number" value={eenheden} onChange={e => setEenheden(e.target.value)} placeholder="Eenheden" />
+      <input type="number" value={hoeveelheid} onChange={e => setHoeveelheid(e.target.value)} placeholder="Hoeveelheid" />
+      <input type="datetime-local" value={tijdstip} onChange={e => setTijdstip(e.target.value)} placeholder="Tijdstip" />
+      <button onClick={voegTransactieToe}>Voeg transactie toe</button>
+    </div>
+  );
+}
+
+export default TransactieFormulier;

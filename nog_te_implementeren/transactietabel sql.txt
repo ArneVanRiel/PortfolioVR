@@ -1,0 +1,8 @@
+CREATE TABLE Transacties (
+    transactie_id INT PRIMARY KEY,
+    gebruiker_id INT,
+    ticker VARCHAR(255),
+    eenheden FLOAT,
+    hoeveelheid FLOAT,
+    tijdstip TIMESTAMP
+);
