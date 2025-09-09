@@ -22,7 +22,7 @@ connectToDatabase().catch(err => {
 // Gebruik de routes
 app.use('/api', secRoutes);
 app.use('/api/watchlist', watchlistRoutes); // alle pagina's voor watchlists en ideale portfolio
-app.use('/api/available-balance', availableBalanceRoutes); 
+app.use('/api/balance/available', availableBalanceRoutes); 
 app.use('/api/ideal-portfolio', idealPortfolioRoutes); 
 app.use('/api/fundamental-data', fundamentalDataRoutes); // NIEUW
 

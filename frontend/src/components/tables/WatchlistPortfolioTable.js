@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
+import toast from 'react-hot-toast';
 
 const WatchlistPortfolioTable = () => {
   const [viewType, setViewType] = useState('idealePortfolio');
@@ -16,6 +17,7 @@ const WatchlistPortfolioTable = () => {
   const [selectedAssetType, setSelectedAssetType] = useState('');
   const [showConfirmDeleteModal, setShowConfirmDeleteModal] = useState(false);
   const [stockToDelete, setStockToDelete] = useState(null);
+  const [isColumnDropdownOpen, setIsColumnDropdownOpen] = useState(false); // State for column dropdown
   const MAX_STOCKS = 99;
 
   const navigate = useNavigate();
@@ -25,6 +27,8 @@ const WatchlistPortfolioTable = () => {
   // NIEUW: State voor filteren
   const [tickerFilter, setTickerFilter] = useState('');
   const [alertTypeFilter, setAlertTypeFilter] = useState(''); // 'Koopsignaal', 'Verkoopsignaal', '' (alles)
+
+  const dropdownRef = useRef(null); // Ref for column dropdown
 
   // NIEUW: Definieer alle mogelijke kolommen en hun eigenschappen
   const ALL_COLUMNS = useMemo(() => [
@@ -153,32 +157,43 @@ const WatchlistPortfolioTable = () => {
     fetchAssetTypes();
   }, [fetchStocksAndAlerts, checkDailyUpdateStatus, fetchAvailableStocks, fetchAssetTypes]);
 
+  // Effect to close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(event.target)) {
+        setIsColumnDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
   const handleViewTypeChange = (event) => {
     setViewType(event.target.value);
   };
 
   const handleUpdateData = async () => {
     setIsUpdatingData(true);
-    try {
-      const response = await fetch('http://localhost:5000/api/watchlist/update-data', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-      });
+    const promise = fetch('http://localhost:5000/api/watchlist/update-data', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    }).then(response => {
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+      return response.json();
+    });
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      const result = await response.json();
-      alert(result.message);
-      fetchStocksAndAlerts();
-      checkDailyUpdateStatus();
-    } catch (err) {
-      alert(`Fout bij bijwerken data: ${err.message}`);
-      console.error('Fout bij bijwerken data:', err);
-    } finally {
-      setIsUpdatingData(false);
-    }
+    toast.promise(promise, {
+      loading: 'Prijzen en meldingen worden bijgewerkt...',
+      success: (result) => {
+        fetchStocksAndAlerts();
+        checkDailyUpdateStatus();
+        setIsUpdatingData(false);
+        return result.message || 'Update succesvol voltooid!';
+      },
+      error: (err) => `Fout bij bijwerken: ${err.message}`,
+    });
   };
 
   const handleAddStockClick = () => {
@@ -194,16 +209,16 @@ const WatchlistPortfolioTable = () => {
 
   const handleConfirmAddStock = async () => {
     if (!selectedStockToAdd) {
-      alert('Selecteer alstublieft een stock uit de lijst.');
+      toast.error('Selecteer alstublieft een stock uit de lijst.');
       return;
     }
     if (!selectedAssetType) {
-      alert('Selecteer alstublieft een asset type.');
+      toast.error('Selecteer alstublieft een asset type.');
       return;
     }
 
     if (stocks.length >= MAX_STOCKS) {
-      alert(`Je hebt al het maximale aantal van ${MAX_STOCKS} stocks bereikt.`);
+      toast.error(`Je hebt al het maximale aantal van ${MAX_STOCKS} stocks bereikt.`);
       return;
     }
 
@@ -224,12 +239,12 @@ const WatchlistPortfolioTable = () => {
       }
 
       const result = await response.json();
-      alert(result.message);
+      toast.success(result.message);
       setShowAddStockModal(false);
       fetchStocksAndAlerts();
       fetchAvailableStocks();
     } catch (err) {
-      alert(`Fout bij toevoegen stock: ${err.message}`);
+      toast.error(`Fout bij toevoegen stock: ${err.message}`);
       console.error('Fout bij toevoegen stock:', err);
     }
   };
@@ -255,13 +270,13 @@ const WatchlistPortfolioTable = () => {
       }
 
       const result = await response.json();
-      alert(result.message);
+      toast.success(result.message);
       setShowConfirmDeleteModal(false);
       setStockToDelete(null);
       fetchStocksAndAlerts();
       fetchAvailableStocks();
     } catch (err) {
-      alert(`Fout bij verwijderen stock: ${err.message}`);
+      toast.error(`Fout bij verwijderen stock: ${err.message}`);
       console.error('Fout bij verwijderen stock:', err);
     }
   };
@@ -403,8 +418,8 @@ const WatchlistPortfolioTable = () => {
     if (diffDays > 90) {
       return (
         <>
-          {formattedDate}<br/>
-          <span className="text-danger small fw-semibold"> (Verouderd! {diffDays} dagen)</span>
+          {formattedDate}
+          <span className="block text-red-600 text-xs font-semibold"> (Verouderd! {diffDays} dagen)</span>
         </>
       );
     }
@@ -421,85 +436,75 @@ const WatchlistPortfolioTable = () => {
 
 
   return (
-    <div className="bg-light min-vh-100 py-4" style={{ fontFamily: 'Inter, sans-serif' }}>
-      <div className="container bg-white shadow-lg rounded-3 p-4">
-        <h1 className="h3 text-dark fw-bold mb-4">Watchlist / Ideale Portfolio</h1>
+    <div className="bg-gray-50">
+      <div className="container mx-auto">
+        {/* Header sectie met titel en knoppen */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-4 border-b border-gray-200">
+          <h1 className="text-2xl text-gray-900 font-bold">Watchlist / Ideale Portfolio</h1>
 
         {/* Sectie voor de selectie van Watchlist of Ideale Portfolio en Update knop */}
-        <div className="mb-3 d-flex align-items-center justify-content-between">
-          <div className="d-flex align-items-center">
-            <label htmlFor="viewType" className="me-3 fw-semibold text-secondary">Weergave:</label>
+        <div className="mt-4 sm:mt-0 flex items-center space-x-4">
+          <div className="flex items-center space-x-2">
+            <label htmlFor="viewType" className="text-sm font-medium text-gray-600">Weergave:</label>
             <select
               id="viewType"
               value={viewType}
               onChange={handleViewTypeChange}
-              className="form-select shadow-sm rounded-2"
+              className="block w-auto rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
             >
               <option value="idealePortfolio">Ideale Portfolio</option>
               <option value="watchlist">Watchlist</option>
             </select>
           </div>
           {/* Knop om data te updaten via de backend */}
-          <div className="position-relative">
-            <button
-              onClick={handleUpdateData}
-              disabled={isUpdatingData || isDailyUpdateDone}
-              className={`btn btn-success shadow-sm fw-semibold rounded-2 ${isUpdatingData || isDailyUpdateDone ? 'disabled' : ''}`}
-            >
-              {isUpdatingData ? 'Bezig met updaten...' : 'Update Prijzen & Meldingen'}
-            </button>
-            {isDailyUpdateDone && (
-              <span className="position-absolute top-0 start-50 translate-middle-x mt-n3 small text-muted text-nowrap">
-                Vandaag al geüpdatet.
-              </span>
-            )}
-          </div>
+          {/* De knop is verplaatst naar de hoofd-header in de vorige stap, dus deze kan hier weg. */}
+        </div>
         </div>
 
         {error && (
-          <div className="alert alert-danger" role="alert">
+          <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 rounded-md my-4" role="alert">
             {error}
           </div>
         )}
 
         {/* Sectie voor actieve meldingen */}
         {alerts.length > 0 && (
-          <div className="alert alert-warning border border-warning text-dark bg-warning-subtle rounded-3 mb-4">
-            <h2 className="h5 fw-semibold mb-3 d-flex align-items-center">
-              <svg className="bi me-2 text-warning" width="24" height="24" fill="currentColor" viewBox="0 0 16 16">
-                <path d="M8.982 1.566a1.13 1.13 0 0 0-1.96 0L.165 13.233c-.457.778.091 1.767.98 1.767h13.713c.889 0 1.438-.99.98-1.767L8.982 1.566zM8 5c.535 0 .954.462.91.995l-.35 3.5a.5.5 0 0 1-.98 0l-.35-3.5C7.046 5.462 7.465 5 8 5zm.902 7.155a.502.502 0 0 1-.904 0l-.35-3.5a.5.5 0 0 1 .98 0l.35 3.5z"/>
+          <div className="bg-blue-50 border-l-4 border-blue-500 text-blue-800 p-4 rounded-md my-6" role="alert">
+            <h2 className="text-lg font-semibold mb-3 flex items-center">
+              <svg className="w-6 h-6 mr-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M14.857 17.082a23.848 23.848 0 005.454-1.31A8.967 8.967 0 0118 9.75v-.7V9A6 6 0 006 9v.75a8.967 8.967 0 01-2.312 6.022c1.733.64 3.56 1.085 5.455 1.31m5.714 0a24.255 24.255 0 01-5.714 0m5.714 0a3 3 0 11-5.714 0" />
               </svg>
               Actieve MACD Crossover Meldingen Vandaag
             </h2>
-            <ul className="list-unstyled mb-0">
+            <ul className="list-none m-0 pl-9 space-y-1">
               {alerts.map((alert, index) => (
-                <li key={alert.aandeel_id || index} className="d-flex align-items-center text-dark">
-                  <span className={`badge rounded-pill me-2 ${alert.alert_type === 'Koopsignaal' ? 'bg-success' : 'bg-danger'} p-2`}></span>
-                  <span className="fw-medium">{alert.symbol} ({alert.name})</span>: <span className="fw-bold">{alert.alert_type}</span> geactiveerd op €{alert.price_at_alert ? alert.price_at_alert.toFixed(2) : 'N/A'}. Bedrag: €{alert.trade_amount ? alert.trade_amount.toFixed(2) : 'N/A'}. Signaal Lijn: {alert.signal_line_value ? alert.signal_line_value.toFixed(4) : 'N/A'}.
+                <li key={alert.aandeel_id || index} className="flex items-center text-sm">
+                  <span className={`inline-block w-2.5 h-2.5 mr-2 rounded-full ${alert.alert_type === 'Koopsignaal' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                  <span className="font-medium">{alert.symbol} ({alert.name})</span>: <span className="font-bold ml-1">{alert.alert_type}</span> geactiveerd op €{alert.price_at_alert ? alert.price_at_alert.toFixed(2) : 'N/A'}. Bedrag: €{alert.trade_amount ? alert.trade_amount.toFixed(2) : 'N/A'}. Signaal Lijn: {alert.signal_line_value ? alert.signal_line_value.toFixed(4) : 'N/A'}.
                 </li>
               ))}
             </ul>
           </div>
         )}
 
-        {/* Filter controls: Ticker, Melding Type en NIEUW: Kolomzichtbaarheid */}
-        <div className="mb-3 d-flex flex-wrap align-items-end gap-3"> {/* align-items-end voor betere uitlijning van labels */}
-          <div className="flex-grow-1" style={{ minWidth: '150px' }}>
-            <label htmlFor="tickerFilter" className="form-label fw-semibold text-secondary mb-1">Filter Ticker:</label>
+        {/* Filter controls */}
+        <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div>
+            <label htmlFor="tickerFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Ticker:</label>
             <input
               type="text"
               id="tickerFilter"
-              className="form-control rounded-2 shadow-sm"
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
               placeholder="Zoek op Ticker"
               value={tickerFilter}
               onChange={handleTickerFilterChange}
             />
           </div>
-          <div className="flex-grow-1" style={{ minWidth: '150px' }}>
-            <label htmlFor="alertTypeFilter" className="form-label fw-semibold text-secondary mb-1">Filter Melding Type:</label>
+          <div>
+            <label htmlFor="alertTypeFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Melding Type:</label>
             <select
               id="alertTypeFilter"
-              className="form-select rounded-2 shadow-sm"
+              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
               value={alertTypeFilter}
               onChange={handleAlertTypeFilterChange}
             >
@@ -508,74 +513,80 @@ const WatchlistPortfolioTable = () => {
               <option value="Verkoopsignaal">Verkoopsignaal</option>
             </select>
           </div>
-          {/* NIEUW: Kolomzichtbaarheid filter */}
-          <div className="flex-grow-1" style={{ minWidth: '150px' }}>
-              <label className="form-label fw-semibold text-secondary mb-1">Kolommen Weergeven:</label>
-              <div className="dropdown w-100">
-                  <button className="btn btn-outline-secondary dropdown-toggle w-100 rounded-2 shadow-sm" type="button" id="columnVisibilityDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                      Selecteer Kolommen
-                  </button>
-                  <ul className="dropdown-menu" aria-labelledby="columnVisibilityDropdown" style={{ maxHeight: '250px', overflowY: 'auto' }}>
-                      {ALL_COLUMNS.map(col => (
-                          <li key={col.key}>
-                              <div className="form-check dropdown-item px-3 py-2">
-                                  <input
-                                      className="form-check-input me-2"
-                                      type="checkbox"
-                                      id={`col-check-${col.key}`}
-                                      checked={visibleColumnKeys.includes(col.key)}
-                                      onChange={() => handleColumnToggle(col.key)}
-                                  />
-                                  <label className="form-check-label" htmlFor={`col-check-${col.key}`}>
-                                      {col.label}
-                                  </label>
-                              </div>
-                          </li>
-                      ))}
-                  </ul>
-              </div>
+          {/* Kolomzichtbaarheid filter */}
+          <div ref={dropdownRef} className="relative">
+            <label className="block text-sm font-medium text-gray-600 mb-1">Kolommen Weergeven:</label>
+            <button
+              onClick={() => setIsColumnDropdownOpen(!isColumnDropdownOpen)}
+              className="mt-1 w-full bg-white border border-gray-300 rounded-md shadow-sm px-4 py-2 inline-flex justify-between items-center text-sm font-medium text-gray-700 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500"
+            >
+              Selecteer Kolommen
+              <svg className="-mr-1 ml-2 h-5 w-5" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                <path fillRule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clipRule="evenodd" />
+              </svg>
+            </button>
+            {isColumnDropdownOpen && (
+              <ul className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-md py-1 text-base ring-1 ring-black ring-opacity-5 overflow-auto focus:outline-none sm:text-sm">
+                {ALL_COLUMNS.map(col => (
+                  <li key={col.key} className="text-gray-900 cursor-default select-none relative py-2 pl-3 pr-9 hover:bg-gray-100">
+                    <div className="flex items-center">
+                      <input
+                        id={`col-check-${col.key}`}
+                        type="checkbox"
+                        className="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500"
+                        checked={visibleColumnKeys.includes(col.key)}
+                        onChange={() => handleColumnToggle(col.key)}
+                      />
+                      <label htmlFor={`col-check-${col.key}`} className="ml-3 block text-sm font-normal cursor-pointer">
+                        {col.label}
+                      </label>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
 
         {/* Tabel met aandelen */}
         {loading ? (
-          <div className="text-center p-5 text-dark h4">Aandelen laden...</div>
+          <div className="text-center p-5 text-gray-700 text-lg">Aandelen laden...</div>
         ) : (
-          <div className="table-responsive rounded-3 shadow-sm border border-light">
-            <table className="table table-striped table-hover mb-0">
-              <thead className="bg-light">
+          <div className="overflow-x-auto rounded-lg shadow-md border border-gray-200">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
                 <tr>
                   {visibleColumnDefinitions.map(col => (
                     <th
                       key={col.key}
                       scope="col"
-                      className={`px-3 py-2 text-start text-uppercase text-dark small ${col.sortable ? 'clickable' : ''}`}
+                      className={`px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
                       onClick={() => col.sortable && handleSort(col.key)}
                     >
                       {col.label} {col.sortable ? getSortArrow(col.key) : ''}
                     </th>
                   ))}
                   {/* Acties kolom is altijd zichtbaar */}
-                  <th scope="col" className="px-3 py-2 text-end text-uppercase text-dark small">Acties</th>
+                  <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acties</th>
                 </tr>
               </thead>
-              <tbody className="bg-white">
+              <tbody className="bg-white divide-y divide-gray-200">
                 {filteredAndSortedStocks.length === 0 ? (
                   <tr>
-                    <td colSpan={totalVisibleColumns} className="text-center py-4 text-dark small">
+                    <td colSpan={totalVisibleColumns} className="px-6 py-4 text-center text-sm text-gray-500">
                       Geen aandelen gevonden in de {viewType === 'watchlist' ? 'watchlist' : 'ideale portfolio'} met de huidige filters.
                     </td>
                   </tr>
                 ) : (
                   filteredAndSortedStocks.map((stock) => {
-                    const currentRecommendedAmount = (!isNaN(stock.current_signal_line) && stock.current_price > 0)
+                    const currentRecommendedAmount = (typeof stock.current_signal_line === 'number' && stock.current_price > 0)
                       ? Math.max(0, 1000 * (1 + (-stock.current_signal_line / stock.current_price) * 4))
                       : null;
 
                     return (
                       <tr key={stock.aandeel_id}>
                         {visibleColumnDefinitions.map(col => (
-                          <td key={`${stock.aandeel_id}-${col.key}`} className="px-3 py-2 text-dark small">
+                          <td key={`${stock.aandeel_id}-${col.key}`} className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
                             {col.key === 'current_price' && stock.current_price !== null ? `€${stock.current_price.toFixed(2)}` :
                              col.key === 'latest_fundamental_data_period_end_date' ? renderLastDataDate(stock.latest_fundamental_data_period_end_date) :
                              col.key === 'current_signal_line' && stock.current_signal_line !== null ? stock.current_signal_line.toFixed(4) :
@@ -586,33 +597,33 @@ const WatchlistPortfolioTable = () => {
                           </td>
                         ))}
                         {/* Acties kolom is altijd zichtbaar */}
-                        <td className="px-3 py-2 text-end">
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
                           <button
-                            className="btn btn-sm btn-outline-info me-2 rounded-2"
+                            className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
                             onClick={() => handleAddStockData(stock.ticker_symbol)}
                             title="Voeg fundamentele data toe"
                           >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className="bi bi-file-earmark-plus" viewBox="0 0 16 16">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className="bi bi-file-earmark-plus h-5 w-5" viewBox="0 0 16 16">
                               <path d="M8 6.5a.5.5 0 0 1 .5.5v1.5H10a.5.5 0 0 1 0 1H8.5V11a.5.5 0 0 1-1 0V9.5H6a.5.5 0 0 1 0-1h1.5V7a.5.5 0 0 1 .5-.5z"/>
                               <path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5h-2z"/>
                             </svg>
                           </button>
                           <button
-                            className="btn btn-sm btn-outline-success me-2 rounded-2"
+                            className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 hover:text-green-600 focus:outline-none focus:ring-2 focus:ring-green-500"
                             onClick={() => handleCalculateSpecificStockData(stock.ticker_symbol, stock.latest_fundamental_data_period_end_date)}
                             title="Bereken data"
                           >
-                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className="bi bi-calculator" viewBox="0 0 16 16">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className="bi bi-calculator h-5 w-5" viewBox="0 0 16 16">
                               <path d="M12 1a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h8zM4 0a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V2a2 2 0 0 0-2-2H4z"/>
                               <path d="M4 2.5a.5.5 0 0 1 .5-.5h7a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-.5.5h-7a.5.5 0 0 1-.5-.5v-2zm0 4a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm4 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm4 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zM4 9a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm4 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm4 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zM4 12a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm4 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm4 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1z"/>
                             </svg>
                           </button>
                           <button
                             onClick={() => handleDeleteStock(stock)}
-                            className="btn btn-outline-danger btn-sm rounded-circle"
+                            className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 hover:text-red-600 focus:outline-none focus:ring-2 focus:ring-red-500"
                             title={`Verwijder ${stock.ticker_symbol} uit ${viewType}`}
                           >
-                            <svg className="bi" width="16" height="16" fill="currentColor" viewBox="0 0 16 16">
+                            <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 16 16">
                               <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>
                               <path fillRule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
                             </svg>
@@ -625,18 +636,18 @@ const WatchlistPortfolioTable = () => {
               </tbody>
               {/* Tabelvoet voor totaalsom van 'Aanbevolen Bedrag (Huidig)' */}
               {showFooterSum && (
-                <tfoot>
+                <tfoot className="bg-gray-50">
                   <tr>
                     {/* Cel die alle kolommen vóór 'Aanbevolen Bedrag (Huidig)' overspant */}
-                    <td colSpan={colspanForFooterSumLabel} className="px-3 py-2 text-end fw-bold text-dark small bg-light">
+                    <td colSpan={colspanForFooterSumLabel} className="px-6 py-3 text-right text-sm font-bold text-gray-900">
                       Totaal Aanbevolen Bedrag (Huidig):
                     </td>
                     {/* Cel voor de totaalsom */}
-                    <td className="px-3 py-2 text-start fw-bold text-dark small bg-light">
+                    <td className="px-6 py-3 text-left text-sm font-bold text-gray-900">
                       €{totalCurrentRecommendedAmount.toFixed(2)}
                     </td>
                     {/* Extra cel voor de 'Acties' kolom */}
-                    <td className="px-3 py-2 bg-light"></td>
+                    <td className="px-6 py-3"></td>
                   </tr>
                 </tfoot>
               )}
@@ -645,120 +656,124 @@ const WatchlistPortfolioTable = () => {
         )}
 
         {/* Knop om aandelen toe te voegen aan de geselecteerde lijst */}
-        <div className="mt-4 text-center">
+        <div className="mt-6 text-center">
           <button
             onClick={handleAddStockClick}
             disabled={stocks.length >= MAX_STOCKS}
-            className={`btn btn-primary shadow-sm fw-semibold rounded-2 ${stocks.length >= MAX_STOCKS ? 'disabled' : ''}`}
+            className="bg-blue-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
           </button>
           {stocks.length >= MAX_STOCKS && (
-            <p className="text-danger small mt-2">Maximum aantal stocks ({MAX_STOCKS}) bereikt.</p>
+            <p className="text-red-600 text-sm mt-2">Maximum aantal stocks ({MAX_STOCKS}) bereikt.</p>
           )}
         </div>
 
-        {/* Modal voor het toevoegen van een stock (Bootstrap Modal structuur) */}
+        {/* Modal voor het toevoegen van een stock */}
         {showAddStockModal && (
-          <div className="modal fade show d-block" tabIndex="-1" role="dialog" style={{backgroundColor: 'rgba(0,0,0,0.5)'}}>
-            <div className="modal-dialog modal-dialog-centered" role="document">
-              <div className="modal-content rounded-3 shadow">
-                <div className="modal-header">
-                  <h5 className="modal-title h5 fw-bold">Voeg Nieuwe Stock Toe</h5>
-                  <button type="button" className="btn-close" aria-label="Close" onClick={() => setShowAddStockModal(false)}></button>
+          <div className="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div className="relative bg-white w-full max-w-lg rounded-xl shadow-2xl">
+              <div className="flex items-start justify-between p-5 border-b border-gray-200 rounded-t-xl">
+                <div className="flex items-center space-x-3">
+                  <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-blue-100">
+                    <svg className="h-6 w-6 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" /></svg>
+                  </div>
+                  <h3 className="text-xl font-bold text-gray-900">Voeg Nieuwe Stock Toe</h3>
                 </div>
-                <div className="modal-body">
-                  {/* Selectie voor Asset Type */}
-                  <div className="mb-3">
-                    <label htmlFor="selectAssetType" className="form-label fw-bold text-dark">Asset Type:</label>
+                <button className="cursor-pointer p-1" onClick={() => setShowAddStockModal(false)}>
+                  <svg className="w-6 h-6 text-gray-500 hover:text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+              </div>
+              <div className="p-6 space-y-6">
+                <div>
+                  <label htmlFor="selectAssetType" className="block text-sm font-bold text-gray-700 mb-1">Asset Type:</label>
+                  <select
+                    id="selectAssetType"
+                    value={selectedAssetType}
+                    onChange={(e) => setSelectedAssetType(e.target.value)}
+                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                  >
+                    <option value="">Selecteer een type...</option>
+                    {assetTypes.map(type => (
+                      <option key={type.asset_type_id} value={type.asset_type_id}>
+                        {type.type_name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label htmlFor="selectStock" className="block text-sm font-bold text-gray-700 mb-1">Selecteer Stock:</label>
+                  {filteredAvailableStocks.length > 0 ? (
                     <select
-                      id="selectAssetType"
-                      value={selectedAssetType}
-                      onChange={(e) => setSelectedAssetType(e.target.value)}
-                      className="form-select shadow-sm rounded-2"
+                      id="selectStock"
+                      value={selectedStockToAdd}
+                      onChange={(e) => setSelectedStockToAdd(e.target.value)}
+                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                     >
-                      <option value="">Selecteer een type...</option>
-                      {assetTypes.map(type => (
-                        <option key={type.asset_type_id} value={type.asset_type_id}>
-                          {type.type_name}
+                      <option value="">Selecteer een stock...</option>
+                      {filteredAvailableStocks.map(stock => (
+                        <option key={stock.aandeel_id} value={stock.aandeel_id}>
+                          {stock.name} ({stock.ticker_symbol})
                         </option>
                       ))}
                     </select>
-                  </div>
-                  {/* Selectie voor Stock */}
-                  <div className="mb-3">
-                    <label htmlFor="selectStock" className="form-label fw-bold text-dark">Selecteer Stock:</label>
-                    {filteredAvailableStocks.length > 0 ? (
-                      <select
-                        id="selectStock"
-                        value={selectedStockToAdd}
-                        onChange={(e) => setSelectedStockToAdd(e.target.value)}
-                        className="form-select shadow-sm rounded-2"
-                      >
-                        <option value="">Selecteer een stock...</option>
-                        {filteredAvailableStocks.map(stock => (
-                          <option key={stock.aandeel_id} value={stock.aandeel_id}>
-                            {stock.name} ({stock.ticker_symbol})
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <p className="text-dark">Geen stocks beschikbaar voor het geselecteerde type of ze zijn al toegevoegd.</p>
-                    )}
-                  </div>
+                  ) : (
+                    <p className="text-sm text-gray-600 mt-2">Geen stocks beschikbaar voor het geselecteerde type of ze zijn al toegevoegd.</p>
+                  )}
                 </div>
-                <div className="modal-footer">
-                  <button
-                    type="button"
-                    className="btn btn-secondary rounded-2"
-                    onClick={() => setShowAddStockModal(false)}
-                  >
-                    Annuleren
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-primary rounded-2"
-                    onClick={handleConfirmAddStock}
-                    disabled={!selectedStockToAdd || !selectedAssetType || filteredAvailableStocks.length === 0}
-                  >
-                    Toevoegen
-                  </button>
-                </div>
+              </div>
+              <div className="flex items-center justify-end p-5 space-x-4 border-t border-gray-200 rounded-b-xl bg-gray-50">
+                <button
+                  className="px-6 py-2.5 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                  onClick={() => setShowAddStockModal(false)}
+                >
+                  Annuleren
+                </button>
+                <button
+                  className="px-6 py-2.5 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  onClick={handleConfirmAddStock}
+                  disabled={!selectedStockToAdd || !selectedAssetType || filteredAvailableStocks.length === 0}
+                >
+                  Toevoegen
+                </button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Custom Bevestigingsmodal voor Verwijderen (Bootstrap Modal structuur) */}
+        {/* Bevestigingsmodal voor Verwijderen */}
         {showConfirmDeleteModal && stockToDelete && (
-          <div className="modal fade show d-block" tabIndex="-1" role="dialog" style={{backgroundColor: 'rgba(0,0,0,0.5)'}}>
-            <div className="modal-dialog modal-dialog-centered" role="document">
-              <div className="modal-content rounded-3 shadow">
-                <div className="modal-header">
-                  <h5 className="modal-title h5 fw-bold text-danger">Verwijdering Bevestigen</h5>
-                  <button type="button" className="btn-close" aria-label="Close" onClick={handleCancelDelete}></button>
+          <div className="fixed inset-0 bg-gray-800 bg-opacity-75 flex items-center justify-center p-4 z-50">
+            <div className="relative bg-white w-full max-w-md rounded-xl shadow-2xl">
+              <div className="flex items-start justify-between p-5 border-b border-gray-200 rounded-t-xl">
+                <div className="flex items-center space-x-3">
+                  <div className="mx-auto flex-shrink-0 flex items-center justify-center h-12 w-12 rounded-full bg-red-100">
+                    <svg className="h-6 w-6 text-red-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth="1.5" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" /></svg>
+                  </div>
+                  <h3 className="text-xl font-bold text-gray-900">Verwijdering Bevestigen</h3>
                 </div>
-                <div className="modal-body">
-                  <p className="text-dark mb-3">
-                    Weet je zeker dat je '<span className="fw-semibold">{stockToDelete.ticker_symbol} ({stockToDelete.name})</span>' wilt verwijderen uit je <span className="fw-semibold">{viewType}</span>?
-                  </p>
-                </div>
-                <div className="modal-footer">
-                  <button
-                    type="button"
-                    className="btn btn-secondary rounded-2"
-                    onClick={handleCancelDelete}
-                  >
-                    Annuleren
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-danger rounded-2"
-                    onClick={handleConfirmDelete}
-                  >
-                    Verwijderen
-                  </button>
-                </div>
+                <button className="cursor-pointer p-1" onClick={handleCancelDelete}>
+                  <svg className="w-6 h-6 text-gray-500 hover:text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+              </div>
+              <div className="p-6">
+                <p className="text-md text-gray-600">
+                    Weet je zeker dat je '<span className="font-semibold text-gray-800">{stockToDelete.ticker_symbol} ({stockToDelete.name})</span>' wilt verwijderen uit je <span className="font-semibold text-gray-800">{viewType}</span>?
+                </p>
+              </div>
+              <div className="flex items-center justify-end p-5 space-x-4 border-t border-gray-200 rounded-b-xl bg-gray-50">
+                <button
+                  className="px-6 py-2.5 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                  onClick={handleCancelDelete}
+                >
+                  Annuleren
+                </button>
+                <button
+                  className="px-6 py-2.5 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500"
+                  onClick={handleConfirmDelete}
+                >
+                  Verwijderen
+                </button>
               </div>
             </div>
           </div>
