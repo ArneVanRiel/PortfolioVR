@@ -6,19 +6,19 @@ import { Toaster } from 'react-hot-toast';
 // Controleer AUB nauwkeurig of de BESTANDSNAMEN op je schijf (inclusief hoofdletters/kleine letters)
 // exact overeenkomen met deze import statements. Dit is de meest voorkomende oorzaak van
 // "Could not resolve" fouten.
-import Dashboard from './components/Dashboard.js';
-import AandelenList from './components/aandelenList.js';
-import IdealePortfolio from './components/huidigeIdealePortfolio.js';
-import AandelenData from './components/AandelenData.js';
+import Dashboard from './features/dashboard/Dashboard.js';
+import AandelenList from './components/aandelen-list.component.js';
+import IdealePortfolio from './features/settings/huidigeIdealePortfolio.js';
+import AandelenData from './components/data.js';
 import UpdateData from './components/updateData.js';
-import GetUsers from './components/users.js';
-import LoginPageTest from './components/login_register/loginTest.js';
-import Settings from './components/content/settings.js';
+import GetUsers from './features/auth/components/users.js';
+import LoginPageTest from './features/auth/components/loginTest.js';
+import Settings from './features/settings/settings.js';
 import ToDo from './components/ToDo.js';
-import AvailableBalance from './components/AvailableBalance.js';
-import HeaderBalanceDisplay from './components/HeaderBalanceDisplay.js';
-import InvestedBalanceDisplay from './components/InvestedBalanceDisplay.js';
-import SearchModal from './components/SearchModal.js';
+import AvailableBalance from './features/dashboard/AvailableBalance.js';
+import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
+import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.js';
+// import SearchModal from './components/SearchModal.js';
 
 function App() {
   const [activeTab, setActiveTab] = useState('Ideale Portfolio');
@@ -122,7 +122,7 @@ function App() {
       </main>
 
       {/* Zoekmodal component */}
-      {showSearchModal && <SearchModal onClose={handleCloseSearchModal} />}
+      //{showSearchModal && <SearchModal onClose={handleCloseSearchModal} />}
     </div>
   );
 }
