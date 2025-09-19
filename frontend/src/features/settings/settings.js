@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import UserCash from "../userCash";
-import BrokersTable from "./settings/BrokersTable";
-import StockExchangeTable from "./settings/StockExchangeTable";
-import AddStockForm from "./settings/AddStockForm";
-import AvailableBalance from "../AvailableBalance";
+import UserCash from "./userCash";
+import BrokersTable from "./BrokersTable";
+import StockExchangeTable from "./StockExchangeTable";
+import AddStockForm from "./AddStockForm";
+import AvailableBalance from "../dashboard/AvailableBalance";
 
 function Settings() {
     const userID = 1; // Voorbeeld userID (voorlopig op mezelf)

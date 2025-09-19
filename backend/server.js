@@ -7,6 +7,7 @@ const watchlistRoutes = require('./routes/watchlistRoutes'); // alle pagina's vo
 const availableBalanceRoutes = require('./routes/availableBalanceRoutes');
 const idealPortfolioRoutes = require('./routes/idealPortfolioRoutes');
 const fundamentalDataRoutes = require('./routes/fundamentalDataRoutes'); // NIEUW
+const secImportRoutes = require('./routes/secImportRoutes');
 
 
 const app = express();
@@ -25,6 +26,7 @@ app.use('/api/watchlist', watchlistRoutes); // alle pagina's voor watchlists en 
 app.use('/api/balance/available', availableBalanceRoutes); 
 app.use('/api/ideal-portfolio', idealPortfolioRoutes); 
 app.use('/api/fundamental-data', fundamentalDataRoutes); // NIEUW
+app.use('/api/sec', secImportRoutes);
 
 
 // Algemene foutafhandeling

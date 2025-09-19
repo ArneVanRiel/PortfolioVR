@@ -1,17 +1,17 @@
 import React, { useState, useEffect } from "react";
 import axios from 'axios';
-import EnterTrade from "./enterTrade";
-import AddAvailableCash from "./addAvailableCash";
+import EnterTrade from "../portfolio/enterTrade";
+import AddAvailableCash from "../settings/addAvailableCash";
 import Dialog from '@mui/material/Dialog';
 import LineChart from "./dashboardChartLine";
 import PieChart from "./dashboardChartPie";
 import { Routes, Route } from 'react-router';
-import TickersFastCheck from "./aandelenFastCheck";
+import TickersFastCheck from "../analysis/aandelenFastCheck";
 import TeInvesterenTable from "./teInvesteren.dashboard";
-import LoginPageTest from "./login_register/loginTest";
+import LoginPageTest from "../auth/components/loginTest";
 import TransactiesTab from "./dashboard.transacties";
 import PortfolioTab from "./dashboard.portfolio";
-import UserCash from "./userCash";
+import UserCash from "../settings/userCash";
 
 
 function Dashboard() {

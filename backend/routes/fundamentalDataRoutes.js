@@ -40,4 +40,7 @@ router.post('/single-stock-analysis/:stockId', fundamentalDataController.getSing
 router.get('/fiscal-periods', fundamentalDataController.getFiscalPeriods);
 router.get('/forms', fundamentalDataController.getForms);
 
+// NIEUW: Route om Python SEC script uit te voeren
+router.post('/run-python-sec-script', fundamentalDataController.runPythonSecScript);
+
 module.exports = router;

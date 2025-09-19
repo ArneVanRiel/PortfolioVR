@@ -409,6 +409,8 @@ function TickerOverview() {
     <div className="p-4 font-sans bg-gray-50 min-h-screen">
       <h2 className="text-3xl font-extrabold mb-6 text-gray-800 text-center">Ticker Overzicht</h2>
 
+      <SecImporter />
+
       {/* Date Picker */}
       <div className="mb-6 flex items-center justify-center">
         <label htmlFor="selectedDate" className="mr-3 text-lg font-medium text-gray-700">Referentie Datum:</label>

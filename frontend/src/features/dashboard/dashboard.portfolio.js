@@ -1,17 +1,17 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
 import TransactionsTable from "./transactionsTable.dashboard";
-import AddAvailableCash from "./addAvailableCash";
+import AddAvailableCash from "../settings/addAvailableCash";
 import LineChart from "./dashboardChartLine";
 import PieChart from "./dashboardChartPie";
 import TeInvesterenTable from "./teInvesteren.dashboard";
-import StockPriceComponent from "./tickerPrice";
-import UpdatePortfolioValueButton from "./portfolio/UpdatePortfolioValueButton";
-import PortfolioTable from "./portfolio/PortfolioTable";
-import PortfolioDonutChart from "./charts/PortfolioDonutChart";
-import PortfolioManager from "./portfolio/PortfolioManager";
-import DailyPortfolioLineChart from "./charts/DailyPortfolioLineChart";
-import PortfolioReturns from "./charts/PortfolioReturns";
+import StockPriceComponent from "../analysis/tickerPrice";
+import UpdatePortfolioValueButton from "../portfolio/UpdatePortfolioValueButton";
+import PortfolioTable from "../portfolio/PortfolioTable";
+import PortfolioDonutChart from "../portfolio/charts/PortfolioDonutChart";
+import PortfolioManager from "../portfolio/PortfolioManager";
+import DailyPortfolioLineChart from "../portfolio/charts/DailyPortfolioLineChart";
+import PortfolioReturns from "../portfolio/charts/PortfolioReturns";
 
 
 

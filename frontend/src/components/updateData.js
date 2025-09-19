@@ -1,20 +1,20 @@
 // DataDisplay.js
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import AandelenData from './aandelenList';
-import CheckSec from './modals/modal.checkSec';
+import AandelenData from '../features/analysis/aandelenList';
+import CheckSec from '../features/analysis/modal.checkSec';
 import UpdateHandmatig from './modals/modal.updateHandmatig';
-import TransactionsTable from './transactionsTable.dashboard';
-import AddKwartaal from './modals/modal.addKwartaal';
-import DataTable from './tables/dataTable';
-import OnvolledigeDataTable from './tables/onvolledigeDataTable';
-import OntbrekendeDataTable from './tables/ontbrekendeDataTable';
-import SaveClosingPrices from './functions/SaveClosingPrices';
-import MonthlyClosingPrices from './functions/MonthlyClosingPrices';
-import InsertNewFundamentalData from './functions/InsertNewFundamentalData';
-import StoreEarningsCalendar from './functions/StoreEarningsCalendar ';
-import TickerOverview from './tables/TickerOverview';
-import IntrinsicValueCalculator from './functions/IntrinsicValueCalculator';
+import TransactionsTable from '../features/dashboard/transactionsTable.dashboard';
+import AddKwartaal from '../features/analysis/modal.addKwartaal';
+import DataTable from './ui/dataTable';
+import OnvolledigeDataTable from '../features/analysis/onvolledigeDataTable';
+import OntbrekendeDataTable from '../features/analysis/ontbrekendeDataTable';
+import SaveClosingPrices from '../services/SaveClosingPrices';
+import MonthlyClosingPrices from '../services/MonthlyClosingPrices';
+import InsertNewFundamentalData from '../services/InsertNewFundamentalData';
+import StoreEarningsCalendar from '../services/StoreEarningsCalendar';
+import TickerOverview from '../features/analysis/TickerOverview';
+import IntrinsicValueCalculator from '../features/analysis/IntrinsicValueCalculator';
 
 function UpdateData() {
   const [ticker, setTicker] = useState('');

@@ -1,30 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { Routes, Route, Link } from 'react-router-dom';
+import { Routes, Route, Link, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 
-// Importeer al je componenten. De .js extensie is weer toegevoegd aan de imports.
-// Controleer AUB nauwkeurig of de BESTANDSNAMEN op je schijf (inclusief hoofdletters/kleine letters)
-// exact overeenkomen met deze import statements. Dit is de meest voorkomende oorzaak van
-// "Could not resolve" fouten.
+// Feature-gebaseerde component imports
 import Dashboard from './features/dashboard/Dashboard.js';
-import AandelenList from './components/aandelen-list.component.js';
-import IdealePortfolio from './features/settings/huidigeIdealePortfolio.js';
-import AandelenData from './components/data.js';
-import UpdateData from './components/updateData.js';
-import GetUsers from './features/auth/components/users.js';
-import LoginPageTest from './features/auth/components/loginTest.js';
+import TickerOverview from './features/analysis/TickerOverview.js';
+import PortfolioManager from './features/portfolio/PortfolioManager.js';
 import Settings from './features/settings/settings.js';
-import ToDo from './components/ToDo.js';
-import AvailableBalance from './features/dashboard/AvailableBalance.js';
+import LoginPageTest from './features/auth/components/loginTest.js';
+
+// Layout en UI componenten
 import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
 import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.js';
-// import SearchModal from './components/SearchModal.js';
+import ToDo from './components/ToDo.js';
 
 function App() {
-  const [activeTab, setActiveTab] = useState('Ideale Portfolio');
+  const [activeTab, setActiveTab] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
   const user = { name: 'Arne' };
+  const location = useLocation();
 
   // Functies voor dropdown hover
   const handleMouseEnter = () => setDropdownOpen(true);
@@ -36,34 +31,46 @@ function App() {
 
   // Functie om de actieve tab in te stellen op basis van de URL
   useEffect(() => {
-    const path = window.location.pathname;
-    if (path.includes('/IdealePortfolio')) setActiveTab('Ideale Portfolio');
-    else if (path.includes('/aandelen')) setActiveTab('Aandelen');
-    else if (path.includes('/data')) setActiveTab('Data');
-    else if (path.includes('/updateData')) setActiveTab('Update');
-    else if (path.includes('/dashboard')) setActiveTab('Dashboard');
-    else if (path.includes('/settings')) setActiveTab('Settings');
+    const path = location.pathname;
+    if (path.startsWith('/dashboard')) setActiveTab('Dashboard');
+    else if (path.startsWith('/analysis')) setActiveTab('Analysis');
+    else if (path.startsWith('/portfolio')) setActiveTab('Portfolio');
+    else if (path.startsWith('/settings')) setActiveTab('Settings');
     else setActiveTab('');
-  }, []);
+  }, [location]);
+
+  const NavLink = ({ to, children }) => {
+    const tabName = children;
+    return (
+      <Link
+        to={to}
+        className={`rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${
+          activeTab === tabName
+            ? 'bg-blue-100 text-blue-700 font-semibold'
+            : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+        }`}
+        onClick={() => setActiveTab(tabName)}
+      >
+        {children}
+      </Link>
+    );
+  };
 
   return (
     <div className="flex flex-col min-h-screen bg-gray-50 font-sans">
-      {/* De Toaster component voor de notificaties. Positie en styling kan hier worden aangepast. */}
       <Toaster position="top-center" reverseOrder={false} />
 
       {/* Header */}
       <header className="bg-white shadow-sm">
         <div className="container mx-auto flex h-16 items-center justify-between px-4">
           {/* Logo/Merknaam */}
-          <Link to="/IdealePortfolio" className="text-2xl font-bold text-blue-600">Portfolio VR</Link>
+          <Link to="/dashboard" className="text-2xl font-bold text-blue-600">Portfolio VR</Link>
 
           {/* Navigatie links (centraal geplaatst) */}
           <nav className="hidden flex-grow items-center justify-center space-x-2 md:flex">
-            <Link to='/IdealePortfolio' className={`rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${activeTab === 'Ideale Portfolio' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`} onClick={() => setActiveTab('Ideale Portfolio')}>Ideale Portfolio</Link>
-            <Link to='/aandelen' className={`rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${activeTab === 'Aandelen' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`} onClick={() => setActiveTab('Aandelen')}>Aandelen</Link>
-            <Link to='/data' className={`rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${activeTab === 'Data' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`} onClick={() => setActiveTab('Data')}>Fundamentele data</Link>
-            <Link to='/updateData' className={`rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${activeTab === 'Update' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`} onClick={() => setActiveTab('Update')}>Bereken</Link>
-            <Link to='/dashboard' className={`rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${activeTab === 'Dashboard' ? 'bg-blue-100 text-blue-700 font-semibold' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}`} onClick={() => setActiveTab('Dashboard')}>Dashboard</Link>
+            <NavLink to='/dashboard'>Dashboard</NavLink>
+            <NavLink to='/analysis'>Analysis</NavLink>
+            <NavLink to='/portfolio'>Portfolio</NavLink>
           </nav>
 
           {/* Rechtergroep: Zoekveld, Vermogensdisplays, Gebruikersprofiel */}
@@ -110,11 +117,9 @@ function App() {
         <div className="container mx-auto p-4">
           <Routes>
             <Route path='/login' element={<LoginPageTest/>} />
-            <Route path='/IdealePortfolio' element={<IdealePortfolio/>} />
-            <Route path='/aandelen' element={<AandelenList/>} />
-            <Route path='/data' element={<AandelenData />} />
-            <Route path='/updateData' element={<UpdateData/>} />
             <Route path='/dashboard' element={<Dashboard/>} />
+            <Route path='/analysis' element={<TickerOverview/>} />
+            <Route path='/portfolio' element={<PortfolioManager/>} />
             <Route path='/settings' element={<Settings/>} />
           </Routes>
           <ToDo/>

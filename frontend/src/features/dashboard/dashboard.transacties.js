@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from "react";
 import axios from "axios";
-import AddAvailableCash from "./addAvailableCash";
-import AddTransaction from "./portfolio/AddTransaction";
-import TransactionTable from "./portfolio/TransactionTable";
-import TransactionForm from "./portfolio/TransactionForm";
-import TransactionChart from "./charts/transactionchart";
-import UserCash from "./userCash";
-import UpdateTotalQuantityButton from "./portfolio/UpdateTotalQuantityButton";
-import UpdatePortfolioValueButton from "./portfolio/UpdatePortfolioValueButton";
+import AddAvailableCash from "../settings/addAvailableCash";
+import AddTransaction from "../portfolio/AddTransaction";
+import TransactionTable from "../portfolio/TransactionTable";
+import TransactionForm from "../portfolio/TransactionForm";
+import TransactionChart from "../portfolio/charts/transactionchart";
+import UserCash from "../settings/userCash";
+import UpdateTotalQuantityButton from "../portfolio/UpdateTotalQuantityButton";
+import UpdatePortfolioValueButton from "../portfolio/UpdatePortfolioValueButton";
 
 
 function TransactiesTab() {

@@ -686,6 +686,18 @@ const AandelenData = () => {
                   />
                   <label className="form-check-label" htmlFor="alphaVantageApiInput">Via Alpha Vantage API</label>
                 </div>
+                <div className="form-check form-check-inline">
+                  <input
+                    className="form-check-input"
+                    type="radio"
+                    name="inputMethod"
+                    id="pythonScriptInput"
+                    value="python_script"
+                    checked={inputMethod === 'python_script'}
+                    onChange={() => setInputMethod('python_script')}
+                  />
+                  <label className="form-check-label" htmlFor="pythonScriptInput">Via Python Script</label>
+                </div>
               </div>
             </div>
 
