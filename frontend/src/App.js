@@ -4,12 +4,12 @@ import { Toaster } from 'react-hot-toast';
 
 // Feature-gebaseerde component imports
 import Dashboard from './features/dashboard/Dashboard.js';
-import TickerOverview from './features/analysis/TickerOverview.js';
+import Analysis from './features/analysis/Analysis.js';
 import PortfolioManager from './features/portfolio/PortfolioManager.js';
 import Settings from './features/settings/settings.js';
 import LoginPageTest from './features/auth/components/loginTest.js';
 
-// Layout en UI componenten
+import SearchModal from './components/ui/SearchModal.js';
 import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
 import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.js';
 import ToDo from './components/ToDo.js';
@@ -118,7 +118,7 @@ function App() {
           <Routes>
             <Route path='/login' element={<LoginPageTest/>} />
             <Route path='/dashboard' element={<Dashboard/>} />
-            <Route path='/analysis' element={<TickerOverview/>} />
+            <Route path='/analysis' element={<Analysis/>} />
             <Route path='/portfolio' element={<PortfolioManager/>} />
             <Route path='/settings' element={<Settings/>} />
           </Routes>
@@ -127,7 +127,7 @@ function App() {
       </main>
 
       {/* Zoekmodal component */}
-      //{showSearchModal && <SearchModal onClose={handleCloseSearchModal} />}
+      {showSearchModal && <SearchModal onClose={handleCloseSearchModal} />}
     </div>
   );
 }

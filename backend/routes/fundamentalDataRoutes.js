@@ -24,6 +24,9 @@ router.post('/save-alphavantage-fetched', fundamentalDataController.saveFetchedA
 // Route om alle fundamentele data voor een specifieke stock op te halen
 router.get('/stock/:stockId/all-periods', fundamentalDataController.getAllFundamentalDataForStock);
 
+// Route to get the latest fundamental data in a pivoted format
+router.get('/stock/:stockId/latest-pivoted', fundamentalDataController.getLatestFundamentalDataPivoted);
+
 // Route om de data sufficiency te controleren
 router.get('/sufficiency-check/:stockId', fundamentalDataController.checkFundamentalDataSufficiency);
 

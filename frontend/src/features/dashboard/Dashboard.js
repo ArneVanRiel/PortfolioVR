@@ -1,151 +1,90 @@
-import React, { useState, useEffect } from "react";
-import axios from 'axios';
-import EnterTrade from "../portfolio/enterTrade";
-import AddAvailableCash from "../settings/addAvailableCash";
-import Dialog from '@mui/material/Dialog';
-import LineChart from "./dashboardChartLine";
-import PieChart from "./dashboardChartPie";
-import { Routes, Route } from 'react-router';
-import TickersFastCheck from "../analysis/aandelenFastCheck";
-import TeInvesterenTable from "./teInvesteren.dashboard";
-import LoginPageTest from "../auth/components/loginTest";
-import TransactiesTab from "./dashboard.transacties";
-import PortfolioTab from "./dashboard.portfolio";
-import UserCash from "../settings/userCash";
+import React from 'react';
 
+// Placeholder components for stats and charts
+const StatCard = ({ title, value }) => (
+  <div className="bg-white p-6 rounded-lg shadow-md flex items-center space-x-4">
+    <div>
+      <p className="text-sm font-medium text-gray-500">{title}</p>
+      <p className="text-2xl font-semibold text-gray-800">{value}</p>
+    </div>
+  </div>
+);
 
-function Dashboard() {
-    const [open, setOpen] = React.useState(false);
-    const [activeSubTab, setActiveSubTab] = useState('Portfolio');
-    const userID = 1; // Voorbeeld userID
+const ChartCard = ({ title, children }) => (
+  <div className="bg-white p-6 rounded-lg shadow-md">
+    <h3 className="text-lg font-semibold text-gray-800 mb-4">{title}</h3>
+    <div className="h-64">{children}</div>
+  </div>
+);
 
-    const [showTransactionTab, setShowTransationTab] = useState(true);
-    const [showPortfolioTab, setShowPortfolioTab] = useState(false);
+const Dashboard = () => {
+  return (
+    <div className="space-y-8">
+      {/* Header */}
+      <div className="flex justify-between items-center">
+        <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
+        <div className="flex space-x-4">
+          <button className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow hover:bg-blue-700 transition-colors">
+            Generate Report
+          </button>
+        </div>
+      </div>
 
-    const handleClickOpen = () => {
-      setOpen(true);
-    };
-  
-    const handleClose = () => {
-      setOpen(false);
-    };
-    
-    const handleTransactionTab = () => {
-        setShowTransationTab(true);
-        setShowPortfolioTab(false);
-    }
+      {/* Stats Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <StatCard title="Total Portfolio Value" value="$125,680.50" />
+        <StatCard title="Available Cash" value="$15,230.00" />
+        <StatCard title="Today's Gain/Loss" value="+$542.30" />
+        <StatCard title="Asset Allocation" value="60% Stocks / 40% Bonds" />
+      </div>
 
-    const handlePortfolioTab = () => {
-        setShowPortfolioTab(true);
-        setShowTransationTab(false);
-    }
-        return (
-            <>
-            <div className="row">
-                <div className="tab-bar">
-                    <a className={`tab ${activeSubTab === 'Portfolio' ? 'active' : ''}`}onClick={() => setActiveSubTab('Portfolio')}>Overzicht</a>
-                    <a className={`tab ${activeSubTab === 'Transacties' ? 'active' : ''}`}onClick={() => setActiveSubTab('Transacties')}>Transacties</a>
-                    <a className={`tab ${activeSubTab === 'Aandeleninzichten' ? 'active' : ''}`}onClick={() => setActiveSubTab('Aandeleninzichten')}>Aandelen inzichten</a>
-                </div>
-            </div>
-            {activeSubTab === 'Transacties' && <TransactiesTab/>}
-            {activeSubTab === 'Portfolio' && <PortfolioTab />}
-            </>
-        )
-}
-    
+      {/* Charts Grid */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <ChartCard title="Portfolio Performance">
+          {/* Placeholder for Line Chart */}
+          <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg">
+            <p className="text-gray-500">Portfolio Performance Chart</p>
+          </div>
+        </ChartCard>
+        <ChartCard title="Asset Allocation">
+          {/* Placeholder for Pie Chart */}
+          <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg">
+            <p className="text-gray-500">Asset Allocation Donut Chart</p>
+          </div>
+        </ChartCard>
+      </div>
+
+      {/* Recent Activity Table */}
+      <div className="bg-white p-6 rounded-lg shadow-md">
+        <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h3>
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead className="bg-gray-50">
+            <tr>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
+              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {/* Placeholder rows */}
+            <tr>
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-green-600">BUY</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">AAPL</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">$5,000</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-21</td>
+            </tr>
+            <tr>
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-red-600">SELL</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">GOOGL</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">$3,500</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-20</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+};
+
 export default Dashboard;
-
-            /*{showTransactionTab && (
-                <><div className="toolbar">
-                    <button id="openEnterTradeModal" className="button" onClick={handleClickOpen}>Enter trade</button>
-                    <button className="button">change cash</button>
-                    <p>sinds:</p>
-                    <input className="input-field-toolbar" value={"datum"}></input>
-                    <button className="button">1M</button>
-                    <button className="button">3M</button>
-                    <button className="button">6M</button>
-                    <button className="button">1Y</button>
-                    <button className="button">2Y</button>
-                    <button className="button">5Y</button>
-                    <button className="button">All</button>
-                    <input className="input-field-toolbar" value={5476 + 556 + 2600 + 400 + 500}></input>
-                </div><Dialog
-                    open={open}
-                    onClose={handleClose}
-                    PaperProps={{
-                        component: 'form',
-                        onSubmit: (event) => {
-                            event.preventDefault();
-                            const formData = new FormData(event.currentTarget);
-                            const formJson = Object.fromEntries(formData.entries());
-                            const email = formJson.email;
-                            console.log(email);
-                            handleClose();
-                        },
-                    }}>
-                        <EnterTrade />
-                        <button onClick={handleClose}>Cancel</button>
-                    </Dialog><TransactionsTable />
-                    <AddAvailableCash />
-                    )}
-                    {showPortfolioTab && (
-
-                        <div className="content">
-                            <div className="row">
-                                <div className="col-8">
-                                    <div className="content-block">
-                                        <div className="toolbar">
-                                            <p>portfolio waarde</p>
-                                            <button className="button">1M</button>
-                                            <button className="button">3M</button>
-                                            <button className="button">6M</button>
-                                            <button className="button">1Y</button>
-                                            <button className="button">2Y</button>
-                                            <button className="button">5Y</button>
-                                            <button className="button">All</button>
-                                        </div>
-                                        <LineChart />
-                                    </div>
-                                </div>
-                                <div className="col-4">
-                                    <div className="content-block">
-                                        <div className="toolbar">
-
-                                            <p>Koopkansen - </p>
-                                            <div className='input-field-toolbar'>
-                                                <label id='tickerSearch'>Ticker:</label>
-                                                <input type="text" id='tickerSearch'></input>
-                                            </div>
-                                            <button className="button" name='button'>Search</button>
-                                        </div>
-
-                                        <TeInvesterenTable />
-                                    </div>
-                                </div>
-                            </div>
-                            <div className="row">
-                                <div className="col-8">
-                                    <div className="content-block">
-                                        <div className="toolbar">
-
-                                            <p>assets/activa</p>
-                                        </div>
-
-                                        <PortfolioTable />
-                                    </div>
-                                </div>
-                                <div className="col-4">
-                                    <div className="content-block">
-                                        <div className="toolbar">
-                                            <p>portfolio verdeling</p>
-                                            <p>Datum:</p>
-                                            <input className="input-field-toolbar" value={"datum"}></input>
-                                        </div>
-                                        <PieChart />
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                    )}
-                */

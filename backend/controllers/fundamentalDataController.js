@@ -447,8 +447,8 @@ const checkFundamentalDataSufficiency = async (req, res) => {
     const sufficiencyResult = {};
 
     try {
-        const request = new sql.Request();
         for (const dataType of FUNDAMENTAL_DATA_TYPES) {
+            const request = new sql.Request();
             const result = await request.input('stock_id', sql.Int, stockId)
                 .input('data_type', sql.NVarChar(100), dataType.key)
                 .query`SELECT COUNT(DISTINCT period_end_date) AS quarter_count
@@ -502,7 +502,7 @@ const checkDateAndFetchData = async (req, res) => {
                 foundDate: inputEndDate.toISOString().split('T')[0],
                 dataForDate: dataForDate,
                 nearbyDate: null,
-                message: `Exact data found for ${inputEndDate.toISOString().split('T')[0]}. Fields pre-filled.`,
+                message: `Exact data found for ${inputEndDate.toISOString().split('T')[0]}. Fields pre-filled.`, 
                 ...uniqueMetaData
             });
         }
@@ -548,7 +548,7 @@ const checkDateAndFetchData = async (req, res) => {
                 foundDate: formattedNearbyEndDate,
                 dataForDate: dataForDate,
                 nearbyDate: formattedNearbyEndDate,
-                message: `No exact data for ${inputEndDate.toISOString().split('T')[0]}. Data found for a nearby date: ${formattedNearbyEndDate}.`,
+                message: `No exact data for ${inputEndDate.toISOString().split('T')[0]}. Data found for a nearby date: ${formattedNearbyEndDate}.`, 
                 ...uniqueMetaData
             });
         }
@@ -983,307 +983,7 @@ const getTickerOverviewAnalysis = async (req, res) => {
  * @param {object} req - The request object. Expects stockId in params, { dataPeriods, selectedDate, maxLookbackMonths } in body.
  * @param {object} res - The response object.
  */
-const getSingleStockAnalysis = async (req, res) => {
-    const { stockId } = req.params;
-    const { dataPeriods, selectedDate, maxLookbackMonths } = req.body;
 
-    if (!stockId || !dataPeriods || !selectedDate || !maxLookbackMonths) {
-        return res.status(400).json({ message: 'Missing required parameters: stockId, dataPeriods, selectedDate, maxLookbackMonths.' });
-    }
-
-    const referenceDate = new Date(selectedDate);
-    const earliestAllowedDate = new Date(referenceDate);
-    earliestAllowedDate.setMonth(earliestAllowedDate.getMonth() - maxLookbackMonths);
-    const today = new Date(); // Correctly define 'today' here
-
-    try {
-        // Create a new request for fetching stock ticker
-        const stockInfoRequest = new sql.Request();
-        // Fetch stock ticker to determine fiscal year end
-        const stockInfo = (await stockInfoRequest.input('stock_id', sql.Int, stockId)
-            .query`SELECT ticker_symbol FROM [dbo].[Stocks] WHERE aandeel_id = @stock_id`).recordset[0];
-
-        const tickerSymbol = stockInfo ? stockInfo.ticker_symbol : '';
-
-        // Create a new request for fetching fundamental data
-        const fundamentalDataRequest = new sql.Request();
-        // Fetch all fundamental data for the current stock within the lookback period
-        const fundamentalData = (await fundamentalDataRequest.input('stock_id', sql.Int, stockId)
-            .input('earliest_date', sql.Date, earliestAllowedDate)
-            .input('latest_date', sql.Date, referenceDate)
-            .query`
-                SELECT period_end_date, fy, fp_id, data_type, value
-                FROM fundamental_data
-                WHERE stock_id = @stock_id
-                AND period_end_date BETWEEN @earliest_date AND @latest_date
-                ORDER BY period_end_date ASC, data_type ASC
-            `).recordset;
-
-        // Filter fundamentalData to only include types defined in FUNDAMENTAL_DATA_TYPES
-        const relevantFundamentalData = fundamentalData.filter(item =>
-            FUNDAMENTAL_DATA_TYPES.some(type => type.key === item.data_type)
-        );
-
-        // --- Analysis Logic (copied from getTickerOverviewAnalysis and adapted for single stock) ---
-
-        // 1. Data Type Completeness
-        const dataTypeCompleteness = {};
-        let totalExpectedDataPoints = 0;
-        let totalFoundDataPoints = 0;
-        let allData100PercentComplete = true; // Nieuwe vlag
-
-        for (const dataTypeConfig of FUNDAMENTAL_DATA_TYPES) {
-            const expectedMonths = dataPeriods[dataTypeConfig.key];
-            const expectedQuarters = expectedMonths / 3; // Assuming 3 months per quarter
-
-            // Calculate the earliest expected date for this specific data type's lookback
-            const earliestExpectedDateForType = new Date(referenceDate);
-            earliestExpectedDateForType.setMonth(earliestExpectedDateForType.getMonth() - expectedMonths);
-
-            // Filter data for the current data type AND within its specific expected period
-            const relevantDataForThisSpecificType = relevantFundamentalData.filter(d =>
-                d.data_type === dataTypeConfig.key &&
-                d.period_end_date >= earliestExpectedDateForType &&
-                d.period_end_date <= referenceDate
-            );
-
-            // Count unique period_end_date for this data type within its specific lookback period
-            const foundCount = new Set(relevantDataForThisSpecificType.map(d => d.period_end_date.toISOString().split('T')[0])).size;
-
-            const percentage = expectedQuarters > 0 ? (foundCount / expectedQuarters) * 100 : 100;
-            if (percentage < 100) {
-                allData100PercentComplete = false; // Als één percentage niet 100% is, zet de vlag op false
-            }
-
-            dataTypeCompleteness[dataTypeConfig.key] = {
-                foundCount: foundCount,
-                expectedCount: expectedQuarters,
-                percentage: percentage,
-                earliestExpectedDate: formatDate(earliestExpectedDateForType) // Add earliest expected date
-            };
-            totalExpectedDataPoints += expectedQuarters;
-            totalFoundDataPoints += foundCount;
-        }
-        const overallCompletenessPercentage = totalExpectedDataPoints > 0 ? (totalFoundDataPoints / totalExpectedDataPoints) * 100 : 100;
-
-
-        // 2. Multiple Dates Per Quarter (Anomaly)
-        const multipleDatesPerQuarter = [];
-        const quarterMap = new Map(); // Key: `${year_from_period_end_date}-${fp_id}-${data_type}`, Value: Set of period_end_dates
-
-        relevantFundamentalData.forEach(item => {
-            // Only consider quarterly periods (fp_id 1-4)
-            if (item.fp_id >= 1 && item.fp_id <= 4) {
-                const yearFromPeriodEndDate = new Date(item.period_end_date).getFullYear(); // Use year from period_end_date
-                const key = `${yearFromPeriodEndDate}-${item.fp_id}-${item.data_type}`;
-                if (!quarterMap.has(key)) {
-                    quarterMap.set(key, new Set());
-                }
-                quarterMap.get(key).add(item.period_end_date.toISOString().split('T')[0]);
-            }
-        });
-
-        quarterMap.forEach((datesSet, key) => {
-            if (datesSet.size > 1) {
-                const [year, fp_id, data_type] = key.split('-');
-                multipleDatesPerQuarter.push({
-                    dataType: data_type,
-                    fy: parseInt(year), // Use year from period_end_date
-                    fp_id: parseInt(fp_id),
-                    dates: Array.from(datesSet).sort()
-                });
-            }
-        });
-
-
-        // 3. Fiscal Period (FP ID) Sequence Check
-        const brokenQuarterSequenceDetails = [];
-        const quarterlyDataGroupedByDataType = new Map(); // Key: data_type, Value: Array of {period_end_date, fy_from_period_end_date, fp_id}
-
-        relevantFundamentalData.forEach(item => {
-            if (item.fp_id >= 1 && item.fp_id <= 4) { // Only consider quarterly periods
-                if (!quarterlyDataGroupedByDataType.has(item.data_type)) {
-                    quarterlyDataGroupedByDataType.set(item.data_type, []);
-                }
-                quarterlyDataGroupedByDataType.get(item.data_type).push({
-                    period_end_date: item.period_end_date,
-                    fy_from_period_end_date: new Date(item.period_end_date).getFullYear(), // Use year from period_end_date
-                    fp_id: item.fp_id
-                });
-            }
-        });
-
-        quarterlyDataGroupedByDataType.forEach((periods, dataType) => {
-            // Sort periods ascending by date
-            const sortedPeriods = [...periods].sort((a, b) => a.period_end_date.getTime() - b.period_end_date.getTime());
-
-            for (let i = 1; i < sortedPeriods.length; i++) {
-                const prevPeriod = sortedPeriods[i - 1];
-                const currentPeriod = sortedPeriods[i];
-
-                // Determine expected next FP ID (1-4 cycle)
-                const expectedNextFpId = (prevPeriod.fp_id % 4) + 1;
-
-                const diffDays = Math.ceil(Math.abs(currentPeriod.period_end_date.getTime() - prevPeriod.period_end_date.getTime()) / (1000 * 60 * 60 * 24));
-
-                // Check if FP ID sequence is correct
-                const isFpIdSequenceCorrect = (currentPeriod.fp_id === expectedNextFpId);
-
-                // Check if time gap is correct for a regular quarter (approx 3 months)
-                const isTimeGapCorrect = (diffDays >= 60 && diffDays <= 120);
-
-                // Check if time gap is correct for a year transition (Q4 to Q1, approx 12-13 months)
-                const isYearTransition = (prevPeriod.fp_id === 4 && currentPeriod.fp_id === 1);
-                // Allow a wider range for year transition, e.g., 11 to 13 months (335 to 395 days)
-                const isTimeGapCorrectForYearTransition = (diffDays >= 335 && diffDays <= 395);
-
-                // Anomaly is detected if FP ID sequence is broken OR
-                // if the time gap is not correct for a regular quarter AND not correct for a year transition
-                if (!isFpIdSequenceCorrect || (!isTimeGapCorrect && !isTimeGapCorrectForYearTransition)) {
-                    const reason = [];
-                    if (!isFpIdSequenceCorrect) reason.push("FP ID sequence incorrect");
-                    // Removed strict year sequence check as requested
-                    if (!isTimeGapCorrect && !isTimeGapCorrectForYearTransition) reason.push("Time gap not typical for a quarter/year transition");
-
-                    brokenQuarterSequenceDetails.push({
-                        dataType: dataType,
-                        prevDate: formatDate(prevPeriod.period_end_date),
-                        prevFpId: prevPeriod.fp_id,
-                        prevFy: prevPeriod.fy_from_period_end_date, // Keep for context
-                        currentDate: formatDate(currentPeriod.period_end_date),
-                        currentFpId: currentPeriod.fp_id,
-                        currentFy: currentPeriod.fy_from_period_end_date, // Keep for context
-                        expectedFpId: expectedNextFpId,
-                        daysDifference: diffDays,
-                        reason: reason.join(" & ")
-                    });
-                }
-            }
-        });
-
-        // 4. Missing Recent Quarters (Anomaly) - Reverted to previous logic for iteration and gap detection
-        const missingRecentQuarters = [];
-        const missingCutoffDate = new Date(referenceDate); // Keep referenceDate
-        const diffDaysFromToday = Math.ceil(Math.abs(referenceDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
-        if (diffDaysFromToday <= 60) {
-            missingCutoffDate.setDate(referenceDate.getDate() - 60);
-        } else {
-            missingCutoffDate.setDate(referenceDate.getDate());
-        }
-
-        for (const dataTypeConfig of FUNDAMENTAL_DATA_TYPES) {
-            const relevantDataForType = relevantFundamentalData.filter(d => d.data_type === dataTypeConfig.key);
-            const sortedDataForType = [...relevantDataForType].sort((a, b) => a.period_end_date.getTime() - b.period_end_date.getTime());
-
-            const actualPeriodEndDates = sortedDataForType.map(d => d.period_end_date);
-            const actualPeriodEndDatesStrings = actualPeriodEndDates.map(d => formatDate(d));
-
-            // Bepaal de meest recente werkelijke datum voor dit datatype
-            const latestActualDateForType = actualPeriodEndDates.length > 0 ? actualPeriodEndDates[actualPeriodEndDates.length - 1] : null;
-
-            // Startpunt voor het genereren van verwachte kwartalen
-            let currentExpectedDate;
-            if (latestActualDateForType) {
-                currentExpectedDate = new Date(latestActualDateForType);
-                currentExpectedDate.setMonth(currentExpectedDate.getMonth() + 3); // Begin met de eerste verwachte kwartaal na de laatste bekende
-            } else {
-                // Als er geen data is voor dit datatype, begin dan vanaf de referenceDate en ga 3 maanden terug
-                currentExpectedDate = new Date(referenceDate);
-                // Pas aan naar het einde van het kwartaal (bijv. als referenceDate 2024-07-15 is, start vanaf 2024-06-30)
-                const currentMonth = currentExpectedDate.getMonth();
-                if (currentMonth >= 0 && currentMonth <= 2) currentExpectedDate.setMonth(2, 31); // Maart 31
-                else if (currentMonth >= 3 && currentMonth <= 5) currentExpectedDate.setMonth(5, 30); // Juni 30
-                else if (currentMonth >= 6 && currentMonth <= 8) currentExpectedDate.setMonth(8, 30); // September 30
-                else currentExpectedDate.setMonth(11, 31); // December 31
-            }
-
-            // Genereer verwachte kwartalen vooruit in de tijd (vanaf laatste bekende of referenceDate)
-            // en controleer op ontbrekende kwartalen tot aan de referenceDate
-            while (currentExpectedDate <= referenceDate) {
-                // Alleen overwegen als de verwachte datum vóór of op de missingCutoffDate ligt
-                if (currentExpectedDate <= missingCutoffDate) {
-                    const formattedExpectedDate = formatDate(currentExpectedDate);
-                    const found = actualPeriodEndDatesStrings.some(itemDateStr => {
-                        const itemDate = new Date(itemDateStr);
-                        const diff = Math.abs(itemDate.getTime() - currentExpectedDate.getTime());
-                        const diffDays = Math.ceil(diff / (1000 * 60 * 60 * 24));
-                        return diffDays <= 30; // Tolerantie van +/- 30 dagen
-                    });
-
-                    if (!found) {
-                        missingRecentQuarters.push({
-                            dataType: dataTypeConfig.key,
-                            expectedDate: formattedExpectedDate,
-                            reason: "Missing recent quarter"
-                        });
-                    }
-                }
-                currentExpectedDate.setMonth(currentExpectedDate.getMonth() + 3); // Ga naar het volgende kwartaal
-            }
-
-            // Controleer op gaten in de historische data (tussen bestaande datapunten)
-            for (let i = 0; i < sortedDataForType.length - 1; i++) {
-                const prevPeriod = sortedDataForType[i];
-                const nextPeriod = sortedDataForType[i + 1];
-
-                const prevDate = prevPeriod.period_end_date;
-                const nextDate = nextPeriod.period_end_date;
-
-                const diffDays = Math.ceil((nextDate.getTime() - prevDate.getTime()) / (1000 * 60 * 60 * 24));
-
-                // Als het tijdsverschil groter is dan een normaal kwartaal (bijv. > 120 dagen),
-                // dan is er een of meer kwartalen overgeslagen.
-                if (diffDays > 120) {
-                    let expectedMissingDate = new Date(prevDate);
-                    expectedMissingDate.setMonth(expectedMissingDate.getMonth() + 3); // Begin met het eerste potentieel ontbrekende kwartaal
-
-                    // Blijf 3 maanden toevoegen totdat we de volgende werkelijke datapunt bereiken of passeren
-                    while (expectedMissingDate < nextDate) {
-                        if (expectedMissingDate >= earliestAllowedDate && expectedMissingDate <= missingCutoffDate) {
-                            const formattedExpectedDate = formatDate(expectedMissingDate);
-                            const found = actualPeriodEndDatesStrings.some(itemDateStr => {
-                                const itemDate = new Date(itemDateStr);
-                                const diff = Math.abs(itemDate.getTime() - expectedMissingDate.getTime());
-                                return diff <= (30 * 24 * 60 * 60 * 1000); // 30 dagen tolerantie
-                            });
-
-                            if (!found) {
-                                missingRecentQuarters.push({
-                                    dataType: dataTypeConfig.key,
-                                    expectedDate: formattedExpectedDate,
-                                    reason: "Missing historical quarter (gap detected)"
-                                });
-                            }
-                        }
-                        expectedMissingDate.setMonth(expectedMissingDate.getMonth() + 3);
-                    }
-                }
-            }
-        }
-        // Sorteer ontbrekende recente kwartalen op datum (oplopend)
-        missingRecentQuarters.sort((a, b) => new Date(a.expectedDate).getTime() - new Date(b.expectedDate).getTime());
-
-
-        const singleStockAnalysisResult = {
-            aandeel_id: parseInt(stockId),
-            ticker_symbol: tickerSymbol, // Voeg ticker_symbol toe
-            selected_date: formatDate(referenceDate), // Voeg selected_date toe
-            overallCompletenessPercentage: overallCompletenessPercentage,
-            dataTypeCompleteness: dataTypeCompleteness,
-            multipleDatesPerQuarter: multipleDatesPerQuarter,
-            quarterSequenceBroken: brokenQuarterSequenceDetails.length > 0,
-            brokenQuarterSequenceDetails: brokenQuarterSequenceDetails,
-            missingRecentQuarters: missingRecentQuarters, // Add new anomaly
-            allData100PercentComplete: allData100PercentComplete // Nieuwe vlag
-        };
-
-        res.status(200).json(singleStockAnalysisResult);
-
-    } catch (err) {
-        console.error('Error in getSingleStockAnalysis:', err);
-        res.status(500).json({ message: 'Error performing single stock analysis.', error: err.message });
-    }
-};
 
 
 const getSingleStockAnalysis = async (req, res) => {
@@ -1596,7 +1296,7 @@ const runPythonSecScript = async (req, res) => {
         return res.status(400).json({ message: 'Ticker symbol is required.' });
     }
 
-    const pythonScriptPath = 'c:\\Arne\\ArneVR\\PortfolioVR\\backend\\insertDataToDatabaseFromSec20250302.py';
+    const pythonScriptPath = 'c:\Arne\ArneVR\PortfolioVR\backend\insertDataToDatabaseFromSec20250302.py';
 
     try {
         const pythonProcess = spawn('python', [pythonScriptPath, ticker]);
@@ -1634,6 +1334,29 @@ const runPythonSecScript = async (req, res) => {
 };
 
 
+const getLatestFundamentalDataPivoted = async (req, res) => {
+    const { stockId } = req.params;
+    try {
+        const request = new sql.Request();
+        const result = await request.input('stock_id', sql.Int, stockId)
+            .query(`
+                SELECT
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'MarketCap' ORDER BY period_end_date DESC) as market_cap,
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'PERatio' ORDER BY period_end_date DESC) as pe_ratio,
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'DividendYield' ORDER BY period_end_date DESC) as dividend_yield,
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'Revenues' ORDER BY period_end_date DESC) as revenue,
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'NetIncomeLoss' ORDER BY period_end_date DESC) as net_income,
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'IntrinsicValueDCF' ORDER BY period_end_date DESC) as intrinsic_value_dcf,
+                    (SELECT TOP 1 value FROM fundamental_data WHERE stock_id = @stock_id AND data_type = 'FairValueGraham' ORDER BY period_end_date DESC) as fair_value_graham
+            `);
+
+        res.status(200).json(result.recordset[0]);
+    } catch (err) {
+        console.error('Error fetching latest pivoted fundamental data for stock:', err);
+        res.status(500).json({ message: 'Error fetching fundamental data.', error: err.message });
+    }
+};
+
 module.exports = {
     addManualFundamentalData,
     fetchAndParseSecData,
@@ -1650,4 +1373,5 @@ module.exports = {
     getTickerOverviewAnalysis,
     getSingleStockAnalysis, // Export the new function
     runPythonSecScript,
+    getLatestFundamentalDataPivoted
 };

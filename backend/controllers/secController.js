@@ -1,6 +1,7 @@
 // controllers/secController.js
 const { getSec } = require('./BE_getSecData');
 const axios = require('axios');
+const { sql } = require('../config/database'); // Import sql
 //const { getCIK, cikCache } = require('../services/secService'); // Importeer de CIK-gerelateerde functies
 
 const getSecData = async (req, res) => {
@@ -67,4 +68,14 @@ const addMissingData = async (req, res) => {
   }
 };
 
-module.exports = { getSecData, fetchMissingData, addMissingData };
+const getAllStocks = async (req, res) => {
+  try {
+    const result = await sql.query`SELECT aandeel_id as stock_id, ticker_symbol as ticker, name FROM Stocks`;
+    res.json(result.recordset);
+  } catch (error) {
+    console.error('Fout bij het ophalen van alle aandelen:', error);
+    res.status(500).send('Serverfout bij het ophalen van alle aandelen.');
+  }
+};
+
+module.exports = { getSecData, fetchMissingData, addMissingData, getAllStocks };
