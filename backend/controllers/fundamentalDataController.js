@@ -124,9 +124,9 @@ const addManualFundamentalData = async (req, res) => {
                 const updateRequest = new sql.Request(transaction);
                 await updateRequest.input('id', sql.Int, existingData.recordset[0].id)
                     .input('value', sql.Decimal(18, 4), value)
-                    .input('how_added', sql.NVarChar(100), how_added)
                     .input('period_start_date', sql.Date, period_start_date)
-                    .query`UPDATE fundamental_data SET value = @value, how_added = @how_added, updated_at = GETDATE(), period_start_date = @period_start_date WHERE id = @id`;
+                    .input('how_added', sql.NVarChar(100), how_added) // Add how_added to the update
+                    .query`UPDATE fundamental_data SET value = @value, updated_at = GETDATE(), period_start_date = @period_start_date, how_added = ISNULL(@how_added, how_added) WHERE id = @id`;
             } else {
                 const insertRequest = new sql.Request(transaction);
                 await insertRequest.input('stock_id', sql.Int, stock_id)
@@ -1222,7 +1222,7 @@ const getSingleStockAnalysis = async (req, res) => {
                         });
                     }
                 }
-                currentExpectedDate.setMonth(currentExpectedDate.getMonth() + 3);
+                currentExpectedDate.setMonth(currentExpectedDate.getMonth() + 3); // Ga naar het volgende kwartaal
             }
 
             // Controleer op gaten in de historische data (tussen bestaande datapunten)
@@ -1357,6 +1357,47 @@ const getLatestFundamentalDataPivoted = async (req, res) => {
     }
 };
 
+const updateDataPoint = async (req, res) => {
+    const { id } = req.params;
+    const { fy, fp_id } = req.body;
+
+    if (!fy && !fp_id) {
+        return res.status(400).json({ message: 'At least one field (fy or fp_id) must be provided for update.' });
+    }
+
+    try {
+        const request = new sql.Request();
+        let query = 'UPDATE fundamental_data SET ';
+        const params = [];
+
+        if (fy) {
+            query += 'fy = @fy';
+            request.input('fy', sql.Int, fy);
+            params.push('fy');
+        }
+        if (fp_id) {
+            if (params.length > 0) query += ', ';
+            query += 'fp_id = @fp_id';
+            request.input('fp_id', sql.Int, fp_id);
+            params.push('fp_id');
+        }
+
+        query += ', updated_at = GETDATE() WHERE id = @id';
+        request.input('id', sql.Int, id);
+
+        const result = await request.query(query);
+
+        if (result.rowsAffected[0] > 0) {
+            res.status(200).json({ message: 'Data point updated successfully.' });
+        } else {
+            res.status(404).json({ message: 'Data point not found.' });
+        }
+    } catch (err) {
+        console.error('Error updating data point:', err);
+        res.status(500).json({ message: 'Error updating data point.', error: err.message });
+    }
+};
+
 module.exports = {
     addManualFundamentalData,
     fetchAndParseSecData,
@@ -1373,5 +1414,6 @@ module.exports = {
     getTickerOverviewAnalysis,
     getSingleStockAnalysis, // Export the new function
     runPythonSecScript,
-    getLatestFundamentalDataPivoted
+    getLatestFundamentalDataPivoted,
+    updateDataPoint
 };

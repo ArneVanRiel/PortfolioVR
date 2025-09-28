@@ -13,7 +13,6 @@ const FundamentalDataForm = ({ stock, onClose }) => {
   });
   const [fiscalPeriods, setFiscalPeriods] = useState([]);
   const [forms, setForms] = useState([]);
-  const [message, setMessage] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingDropdowns, setIsLoadingDropdowns] = useState(true);
 
@@ -31,7 +30,7 @@ const FundamentalDataForm = ({ stock, onClose }) => {
         setForms(formsResponse.data);
       } catch (error) {
         console.error("Error fetching dropdown data:", error);
-        setMessage('Error loading form data.');
+        alert('Error loading form data.');
       } finally {
         setIsLoadingDropdowns(false);
       }
@@ -63,18 +62,16 @@ const FundamentalDataForm = ({ stock, onClose }) => {
   const handleSubmit = async (e) => {
     e.preventDefault();
     setIsSubmitting(true);
-    setMessage('');
 
     try {
       console.log("Submitting form data:", formData);
       const response = await http.post('/fundamental-data/manual', formData);
       console.log("Form submission response:", response.data);
-      setMessage(response.data.message || 'Data saved successfully!');
-      // Optionally clear form or close modal
-      // setFormData({ ...initialState, stock_id: stock.stock_id });
+      alert(response.data.message || 'Data saved successfully!');
+      onClose(); // Close the modal on success
     } catch (error) {
       console.error("Error saving fundamental data:", error);
-      setMessage(error.response?.data?.message || 'Error saving data.');
+      alert(error.response?.data?.message || 'Error saving data.');
     }
     setIsSubmitting(false);
   };
@@ -147,7 +144,6 @@ const FundamentalDataForm = ({ stock, onClose }) => {
               {isSubmitting ? 'Saving...' : 'Save Data'}
             </button>
           </div>
-          {message && <p className="mt-4 text-sm text-center text-blue-600">{message}</p>}
         </form>
       )}
     </div>

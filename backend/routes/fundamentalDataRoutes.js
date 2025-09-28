@@ -46,4 +46,7 @@ router.get('/forms', fundamentalDataController.getForms);
 // NIEUW: Route om Python SEC script uit te voeren
 router.post('/run-python-sec-script', fundamentalDataController.runPythonSecScript);
 
+// NEW: Route to update a single data point's metadata (FY, FP_ID)
+router.put('/data-point/:id', fundamentalDataController.updateDataPoint);
+
 module.exports = router;
