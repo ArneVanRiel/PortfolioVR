@@ -66,7 +66,7 @@ const DataCompleteness = ({
               <ul className="list-disc list-inside">
                 {singleStockAnalysisResult.multipleDatesPerQuarter.map((anomaly, index) => (
                   <li key={index}>
-                    <span className="font-bold">{anomaly.dataType}</span> voor FY {anomaly.fy} Q{anomaly.fp_id}: {anomaly.dates.join(', ')}
+                    <span className="font-bold">{anomaly.dataType}</span> voor FY {anomaly.fy} Q{anomaly.fp_id}: {(anomaly.conflictingData || []).map(d => (d.period_end_date || '').split('T')[0]).join(', ')}
                     <button onClick={() => handleOpenMultiDateModal(anomaly)} className="ml-4 bg-orange-500 text-white px-2 py-1 rounded text-xs">Oplossen</button>
                   </li>
                 ))}

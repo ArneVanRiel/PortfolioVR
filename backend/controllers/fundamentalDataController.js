@@ -1015,7 +1015,7 @@ const getSingleStockAnalysis = async (req, res) => {
             .input('earliest_date', sql.Date, earliestAllowedDate)
             .input('latest_date', sql.Date, referenceDate)
             .query`
-                SELECT period_end_date, fy, fp_id, data_type, value
+                SELECT id, period_end_date, fy, fp_id, data_type, value
                 FROM fundamental_data
                 WHERE stock_id = @stock_id
                 AND period_end_date BETWEEN @earliest_date AND @latest_date
@@ -1072,7 +1072,7 @@ const getSingleStockAnalysis = async (req, res) => {
 
         // 2. Multiple Dates Per Quarter (Anomaly)
         const multipleDatesPerQuarter = [];
-        const quarterMap = new Map(); // Key: `${year_from_period_end_date}-${fp_id}-${data_type}`, Value: Set of period_end_dates
+        const quarterMap = new Map(); // Key: `${year_from_period_end_date}-${fp_id}-${data_type}`, Value: Array of full item objects
 
         relevantFundamentalData.forEach(item => {
             // Only consider quarterly periods (fp_id 1-4)
@@ -1080,20 +1080,20 @@ const getSingleStockAnalysis = async (req, res) => {
                 const yearFromPeriodEndDate = new Date(item.period_end_date).getFullYear(); // Use year from period_end_date
                 const key = `${yearFromPeriodEndDate}-${item.fp_id}-${item.data_type}`;
                 if (!quarterMap.has(key)) {
-                    quarterMap.set(key, new Set());
+                    quarterMap.set(key, []);
                 }
-                quarterMap.get(key).add(item.period_end_date.toISOString().split('T')[0]);
+                quarterMap.get(key).push(item); // Add the full item to the array
             }
         });
 
-        quarterMap.forEach((datesSet, key) => {
-            if (datesSet.size > 1) {
+        quarterMap.forEach((items, key) => {
+            if (items.length > 1) {
                 const [year, fp_id, data_type] = key.split('-');
                 multipleDatesPerQuarter.push({
                     dataType: data_type,
                     fy: parseInt(year), // Use year from period_end_date
                     fp_id: parseInt(fp_id),
-                    dates: Array.from(datesSet).sort()
+                    conflictingData: items // Return the full conflicting items
                 });
             }
         });

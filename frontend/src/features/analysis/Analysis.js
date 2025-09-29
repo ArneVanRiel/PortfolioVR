@@ -37,6 +37,7 @@ const Analysis = () => {
   const [existingFundamentalData, setExistingFundamentalData] = useState([]);
   const [singleStockAnalysisResult, setSingleStockAnalysisResult] = useState(null);
   const [selectedAnalysisDate, setSelectedAnalysisDate] = useState(formatDate(new Date()));
+  const [activeTab, setActiveTab] = useState('data'); // 'data' or 'calculations'
 
   // States for manual input
   const [manualPeriodEndDate, setManualPeriodEndDate] = useState('');
@@ -70,7 +71,7 @@ const Analysis = () => {
   // State for Multi-Date Anomaly Modal
   const [showMultiDateModal, setShowMultiDateModal] = useState(false);
   const [multiDateAnomaly, setMultiDateAnomaly] = useState(null);
-  const [editedData, setEditedData] = useState({});
+  const [editedData, setEditedData] = useState([]); // Changed to array
 
   // States for SEC API input
   const [cik, setCik] = useState('');
@@ -87,6 +88,11 @@ const Analysis = () => {
   // State for all stocks analysis
   const [allAnalyses, setAllAnalyses] = useState({});
   const [isAllAnalysesLoading, setIsAllAnalysesLoading] = useState(false);
+
+  // States for calculations
+  const [calculationResult, setCalculationResult] = useState(null);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [calculationError, setCalculationError] = useState('');
 
   const fetchStocks = useCallback(async () => {
     try {
@@ -241,6 +247,8 @@ const Analysis = () => {
     setFilterStartDate('');
     setFilterEndDate('');
     setFilterDataType('');
+    setCalculationResult(null);
+    setCalculationError('');
   };
 
   const handleManualValueChange = (key, value) => {
@@ -341,6 +349,25 @@ const Analysis = () => {
   useEffect(() => {
     validatePeriodDates();
   }, [validatePeriodDates]);
+
+  const handleRunCalculation = async () => {
+    if (!selectedStock) {
+      setCalculationError('Please select a stock first.');
+      return;
+    }
+    setIsCalculating(true);
+    setCalculationError('');
+    setCalculationResult(null);
+    try {
+      const response = await http.post(`/calculations/${selectedStock.stock_id}`);
+      setCalculationResult(response.data.data);
+    } catch (err) {
+      setCalculationError(`Error running calculation: ${err.response?.data?.message || err.message}`);
+      console.error('Error running calculation:', err);
+    } finally {
+      setIsCalculating(false);
+    }
+  };
 
   const handleAddManualData = async () => {
     const errorMessages = [];
@@ -564,45 +591,55 @@ const Analysis = () => {
 
   const handleOpenMultiDateModal = (anomaly) => {
     console.log("1. handleOpenMultiDateModal START");
-    console.log("Received anomaly:", anomaly);
+    console.log("Received anomaly with conflictingData from backend:", anomaly);
 
-    // Temporarily disable all filtering to see if it's the cause of the hang
-    const simplifiedAnomaly = {
-      ...anomaly,
-      conflictingData: [], // Empty array for now
-    };
-    
-    console.log("2. Filtering disabled. Anomaly object prepared:", simplifiedAnomaly);
-    
-    setEditedData({});
-    console.log("3. setEditedData called.");
+    const conflictingData = anomaly.conflictingData || [];
 
-    setMultiDateAnomaly(simplifiedAnomaly);
-    console.log("4. setMultiDateAnomaly called.");
+    if (conflictingData.length === 0) {
+        console.error("Modal opened, but the anomaly object from the backend did not contain conflictingData.");
+        setError("Could not resolve anomaly: conflicting data was not provided by the server.");
+        return;
+    }
+
+    // Set the editable data as a direct copy of the conflicting data array
+    setEditedData(conflictingData);
+    console.log("2. setEditedData called.");
+
+    setMultiDateAnomaly(anomaly);
+    console.log("3. setMultiDateAnomaly called.");
 
     setShowMultiDateModal(true);
-    console.log("5. setShowMultiDateModal called. Modal should now be visible.");
+    console.log("4. setShowMultiDateModal called. Modal should now be visible.");
   };
 
   const handleCloseMultiDateModal = () => {
     setShowMultiDateModal(false);
     setMultiDateAnomaly(null);
-    setEditedData({});
+    setEditedData([]); // Reset to empty array
   };
 
-  const handleModalFieldChange = (id, field, value) => {
-    setEditedData(prev => ({ ...prev, [id]: { ...prev[id], [field]: value } }));
+  const handleModalFieldChange = (index, field, value) => {
+    setEditedData(prev => {
+      const newData = [...prev];
+      newData[index] = {
+        ...newData[index],
+        [field]: value
+      };
+      return newData;
+    });
   };
 
-  const handleUpdateDataPoint = async (id) => {
-    const { fy, fp_id } = editedData[id];
-    if (!fy || !fp_id) {
-      alert('Fiscal Year and Fiscal Period are required.');
+  const handleUpdateDataPoint = async (id, index) => {
+    const itemToUpdate = editedData[index];
+    const { fp_id } = itemToUpdate;
+    
+    if (!fp_id) {
+      alert('Fiscal Period is required.');
       return;
     }
     try {
       setLoading(true);
-      await http.put(`/fundamental-data/data-point/${id}`, { fy: parseInt(fy), fp_id: parseInt(fp_id) });
+      await http.put(`/fundamental-data/data-point/${id}`, { fp_id: parseInt(fp_id) });
       alert('Data point updated successfully!');
       // Refresh data
       await fetchExistingFundamentalData();
@@ -638,73 +675,139 @@ const Analysis = () => {
 
         {selectedStock ? (
           <>
-            <AddData
-              selectedStock={selectedStock}
-              inputMethod={inputMethod}
-              setInputMethod={setInputMethod}
-              manualPeriodEndDate={manualPeriodEndDate}
-              setManualPeriodEndDate={setManualPeriodEndDate}
-              manualPeriodStartDate={manualPeriodStartDate}
-              setManualPeriodStartDate={setManualPeriodStartDate}
-              manualFY={manualFY}
-              setManualFY={setManualFY}
-              manualFPId={manualFPId}
-              setManualFPId={setManualFPId}
-              manualFormId={manualFormId}
-              setManualFormId={setManualFormId}
-              manualDataValues={manualDataValues}
-              handleManualValueChange={handleManualValueChange}
-              isDateConfirmed={isDateConfirmed}
-              setIsDateConfirmed={setIsDateConfirmed}
-              nearbyDateSuggestion={nearbyDateSuggestion}
-              canEditMetaData={canEditMetaData}
-              checkDate={checkDate}
-              handleCheckDateClick={handleCheckDateClick}
-              handleUseSuggestedDate={handleUseSuggestedDate}
-              periodEndDates={periodEndDates}
-              fiscalPeriods={fiscalPeriods}
-              formTypes={formTypes}
-              getFiscalYearOptions={getFiscalYearOptions}
-              handleAddManualData={handleAddManualData}
-              loading={loading}
-              cik={cik}
-              setCik={setCik}
-              secFetchYear={secFetchYear}
-              setSecFetchYear={setSecFetchYear}
-              fetchSecData={fetchSecData}
-              isSecFetching={isSecFetching}
-              secFetchedData={secFetchedData}
-              handleSaveSecData={handleSaveSecData}
-              alphaVantageFunction={alphaVantageFunction}
-              setAlphaVantageFunction={setAlphaVantageFunction}
-              alphaVantageFetchYear={alphaVantageFetchYear}
-              setAlphaVantageFetchYear={setAlphaVantageFetchYear}
-              fetchAlphaVantageData={fetchAlphaVantageData}
-              isAlphaVantageFetching={isAlphaVantageFetching}
-              alphaVantageFetchedData={alphaVantageFetchedData}
-              handleSaveAlphaVantageData={handleSaveAlphaVantageData}
-            />
-            <DataCompleteness
-              singleStockAnalysisResult={singleStockAnalysisResult}
-              selectedStock={selectedStock}
-              selectedAnalysisDate={selectedAnalysisDate}
-              setSelectedAnalysisDate={setSelectedAnalysisDate}
-              loading={loading}
-              handleGoToMissingQuarter={handleGoToMissingQuarter}
-              handleOpenMultiDateModal={handleOpenMultiDateModal}
-            />
-            <ExistingData
-              existingFundamentalData={existingFundamentalData}
-              selectedStock={selectedStock}
-              loading={loading}
-              handleDeleteClick={handleDeleteClick}
-              filterStartDate={filterStartDate}
-              setFilterStartDate={setFilterStartDate}
-              filterEndDate={filterEndDate}
-              setFilterEndDate={setFilterEndDate}
-              filterDataType={filterDataType}
-              setFilterDataType={setFilterDataType}
-            />
+            <div className="border-b border-gray-200">
+              <nav className="-mb-px flex space-x-8" aria-label="Tabs">
+                <button
+                  onClick={() => setActiveTab('data')}
+                  className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'data'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }`}
+                >
+                  Data Toevoegen
+                </button>
+                <button
+                  onClick={() => setActiveTab('calculations')}
+                  className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'calculations'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }`}
+                >
+                  Berekeningen
+                </button>
+              </nav>
+            </div>
+
+            <div className="mt-8">
+              {activeTab === 'data' && (
+                <>
+                  <AddData
+                    selectedStock={selectedStock}
+                    inputMethod={inputMethod}
+                    setInputMethod={setInputMethod}
+                    manualPeriodEndDate={manualPeriodEndDate}
+                    setManualPeriodEndDate={setManualPeriodEndDate}
+                    manualPeriodStartDate={manualPeriodStartDate}
+                    setManualPeriodStartDate={setManualPeriodStartDate}
+                    manualFY={manualFY}
+                    setManualFY={setManualFY}
+                    manualFPId={manualFPId}
+                    setManualFPId={setManualFPId}
+                    manualFormId={manualFormId}
+                    setManualFormId={setManualFormId}
+                    manualDataValues={manualDataValues}
+                    handleManualValueChange={handleManualValueChange}
+                    isDateConfirmed={isDateConfirmed}
+                    setIsDateConfirmed={setIsDateConfirmed}
+                    nearbyDateSuggestion={nearbyDateSuggestion}
+                    canEditMetaData={canEditMetaData}
+                    checkDate={checkDate}
+                    handleCheckDateClick={handleCheckDateClick}
+                    handleUseSuggestedDate={handleUseSuggestedDate}
+                    periodEndDates={periodEndDates}
+                    fiscalPeriods={fiscalPeriods}
+                    formTypes={formTypes}
+                    getFiscalYearOptions={getFiscalYearOptions}
+                    handleAddManualData={handleAddManualData}
+                    loading={loading}
+                    cik={cik}
+                    setCik={setCik}
+                    secFetchYear={secFetchYear}
+                    setSecFetchYear={setSecFetchYear}
+                    fetchSecData={fetchSecData}
+                    isSecFetching={isSecFetching}
+                    secFetchedData={secFetchedData}
+                    handleSaveSecData={handleSaveSecData}
+                    alphaVantageFunction={alphaVantageFunction}
+                    setAlphaVantageFunction={setAlphaVantageFunction}
+                    alphaVantageFetchYear={alphaVantageFetchYear}
+                    setAlphaVantageFetchYear={setAlphaVantageFetchYear}
+                    fetchAlphaVantageData={fetchAlphaVantageData}
+                    isAlphaVantageFetching={isAlphaVantageFetching}
+                    alphaVantageFetchedData={alphaVantageFetchedData}
+                    handleSaveAlphaVantageData={handleSaveAlphaVantageData}
+                  />
+                  <DataCompleteness
+                    singleStockAnalysisResult={singleStockAnalysisResult}
+                    selectedStock={selectedStock}
+                    selectedAnalysisDate={selectedAnalysisDate}
+                    setSelectedAnalysisDate={setSelectedAnalysisDate}
+                    loading={loading}
+                    handleGoToMissingQuarter={handleGoToMissingQuarter}
+                    handleOpenMultiDateModal={handleOpenMultiDateModal}
+                  />
+                  <ExistingData
+                    existingFundamentalData={existingFundamentalData}
+                    selectedStock={selectedStock}
+                    loading={loading}
+                    handleDeleteClick={handleDeleteClick}
+                    filterStartDate={filterStartDate}
+                    setFilterStartDate={setFilterStartDate}
+                    filterEndDate={filterEndDate}
+                    setFilterEndDate={setFilterEndDate}
+                    filterDataType={filterDataType}
+                    setFilterDataType={setFilterDataType}
+                  />
+                </>
+              )}
+              {activeTab === 'calculations' && (
+                <div>
+                  <div className="flex justify-center mb-4">
+                    <button
+                      onClick={handleRunCalculation}
+                      disabled={isCalculating}
+                      className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
+                    >
+                      {isCalculating ? 'Berekenen...' : 'Start Berekening'}
+                    </button>
+                  </div>
+                  {calculationError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">{calculationError}</div>}
+                  {calculationResult && (
+                    <div className="bg-white shadow-md rounded-lg p-6">
+                      <h3 className="text-2xl font-bold mb-4">Calculation Results</h3>
+                      <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
+                        <dt className="font-semibold">Intrinsic Value:</dt>
+                        <dd>{calculationResult.intrinsieke_waarde}</dd>
+                        <dt className="font-semibold">Selection Criteria:</dt>
+                        <dd>{calculationResult.selectiecriteria}</dd>
+                        <dt className="font-semibold">Waarde Verdeling:</dt>
+                        <dd>{calculationResult.waarde_verdeling}</dd>
+                        <dt className="font-semibold">Koopmarge:</dt>
+                        <dd>{calculationResult.koopmarge}</dd>
+                        <dt className="font-semibold">FCF Growth:</dt>
+                        <dd>{calculationResult.gem_groeipercentage_FCF}</dd>
+                        <dt className="font-semibold">FCF Stdev:</dt>
+                        <dd>{calculationResult.standaard_deviatie_FCF}</dd>
+                        <dt className="font-semibold">ROE 10Y Avg:</dt>
+                        <dd>{calculationResult.gemiddelde_stijging_ROE_10_Y}</dd>
+                        <dt className="font-semibold">ROE Stdev:</dt>
+                        <dd>{calculationResult.standaard_deviatie_ROE}</dd>
+                      </dl>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
           </>
         ) : (
           <div className="text-center text-gray-500">Select a stock to see the analysis.</div>
@@ -733,22 +836,22 @@ const Analysis = () => {
                 <th className="px-4 py-2 text-left">Actie</th>
               </tr></thead>
               <tbody className="bg-white divide-y divide-gray-200">
-                {multiDateAnomaly.conflictingData.map(item => (
-                  <tr key={item.id}>
+                {editedData.map((item, index) => (
+                  <tr key={index}>
                     <td className="px-4 py-2">{formatDate(new Date(item.period_end_date))}</td>
                     <td className="px-4 py-2">{item.value}</td>
                     <td className="px-4 py-2">
                       <input 
                         type="number" 
-                        value={editedData[item.id]?.fy || ''} 
-                        onChange={(e) => handleModalFieldChange(item.id, 'fy', e.target.value)}
-                        className="w-20 p-1 border rounded"
+                        value={item.fy || ''}
+                        readOnly
+                        className="w-20 p-1 border rounded bg-gray-100"
                       />
                     </td>
                     <td className="px-4 py-2">
                       <select 
-                        value={editedData[item.id]?.fp_id || ''} 
-                        onChange={(e) => handleModalFieldChange(item.id, 'fp_id', e.target.value)}
+                        value={item.fp_id || ''} 
+                        onChange={(e) => handleModalFieldChange(index, 'fp_id', e.target.value)}
                         className="p-1 border rounded"
                       >
                         <option value="">Kies FP</option>
@@ -756,7 +859,7 @@ const Analysis = () => {
                       </select>
                     </td>
                     <td className="px-4 py-2">
-                      <button onClick={() => handleUpdateDataPoint(item.id)} className="bg-blue-500 text-white px-2 py-1 rounded text-xs">Opslaan</button>
+                      <button onClick={() => handleUpdateDataPoint(item.id, index)} className="bg-blue-500 text-white px-2 py-1 rounded text-xs">Opslaan</button>
                     </td>
                   </tr>
                 ))}

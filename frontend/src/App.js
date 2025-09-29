@@ -12,7 +12,6 @@ import LoginPageTest from './features/auth/components/loginTest.js';
 import SearchModal from './components/ui/SearchModal.js';
 import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
 import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.js';
-import ToDo from './components/ToDo.js';
 
 function App() {
   const [activeTab, setActiveTab] = useState('');
@@ -122,7 +121,7 @@ function App() {
             <Route path='/portfolio' element={<PortfolioManager/>} />
             <Route path='/settings' element={<Settings/>} />
           </Routes>
-          <ToDo/>
+ 
         </div>
       </main>
 

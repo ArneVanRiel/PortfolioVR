@@ -8,6 +8,7 @@ const availableBalanceRoutes = require('./routes/availableBalanceRoutes');
 const idealPortfolioRoutes = require('./routes/idealPortfolioRoutes');
 const fundamentalDataRoutes = require('./routes/fundamentalDataRoutes'); // NIEUW
 const secImportRoutes = require('./routes/secImportRoutes');
+const calculationRoutes = require('./routes/calculationRoutes');
 
 
 const app = express();
@@ -27,6 +28,7 @@ app.use('/api/balance/available', availableBalanceRoutes);
 app.use('/api/ideal-portfolio', idealPortfolioRoutes); 
 app.use('/api/fundamental-data', fundamentalDataRoutes); // NIEUW
 app.use('/api/sec', secImportRoutes);
+app.use('/api/calculations', calculationRoutes);
 
 
 // Algemene foutafhandeling

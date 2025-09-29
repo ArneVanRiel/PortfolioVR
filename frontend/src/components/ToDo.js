@@ -9,12 +9,12 @@ function ToDo() {
       { id: 2, description: 'Plan zomervakantie', date: '2025-07-01' },
     ],
     idealeportfoliowatchlist: [
-        { id: 1, description: 'ETF en crypto toevoegen aan watchlist', date: '18-06-2025' },
-        { id: 1, description: 'Als een prijs nog onder het koop signaal is, kan het koopsignaal nog gekocht worden.', date: '18-06-2025' },
-        { id: 1, description: 'tabel met berekende data: waardeverdeling, marketcap, intrinsieke waarde', date: '18-06-2025' },
-        { id: 1, description: 'intrinsieke waarde kunnen invullen en opslaan bij het bijhorende kwartaal en aandeel', date: '24-06-2025' },
-        { id: 1, description: 'intrinsieke waarde kunnen berekenen aan de hand van FCF, zie python_file ', date: '24-06-2025' },
-        { id: 1, description: 'cik toevoegen aan stocks TABEL??', date: '24-06-2025' },
+        { id: 10, description: 'ETF en crypto toevoegen aan watchlist', date: '18-06-2025' },
+        { id: 11, description: 'Als een prijs nog onder het koop signaal is, kan het koopsignaal nog gekocht worden.', date: '18-06-2025' },
+        { id: 12, description: 'tabel met berekende data: waardeverdeling, marketcap, intrinsieke waarde', date: '18-06-2025' },
+        { id: 13, description: 'intrinsieke waarde kunnen invullen en opslaan bij het bijhorende kwartaal en aandeel', date: '24-06-2025' },
+        { id: 14, description: 'intrinsieke waarde kunnen berekenen aan de hand van FCF, zie python_file ', date: '24-06-2025' },
+        { id: 15, description: 'cik toevoegen aan stocks TABEL??', date: '24-06-2025' },
     
     ], // Deze categorie wordt niet weergegeven omdat deze leeg is
     aandelen: [
@@ -22,10 +22,10 @@ function ToDo() {
       { id: 4, description: 'Onderzoek nieuwe beleggingsmogelijkheden', date: '2025-06-22' },
     ],
     data: [
-        { id: 5, description: 'handmatig data kunnen toevoegen', date: '2025-06-28' },
-        { id: 5, description: 'controle dubbele gegevens/ontbrekende gegevens, opeenvolgende FP, max 4 gegevens in 1 jaar (of 13 maanden)', date: '2025-06-28' },
-        { id: 5, description: 'filteren van bestaande fundamentele data tabel', date: '2025-06-28' },
-        { id: 5, description: 'data kunnen toevoegen via sec', date: '2025-06-28' },
+        { id: 50, description: 'handmatig data kunnen toevoegen', date: '2025-06-28' },
+        { id: 51, description: 'controle dubbele gegevens/ontbrekende gegevens, opeenvolgende FP, max 4 gegevens in 1 jaar (of 13 maanden)', date: '2025-06-28' },
+        { id: 52, description: 'filteren van bestaande fundamentele data tabel', date: '2025-06-28' },
+        { id: 53, description: 'data kunnen toevoegen via sec', date: '2025-06-28' },
     ],
     update: [
       { id: 6, description: 'Voer systeemupdates uit', date: '25-06-2025' },
