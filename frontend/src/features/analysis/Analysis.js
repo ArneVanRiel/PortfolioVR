@@ -91,6 +91,7 @@ const Analysis = () => {
 
   // States for calculations
   const [calculationResult, setCalculationResult] = useState(null);
+  const [existingCalculations, setExistingCalculations] = useState([]);
   const [isCalculating, setIsCalculating] = useState(false);
   const [calculationError, setCalculationError] = useState('');
 
@@ -121,6 +122,20 @@ const Analysis = () => {
       setError('Could not fetch existing fundamental data.');
       console.error('Error fetching existing fundamental data:', err);
       setExistingFundamentalData([]);
+    }
+  }, [selectedStock]);
+
+  const fetchExistingCalculations = useCallback(async () => {
+    if (!selectedStock) {
+      setExistingCalculations([]);
+      return;
+    }
+    try {
+      const response = await http.get(`/calculations/${selectedStock.stock_id}`);
+      setExistingCalculations(response.data);
+    } catch (err) {
+      console.error('Error fetching existing calculations:', err);
+      // Do not set a general error message, as it might not be critical
     }
   }, [selectedStock]);
 
@@ -215,6 +230,7 @@ const Analysis = () => {
     if (selectedStock) {
         fetchExistingFundamentalData();
         fetchSingleStockAnalysis();
+        fetchExistingCalculations();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStock, selectedAnalysisDate]);
@@ -350,7 +366,7 @@ const Analysis = () => {
     validatePeriodDates();
   }, [validatePeriodDates]);
 
-  const handleRunCalculation = async () => {
+  const handleRunCalculation = async (periodEndDate = null) => {
     if (!selectedStock) {
       setCalculationError('Please select a stock first.');
       return;
@@ -359,8 +375,10 @@ const Analysis = () => {
     setCalculationError('');
     setCalculationResult(null);
     try {
-      const response = await http.post(`/calculations/${selectedStock.stock_id}`);
+      const response = await http.post(`/calculations/${selectedStock.stock_id}`, { period_end_date: periodEndDate });
       setCalculationResult(response.data.data);
+      // After a calculation, refresh the list of existing calculations
+      fetchExistingCalculations(); 
     } catch (err) {
       setCalculationError(`Error running calculation: ${err.response?.data?.message || err.message}`);
       console.error('Error running calculation:', err);
@@ -775,16 +793,72 @@ const Analysis = () => {
                   <div className="flex justify-center mb-4">
                     <button
                       onClick={handleRunCalculation}
-                      disabled={isCalculating}
+                      disabled={
+                        isCalculating ||
+                        singleStockAnalysisResult?.completeness < 100 ||
+                        (singleStockAnalysisResult?.latest_period_end_date && existingCalculations.some(calc => 
+                            new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(singleStockAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
+                        ))
+                      }
                       className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
+                      title={
+                        singleStockAnalysisResult?.completeness < 100
+                          ? "Nieuwe berekening is pas mogelijk als de datacompleetheid 100% is."
+                          : (singleStockAnalysisResult?.latest_period_end_date && existingCalculations.some(calc => 
+                              new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(singleStockAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
+                            ))
+                          ? "Er is al een berekening voor de meest recente periode."
+                          : "Start een nieuwe berekening voor de meest recente periode."
+                      }
                     >
-                      {isCalculating ? 'Berekenen...' : 'Start Berekening'}
+                      {isCalculating ? 'Berekenen...' : 'Start Nieuwe Berekening'}
                     </button>
                   </div>
                   {calculationError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">{calculationError}</div>}
+                  
+                  {/* Display Existing Calculations */}
+                  <div className="mt-8">
+                    <h3 className="text-2xl font-bold mb-4">Bestaande Berekeningen</h3>
+                    {existingCalculations.length > 0 ? (
+                      <div className="overflow-x-auto">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period End Date</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Koopmarge</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calculation Date</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {existingCalculations.map((calc) => (
+                              <tr key={calc.id}>
+                                <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.period_end_date).toLocaleDateString()}</td>
+                                <td className="px-6 py-4 whitespace-nowrap">{calc.intrinsieke_waarde}</td>
+                                <td className="px-6 py-4 whitespace-nowrap">{calc.koopmarge}</td>
+                                <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.calculation_date).toLocaleString()}</td>
+                                <td className="px-6 py-4 whitespace-nowrap">
+                                  <button
+                                    onClick={() => handleRunCalculation(calc.period_end_date)} // Pass period_end_date to recalculate
+                                    className="text-indigo-600 hover:text-indigo-900"
+                                  >
+                                    Herberekenen
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p>Geen bestaande berekeningen gevonden voor dit aandeel.</p>
+                    )}
+                  </div>
+
                   {calculationResult && (
-                    <div className="bg-white shadow-md rounded-lg p-6">
-                      <h3 className="text-2xl font-bold mb-4">Calculation Results</h3>
+                    <div className="bg-white shadow-md rounded-lg p-6 mt-8">
+                      <h3 className="text-2xl font-bold mb-4">Nieuwste Berekeningsresultaat</h3>
                       <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
                         <dt className="font-semibold">Intrinsic Value:</dt>
                         <dd>{calculationResult.intrinsieke_waarde}</dd>
