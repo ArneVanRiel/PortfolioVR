@@ -8,6 +8,8 @@ import StockList from './StockList';
 import AddData from './AddData';
 import DataCompleteness from './DataCompleteness';
 import ExistingData from './ExistingData';
+import CalculationFormulas from './CalculationFormulas';
+import CalculationDataModal from './CalculationDataModal';
 
 const dataPeriods = {
   StockholdersEquity: 44 * 3,
@@ -99,6 +101,10 @@ const Analysis = () => {
   const [existingCalculations, setExistingCalculations] = useState([]);
   const [isCalculating, setIsCalculating] = useState(false);
   const [calculationError, setCalculationError] = useState('');
+  const [showFormulas, setShowFormulas] = useState(false);
+  const [showDataModal, setShowDataModal] = useState(false);
+  const [modalData, setModalData] = useState(null);
+  const [modalError, setModalError] = useState('');
 
   const fetchStocks = useCallback(async () => {
     try {
@@ -400,6 +406,19 @@ const Analysis = () => {
   useEffect(() => {
     validatePeriodDates();
   }, [validatePeriodDates]);
+
+  const handleShowDataModal = async (calculationId) => {
+    setShowDataModal(true);
+    setModalError('');
+    setModalData(null);
+    try {
+      const response = await http.get(`/calculations/${calculationId}/fundamental-data`);
+      setModalData(response.data);
+    } catch (err) {
+      setModalError('Could not load data for this calculation.');
+      console.error('Error fetching calculation data:', err);
+    }
+  };
 
   const handleRunCalculation = async (periodEndDate = null) => {
     if (!selectedStock) {
@@ -873,7 +892,16 @@ const Analysis = () => {
                   {calculationError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">{calculationError}</div>}
                   
                   <div className="mt-8">
-                    <h3 className="text-2xl font-bold mb-4">Bestaande Berekeningen</h3>
+                    <div className="flex justify-between items-center mb-4">
+                      <h3 className="text-2xl font-bold">Bestaande Berekeningen</h3>
+                      <button 
+                        onClick={() => setShowFormulas(!showFormulas)}
+                        className="text-sm text-blue-600 hover:underline"
+                      >
+                        {showFormulas ? 'Verberg' : 'Toon'} Formules
+                      </button>
+                    </div>
+                    {showFormulas && <CalculationFormulas />}
                     {existingCalculations.length > 0 ? (
                       <div className="overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200">
@@ -890,7 +918,7 @@ const Analysis = () => {
                             {existingCalculations.map((calc) => (
                               <tr key={calc.id}>
                                 <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.period_end_date).toLocaleDateString()}</td>
-                                <td className="px-6 py-4 whitespace-nowrap">{calc.intrinsieke_waarde}</td>
+                                <td className="px-6 py-4 whitespace-nowrap cursor-pointer text-blue-600 hover:underline" onClick={() => handleShowDataModal(calc.id)}>{calc.intrinsieke_waarde}</td>
                                 <td className="px-6 py-4 whitespace-nowrap">{calc.waarde_verdeling}</td>
                                 <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.calculation_date).toLocaleString()}</td>
                                 <td className="px-6 py-4 whitespace-nowrap">
@@ -1000,6 +1028,13 @@ const Analysis = () => {
           </div>
         </Modal>
       )}
+
+      <CalculationDataModal
+        isOpen={showDataModal}
+        onClose={() => setShowDataModal(false)}
+        data={modalData}
+        error={modalError}
+      />
     </div>
   );
 };

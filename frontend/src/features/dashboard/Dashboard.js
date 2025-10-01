@@ -1,4 +1,6 @@
 import React from 'react';
+import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
+
 
 // Placeholder components for stats and charts
 const StatCard = ({ title, value }) => (
@@ -53,6 +55,9 @@ const Dashboard = () => {
           </div>
         </ChartCard>
       </div>
+
+      {/* Calculations Summary Table */}
+      <CalculationsSummaryTable />
 
       {/* Recent Activity Table */}
       <div className="bg-white p-6 rounded-lg shadow-md">

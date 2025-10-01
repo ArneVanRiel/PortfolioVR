@@ -192,3 +192,67 @@ exports.runCalculationForStock = async (req, res) => {
         res.status(500).send('Error running calculation.');
     }
 };
+
+exports.getLatestCalculationsSummary = async (req, res) => {
+    try {
+        const pool = await sql.connect(dbConfig);
+        const query = `
+            WITH LatestCalculations AS (
+                SELECT 
+                    sc.*,
+                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.period_end_date DESC) as rn
+                FROM 
+                    stock_calculations sc
+            )
+            SELECT 
+                s.name,
+                s.ticker_symbol,
+                lc.waarde_verdeling,
+                lc.intrinsieke_waarde,
+                lc.calculation_date
+            FROM 
+                LatestCalculations lc
+            JOIN 
+                stocks s ON lc.stock_id = s.aandeel_id
+            WHERE 
+                lc.rn = 1
+            ORDER BY 
+                lc.waarde_verdeling DESC;
+        `;
+        const result = await pool.request().query(query);
+        res.status(200).json(result.recordset);
+    } catch (error) {
+        console.error('Error fetching latest calculations summary:', error);
+        res.status(500).send('Error fetching latest calculations summary.');
+    }
+};
+
+exports.getFundamentalDataForCalculation = async (req, res) => {
+    const { calculationId } = req.params;
+    try {
+        const pool = await sql.connect(dbConfig);
+        const calculationResult = await pool.request()
+            .input('calculationId', sql.Int, calculationId)
+            .query('SELECT stock_id, period_end_date FROM stock_calculations WHERE id = @calculationId');
+
+        if (calculationResult.recordset.length === 0) {
+            return res.status(404).send('Calculation not found.');
+        }
+
+        const { stock_id, period_end_date } = calculationResult.recordset[0];
+
+        const lookbackDate = new Date(period_end_date);
+        lookbackDate.setFullYear(lookbackDate.getFullYear() - 13);
+
+        const fundamentalDataResult = await pool.request()
+            .input('stockId', sql.Int, stock_id)
+            .input('lookbackDate', sql.Date, lookbackDate)
+            .input('endDate', sql.Date, new Date(period_end_date))
+            .query(`SELECT period_end_date, data_type, value FROM fundamental_data WHERE stock_id = @stockId AND period_end_date BETWEEN @lookbackDate AND @endDate ORDER BY period_end_date DESC, data_type ASC`);
+
+        res.status(200).json(fundamentalDataResult.recordset);
+    } catch (error) {
+        console.error('Error fetching fundamental data for calculation:', error);
+        res.status(500).send('Error fetching fundamental data for calculation.');
+    }
+};
