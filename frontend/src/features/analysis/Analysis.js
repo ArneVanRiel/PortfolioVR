@@ -39,6 +39,11 @@ const Analysis = () => {
   const [selectedAnalysisDate, setSelectedAnalysisDate] = useState(formatDate(new Date()));
   const [activeTab, setActiveTab] = useState('data'); // 'data' or 'calculations'
 
+  // NEW: States for the calculations tab analysis
+  const [calculationAnalysisDate, setCalculationAnalysisDate] = useState(formatDate(new Date()));
+  const [calculationAnalysisResult, setCalculationAnalysisResult] = useState(null);
+  const [isCalculatingAnalysis, setIsCalculatingAnalysis] = useState(false);
+
   // States for manual input
   const [manualPeriodEndDate, setManualPeriodEndDate] = useState('');
   const [manualPeriodStartDate, setManualPeriodStartDate] = useState('');
@@ -135,7 +140,6 @@ const Analysis = () => {
       setExistingCalculations(response.data);
     } catch (err) {
       console.error('Error fetching existing calculations:', err);
-      // Do not set a general error message, as it might not be critical
     }
   }, [selectedStock]);
 
@@ -161,6 +165,29 @@ const Analysis = () => {
       setLoading(false);
     }
   }, [selectedStock, selectedAnalysisDate]);
+
+  // NEW: Analysis function for the calculations tab
+  const fetchAnalysisForCalculations = useCallback(async () => {
+    if (!selectedStock) {
+      setCalculationAnalysisResult(null);
+      return;
+    }
+    setIsCalculatingAnalysis(true);
+    setCalculationError(''); // Clear previous errors
+    try {
+      const response = await http.post(`/fundamental-data/single-stock-analysis/${selectedStock.stock_id}`, {
+        dataPeriods: dataPeriods,
+        selectedDate: calculationAnalysisDate,
+        maxLookbackMonths: MAX_LOOKBACK_MONTHS
+      });
+      setCalculationAnalysisResult(response.data);
+    } catch (err) {
+      setCalculationError(`Error fetching analysis for calculations: ${err.response?.data?.message || err.message}`);
+      setCalculationAnalysisResult(null);
+    } finally {
+      setIsCalculatingAnalysis(false);
+    }
+  }, [selectedStock, calculationAnalysisDate]);
 
   const fetchFiscalPeriods = useCallback(async () => {
     try {
@@ -232,8 +259,14 @@ const Analysis = () => {
         fetchSingleStockAnalysis();
         fetchExistingCalculations();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedStock, selectedAnalysisDate]);
+  }, [selectedStock, selectedAnalysisDate, fetchExistingFundamentalData, fetchSingleStockAnalysis, fetchExistingCalculations]);
+
+  // NEW: useEffect for the calculations tab analysis
+  useEffect(() => {
+    if (selectedStock && activeTab === 'calculations') {
+      fetchAnalysisForCalculations();
+    }
+  }, [selectedStock, calculationAnalysisDate, activeTab, fetchAnalysisForCalculations]);
 
   useEffect(() => {
     if (existingFundamentalData.length > 0) {
@@ -265,6 +298,8 @@ const Analysis = () => {
     setFilterDataType('');
     setCalculationResult(null);
     setCalculationError('');
+    // Reset calculation tab states as well
+    setCalculationAnalysisResult(null);
   };
 
   const handleManualValueChange = (key, value) => {
@@ -377,7 +412,6 @@ const Analysis = () => {
     try {
       const response = await http.post(`/calculations/${selectedStock.stock_id}`, { period_end_date: periodEndDate });
       setCalculationResult(response.data.data);
-      // After a calculation, refresh the list of existing calculations
       fetchExistingCalculations(); 
     } catch (err) {
       setCalculationError(`Error running calculation: ${err.response?.data?.message || err.message}`);
@@ -435,7 +469,7 @@ const Analysis = () => {
       setError('');
       console.log('Data being sent to backend:', dataToSend);
       const response = await http.post(`/fundamental-data/manual`, dataToSend);
-      alert(response.data.message); // Use alert for success message
+      alert(response.data.message);
       setManualPeriodEndDate('');
       setManualPeriodStartDate('');
       setManualFY('');
@@ -619,7 +653,6 @@ const Analysis = () => {
         return;
     }
 
-    // Set the editable data as a direct copy of the conflicting data array
     setEditedData(conflictingData);
     console.log("2. setEditedData called.");
 
@@ -633,7 +666,7 @@ const Analysis = () => {
   const handleCloseMultiDateModal = () => {
     setShowMultiDateModal(false);
     setMultiDateAnomaly(null);
-    setEditedData([]); // Reset to empty array
+    setEditedData([]);
   };
 
   const handleModalFieldChange = (index, field, value) => {
@@ -659,7 +692,6 @@ const Analysis = () => {
       setLoading(true);
       await http.put(`/fundamental-data/data-point/${id}`, { fp_id: parseInt(fp_id) });
       alert('Data point updated successfully!');
-      // Refresh data
       await fetchExistingFundamentalData();
       await fetchSingleStockAnalysis();
       handleCloseMultiDateModal();
@@ -790,25 +822,49 @@ const Analysis = () => {
               )}
               {activeTab === 'calculations' && (
                 <div>
+                  <div className="bg-white p-6 rounded-lg shadow-md mb-8">
+                    <h5 className="text-lg font-semibold text-gray-800 mb-4">Analyse voor Berekening</h5>
+                    <div className="mb-3">
+                        <label htmlFor="calculationAnalysisDate" className="block text-sm font-medium text-gray-700">Analysedatum:</label>
+                        <input
+                            type="date"
+                            id="calculationAnalysisDate"
+                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            value={calculationAnalysisDate}
+                            onChange={(e) => setCalculationAnalysisDate(e.target.value)}
+                        />
+                    </div>
+                    {isCalculatingAnalysis ? (
+                        <div>Analyse voor berekening wordt geladen...</div>
+                    ) : calculationAnalysisResult ? (
+                        <p className="font-bold">Data Compleetheid: {calculationAnalysisResult.overallCompletenessPercentage.toFixed(2)}%</p>
+                    ) : (
+                        <p>Selecteer een datum om de compleetheid te analyseren.</p>
+                    )}
+                  </div>
+
                   <div className="flex justify-center mb-4">
                     <button
-                      onClick={handleRunCalculation}
+                      onClick={() => handleRunCalculation(calculationAnalysisResult?.latest_period_end_date)}
                       disabled={
                         isCalculating ||
-                        singleStockAnalysisResult?.completeness < 100 ||
-                        (singleStockAnalysisResult?.latest_period_end_date && existingCalculations.some(calc => 
-                            new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(singleStockAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
+                        !calculationAnalysisResult ||
+                        calculationAnalysisResult?.overallCompletenessPercentage < 100 ||
+                        (calculationAnalysisResult?.latest_period_end_date && existingCalculations.some(calc =>
+                          calc.period_end_date &&
+                          new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(calculationAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
                         ))
                       }
                       className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
                       title={
-                        singleStockAnalysisResult?.completeness < 100
+                        !calculationAnalysisResult || calculationAnalysisResult?.overallCompletenessPercentage < 100
                           ? "Nieuwe berekening is pas mogelijk als de datacompleetheid 100% is."
-                          : (singleStockAnalysisResult?.latest_period_end_date && existingCalculations.some(calc => 
-                              new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(singleStockAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
-                            ))
-                          ? "Er is al een berekening voor de meest recente periode."
-                          : "Start een nieuwe berekening voor de meest recente periode."
+                          : (calculationAnalysisResult?.latest_period_end_date && existingCalculations.some(calc =>
+                            calc.period_end_date &&
+                            new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(calculationAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
+                          ))
+                            ? "Er is al een berekening voor de meest recente periode."
+                            : "Start een nieuwe berekening voor de meest recente periode."
                       }
                     >
                       {isCalculating ? 'Berekenen...' : 'Start Nieuwe Berekening'}
@@ -816,7 +872,6 @@ const Analysis = () => {
                   </div>
                   {calculationError && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">{calculationError}</div>}
                   
-                  {/* Display Existing Calculations */}
                   <div className="mt-8">
                     <h3 className="text-2xl font-bold mb-4">Bestaande Berekeningen</h3>
                     {existingCalculations.length > 0 ? (
@@ -826,7 +881,7 @@ const Analysis = () => {
                             <tr>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period End Date</th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Koopmarge</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calculation Date</th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
@@ -836,11 +891,11 @@ const Analysis = () => {
                               <tr key={calc.id}>
                                 <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.period_end_date).toLocaleDateString()}</td>
                                 <td className="px-6 py-4 whitespace-nowrap">{calc.intrinsieke_waarde}</td>
-                                <td className="px-6 py-4 whitespace-nowrap">{calc.koopmarge}</td>
+                                <td className="px-6 py-4 whitespace-nowrap">{calc.waarde_verdeling}</td>
                                 <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.calculation_date).toLocaleString()}</td>
                                 <td className="px-6 py-4 whitespace-nowrap">
                                   <button
-                                    onClick={() => handleRunCalculation(calc.period_end_date)} // Pass period_end_date to recalculate
+                                    onClick={() => handleRunCalculation(calc.period_end_date)}
                                     className="text-indigo-600 hover:text-indigo-900"
                                   >
                                     Herberekenen

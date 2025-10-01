@@ -1267,11 +1267,16 @@ const getSingleStockAnalysis = async (req, res) => {
         // Sorteer ontbrekende recente kwartalen op datum (oplopend)
         missingRecentQuarters.sort((a, b) => new Date(a.expectedDate).getTime() - new Date(b.expectedDate).getTime());
 
+        let latestPeriodEndDate = null;
+        if (relevantFundamentalData.length > 0) {
+            latestPeriodEndDate = formatDate(relevantFundamentalData[relevantFundamentalData.length - 1].period_end_date);
+        }
 
         const singleStockAnalysisResult = {
             aandeel_id: parseInt(stockId),
             ticker_symbol: tickerSymbol, // Voeg ticker_symbol toe
             selected_date: formatDate(referenceDate), // Voeg selected_date toe
+            latest_period_end_date: latestPeriodEndDate,
             overallCompletenessPercentage: overallCompletenessPercentage,
             dataTypeCompleteness: dataTypeCompleteness,
             multipleDatesPerQuarter: multipleDatesPerQuarter,
