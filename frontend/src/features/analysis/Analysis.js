@@ -10,6 +10,7 @@ import DataCompleteness from './DataCompleteness';
 import ExistingData from './ExistingData';
 import CalculationFormulas from './CalculationFormulas';
 import CalculationDataModal from './CalculationDataModal';
+import CalculationDetail from './CalculationDetail';
 
 const dataPeriods = {
   StockholdersEquity: 44 * 3,
@@ -105,6 +106,7 @@ const Analysis = () => {
   const [showDataModal, setShowDataModal] = useState(false);
   const [modalData, setModalData] = useState(null);
   const [modalError, setModalError] = useState('');
+  const [selectedCalculationDetail, setSelectedCalculationDetail] = useState(null);
 
   const fetchStocks = useCallback(async () => {
     try {
@@ -306,6 +308,7 @@ const Analysis = () => {
     setCalculationError('');
     // Reset calculation tab states as well
     setCalculationAnalysisResult(null);
+    setSelectedCalculationDetail(null);
   };
 
   const handleManualValueChange = (key, value) => {
@@ -428,9 +431,11 @@ const Analysis = () => {
     setIsCalculating(true);
     setCalculationError('');
     setCalculationResult(null);
+    setSelectedCalculationDetail(null);
     try {
       const response = await http.post(`/calculations/${selectedStock.stock_id}`, { period_end_date: periodEndDate });
       setCalculationResult(response.data.data);
+      setSelectedCalculationDetail(response.data.data);
       fetchExistingCalculations(); 
     } catch (err) {
       setCalculationError(`Error running calculation: ${err.response?.data?.message || err.message}`);
@@ -928,6 +933,12 @@ const Analysis = () => {
                                   >
                                     Herberekenen
                                   </button>
+                                  <button
+                                    onClick={() => setSelectedCalculationDetail(calc)}
+                                    className="text-green-600 hover:text-green-900 ml-4"
+                                  >
+                                    Details
+                                  </button>
                                 </td>
                               </tr>
                             ))}
@@ -939,29 +950,7 @@ const Analysis = () => {
                     )}
                   </div>
 
-                  {calculationResult && (
-                    <div className="bg-white shadow-md rounded-lg p-6 mt-8">
-                      <h3 className="text-2xl font-bold mb-4">Nieuwste Berekeningsresultaat</h3>
-                      <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-4 gap-y-2">
-                        <dt className="font-semibold">Intrinsic Value:</dt>
-                        <dd>{calculationResult.intrinsieke_waarde}</dd>
-                        <dt className="font-semibold">Selection Criteria:</dt>
-                        <dd>{calculationResult.selectiecriteria}</dd>
-                        <dt className="font-semibold">Waarde Verdeling:</dt>
-                        <dd>{calculationResult.waarde_verdeling}</dd>
-                        <dt className="font-semibold">Koopmarge:</dt>
-                        <dd>{calculationResult.koopmarge}</dd>
-                        <dt className="font-semibold">FCF Growth:</dt>
-                        <dd>{calculationResult.gem_groeipercentage_FCF}</dd>
-                        <dt className="font-semibold">FCF Stdev:</dt>
-                        <dd>{calculationResult.standaard_deviatie_FCF}</dd>
-                        <dt className="font-semibold">ROE 10Y Avg:</dt>
-                        <dd>{calculationResult.gemiddelde_stijging_ROE_10_Y}</dd>
-                        <dt className="font-semibold">ROE Stdev:</dt>
-                        <dd>{calculationResult.standaard_deviatie_ROE}</dd>
-                      </dl>
-                    </div>
-                  )}
+                  {selectedCalculationDetail && <CalculationDetail result={selectedCalculationDetail} />}
                 </div>
               )}
             </div>

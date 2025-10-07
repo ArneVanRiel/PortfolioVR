@@ -131,17 +131,33 @@ async function performCalculations(stockId, periodEndDate = null) {
         stock_id: stockId,
         calculation_date: new Date(),
         period_end_date: new Date(effectivePeriodEndDate),
+
+        // FCF Growth & Waardefactor
         gem_groeipercentage_FCF,
         standaard_deviatie_FCF,
         waardefactor_FCF,
+
+        // ROE & Waardefactor
         gemiddelde_stijging_ROE_10_Y,
         standaard_deviatie_ROE,
         waardefactor_ROE,
+
+        // LTD Equity & Waardefactor
+        ltd_equity_mean: ltdEquityMean,
         waardefactor_LTD_equity,
+
+        // Intrinsic Value Components
         intrinsieke_waarde,
+        latest_fcf_yearly_ttm: latestData.fcf_yearly_ttm,
+        dcf_sum: dcfSum,
+        discounted_terminal_value: discountedTerminalValue,
+        total_value: totalValue,
+        latest_shares_outstanding: latestData.weightedAverageNumberOfDilutedSharesOutstanding,
+
+        // Final Values
         selectiecriteria,
         waarde_verdeling,
-        koopmarge: null // Set to null as requested
+        koopmarge: null
     };
 }
 
@@ -161,35 +177,71 @@ exports.runCalculationForStock = async (req, res) => {
     const { stockId } = req.params;
     const { period_end_date } = req.body;
     try {
-        const calculationResult = await performCalculations(stockId, period_end_date);
+        // 1. Perform all calculations in memory
+        const fullCalculationResult = await performCalculations(stockId, period_end_date);
+
+        // 2. Filter the results to only include columns that exist in the database
+        const allowedColumns = [
+            'stock_id', 'calculation_date', 'period_end_date',
+            'gem_groeipercentage_FCF', 'standaard_deviatie_FCF', 'waardefactor_FCF',
+            'gemiddelde_stijging_ROE_10_Y', 'standaard_deviatie_ROE', 'waardefactor_ROE',
+            'waardefactor_LTD_equity', 'intrinsieke_waarde', 'selectiecriteria',
+            'waarde_verdeling', 'koopmarge'
+        ];
+
+        const dataToSave = {};
+        for (const col of allowedColumns) {
+            if (fullCalculationResult.hasOwnProperty(col)) {
+                dataToSave[col] = fullCalculationResult[col];
+            }
+        }
+
+        // 3. Save the filtered data to the database
         const pool = await sql.connect(dbConfig);
-        const existingRecord = await pool.request().input('stock_id', sql.Int, stockId).input('period_end_date', sql.Date, calculationResult.period_end_date).query('SELECT id FROM stock_calculations WHERE stock_id = @stock_id AND period_end_date = @period_end_date');
+        const existingRecord = await pool.request()
+            .input('stock_id', sql.Int, stockId)
+            .input('period_end_date', sql.Date, dataToSave.period_end_date)
+            .query('SELECT id FROM stock_calculations WHERE stock_id = @stock_id AND period_end_date = @period_end_date');
+
         const request = pool.request();
-        for (const key in calculationResult) {
-            const value = calculationResult[key];
+        
+        for (const key in dataToSave) {
+            const value = dataToSave[key];
             if (value === null || value === undefined) continue;
+            
             let type;
-            if (key.includes('date')) type = sql.DateTime;
-            else if (Number.isInteger(value)) type = sql.Int;
-            else type = sql.Decimal(18, 4);
+            if (key.includes('date')) {
+                type = sql.DateTime;
+            } else if (key === 'selectiecriteria') {
+                type = sql.Int;
+            } else {
+                // Default to Decimal for other numeric types as per the table schema
+                type = sql.Decimal(18, 4);
+            }
+            
             request.input(key, type, value);
         }
+
         let query;
         if (existingRecord.recordset.length > 0) {
             const updateId = existingRecord.recordset[0].id;
             request.input('id', sql.Int, updateId);
-            const setClauses = Object.keys(calculationResult).filter(key => calculationResult[key] !== null && calculationResult[key] !== undefined).map(key => `${key} = @${key}`).join(', ');
+            const setClauses = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined).map(key => `${key} = @${key}`).join(', ');
             query = `UPDATE stock_calculations SET ${setClauses}, updated_at = GETDATE() WHERE id = @id`;
         } else {
-            const columns = Object.keys(calculationResult).filter(key => calculationResult[key] !== null && calculationResult[key] !== undefined).join(', ');
-            const values = Object.keys(calculationResult).filter(key => calculationResult[key] !== null && calculationResult[key] !== undefined).map(key => `@${key}`).join(', ');
+            const columns = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined).join(', ');
+            const values = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined).map(key => `@${key}`).join(', ');
             query = `INSERT INTO stock_calculations (${columns}) VALUES (${values})`;
         }
+        
         await request.query(query);
-        res.status(201).json({ message: 'Calculation successful and data saved.', data: calculationResult });
+
+        // 4. Return the FULL calculation result to the frontend
+        res.status(201).json({ message: 'Calculation successful and data saved.', data: fullCalculationResult });
+
     } catch (error) {
         console.error('Error running calculation:', error);
-        res.status(500).send('Error running calculation.');
+        res.status(500).send(`Error running calculation: ${error.message}`);
     }
 };
 
