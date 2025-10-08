@@ -87,11 +87,31 @@ async function performCalculations(stockId, periodEndDate = null) {
     if (!latestData) throw new Error('Could not determine latest data point for calculation.');
 
     const fcfGrowthRates = [];
-    for (let i = 4; i < quarterlyData.length; i += 4) {
-        const currentYearFcf = quarterlyData[i].fcf_yearly_ttm;
-        const prevYearFcf = getShiftedValue(quarterlyData, i, -4)?.fcf_yearly_ttm;
-        if (currentYearFcf && prevYearFcf) fcfGrowthRates.push((currentYearFcf / prevYearFcf) - 1);
+    const shift_yr = 4; // For quarterly data
+
+    // Loop through the past 10 years (40 quarters) to gather historical growth rates
+    for (let i = 0; i < 40 && (quarterlyData.length - 1 - i) >= 0; i++) {
+        const currentQuarterIndex = quarterlyData.length - 1 - i;
+        
+        // For each of these historical quarters, calculate growth rates over 1 to 10 years
+        for (let years = 1; years <= 10; years++) {
+            const periods = years * shift_yr;
+            const prevQuarterIndex = currentQuarterIndex - periods;
+
+            if (prevQuarterIndex >= 0) {
+                const currentFcf = quarterlyData[currentQuarterIndex].fcf_yearly_ttm;
+                const prevFcf = quarterlyData[prevQuarterIndex].fcf_yearly_ttm;
+
+                if (currentFcf && prevFcf && prevFcf !== 0) {
+                    const growthRate = Math.pow(currentFcf / prevFcf, 1 / years) - 1;
+                    if (isFinite(growthRate)) {
+                        fcfGrowthRates.push(growthRate);
+                    }
+                }
+            }
+        }
     }
+
     const gem_groeipercentage_FCF = calculateMean(fcfGrowthRates);
     const standaard_deviatie_FCF = calculateStdDev(fcfGrowthRates);
     const waardefactor_FCF = standaard_deviatie_FCF ? gem_groeipercentage_FCF / (standaard_deviatie_FCF * standaard_deviatie_FCF) : 0;
@@ -101,9 +121,9 @@ async function performCalculations(stockId, periodEndDate = null) {
     const standaard_deviatie_ROE = calculateStdDev(roe10YWindow);
     const waardefactor_ROE = gemiddelde_stijging_ROE_10_Y - standaard_deviatie_ROE;
 
-    const ltdEquity2QWindow = getRollingWindow(quarterlyData, quarterlyData.length - 1, 2).map(r => r.ltd_s_equity);
-    const ltdEquityMean = calculateMean(ltdEquity2QWindow);
-    const waardefactor_LTD_equity = ltdEquityMean ? 2 * Math.pow(0.5 / (0.5 + ltdEquityMean), 2) : 0;
+    const ltdEquity4QWindow = getRollingWindow(quarterlyData, quarterlyData.length - 1, 4).map(r => r.ltd_s_equity);
+    const ltdEquityMean = calculateMean(ltdEquity4QWindow);
+    const waardefactor_LTD_equity = ltdEquityMean;
 
     const discountRate = 0.15, terminalGrowthRate = 0.02;
     let dcfSum = 0;
@@ -180,24 +200,31 @@ exports.runCalculationForStock = async (req, res) => {
         // 1. Perform all calculations in memory
         const fullCalculationResult = await performCalculations(stockId, period_end_date);
 
-        // 2. Filter the results to only include columns that exist in the database
-        const allowedColumns = [
-            'stock_id', 'calculation_date', 'period_end_date',
-            'gem_groeipercentage_FCF', 'standaard_deviatie_FCF', 'waardefactor_FCF',
-            'gemiddelde_stijging_ROE_10_Y', 'standaard_deviatie_ROE', 'waardefactor_ROE',
-            'waardefactor_LTD_equity', 'intrinsieke_waarde', 'selectiecriteria',
-            'waarde_verdeling', 'koopmarge'
-        ];
+        const pool = await sql.connect(dbConfig);
 
+        // Get actual columns from the database schema
+        const schemaResult = await pool.request().query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'stock_calculations'
+        `);
+        const dbColumns = schemaResult.recordset.map(row => row.COLUMN_NAME);
+
+        // 2. Filter the results to only include columns that exist in the database
         const dataToSave = {};
-        for (const col of allowedColumns) {
+        for (const col of dbColumns) {
             if (fullCalculationResult.hasOwnProperty(col)) {
                 dataToSave[col] = fullCalculationResult[col];
             }
         }
+        
+        // Make sure essential keys are present
+        if (!dataToSave.stock_id) dataToSave.stock_id = stockId;
+        if (!dataToSave.period_end_date) dataToSave.period_end_date = new Date(period_end_date);
+        if (!dataToSave.calculation_date) dataToSave.calculation_date = new Date();
+
 
         // 3. Save the filtered data to the database
-        const pool = await sql.connect(dbConfig);
         const existingRecord = await pool.request()
             .input('stock_id', sql.Int, stockId)
             .input('period_end_date', sql.Date, dataToSave.period_end_date)
@@ -212,10 +239,12 @@ exports.runCalculationForStock = async (req, res) => {
             let type;
             if (key.includes('date')) {
                 type = sql.DateTime;
-            } else if (key === 'selectiecriteria') {
+            } else if (key === 'selectiecriteria' || key === 'stock_id') {
                 type = sql.Int;
-            } else {
-                // Default to Decimal for other numeric types as per the table schema
+            } else if (['latest_fcf_yearly_ttm', 'dcf_sum', 'discounted_terminal_value', 'total_value', 'latest_shares_outstanding'].includes(key)) {
+                type = sql.Decimal(24, 4);
+            }
+            else {
                 type = sql.Decimal(18, 4);
             }
             
@@ -226,18 +255,20 @@ exports.runCalculationForStock = async (req, res) => {
         if (existingRecord.recordset.length > 0) {
             const updateId = existingRecord.recordset[0].id;
             request.input('id', sql.Int, updateId);
-            const setClauses = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined).map(key => `${key} = @${key}`).join(', ');
+            const setClauses = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined && key !== 'id').map(key => `${key} = @${key}`).join(', ');
             query = `UPDATE stock_calculations SET ${setClauses}, updated_at = GETDATE() WHERE id = @id`;
         } else {
-            const columns = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined).join(', ');
-            const values = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined).map(key => `@${key}`).join(', ');
+            const columns = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined && key !== 'id').join(', ');
+            const values = Object.keys(dataToSave).filter(key => dataToSave[key] !== null && dataToSave[key] !== undefined && key !== 'id').map(key => `@${key}`).join(', ');
             query = `INSERT INTO stock_calculations (${columns}) VALUES (${values})`;
         }
         
-        await request.query(query);
+        if (Object.keys(dataToSave).length > 3) { // only run query if there is data to save
+             await request.query(query);
+        }
 
         // 4. Return the FULL calculation result to the frontend
-        res.status(201).json({ message: 'Calculation successful and data saved.', data: fullCalculationResult });
+        res.status(201).json({ message: 'Calculation successful. Data saved to existing columns.', data: fullCalculationResult });
 
     } catch (error) {
         console.error('Error running calculation:', error);
@@ -249,10 +280,18 @@ exports.getLatestCalculationsSummary = async (req, res) => {
     try {
         const pool = await sql.connect(dbConfig);
         const query = `
-            WITH LatestCalculations AS (
+            WITH MaxWaarde AS (
+                SELECT 
+                    stock_id, 
+                    MAX(waarde_verdeling) as max_waarde_verdeling,
+                    COUNT(id) as num_calculations
+                FROM stock_calculations
+                GROUP BY stock_id
+            ),
+            LatestCalculations AS (
                 SELECT 
                     sc.*,
-                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.period_end_date DESC) as rn
+                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.calculation_date DESC) as rn
                 FROM 
                     stock_calculations sc
             )
@@ -261,11 +300,15 @@ exports.getLatestCalculationsSummary = async (req, res) => {
                 s.ticker_symbol,
                 lc.waarde_verdeling,
                 lc.intrinsieke_waarde,
-                lc.calculation_date
+                lc.period_end_date,
+                mw.max_waarde_verdeling,
+                mw.num_calculations
             FROM 
                 LatestCalculations lc
             JOIN 
                 stocks s ON lc.stock_id = s.aandeel_id
+            JOIN
+                MaxWaarde mw ON lc.stock_id = mw.stock_id
             WHERE 
                 lc.rn = 1
             ORDER BY 
@@ -306,5 +349,24 @@ exports.getFundamentalDataForCalculation = async (req, res) => {
     } catch (error) {
         console.error('Error fetching fundamental data for calculation:', error);
         res.status(500).send('Error fetching fundamental data for calculation.');
+    }
+};
+
+exports.deleteCalculation = async (req, res) => {
+    const { id } = req.params;
+    try {
+        const pool = await sql.connect(dbConfig);
+        const result = await pool.request()
+            .input('id', sql.Int, id)
+            .query('DELETE FROM stock_calculations WHERE id = @id');
+        
+        if (result.rowsAffected[0] > 0) {
+            res.status(200).json({ message: 'Calculation deleted successfully.' });
+        } else {
+            res.status(404).json({ message: 'Calculation not found.' });
+        }
+    } catch (error) {
+        console.error('Error deleting calculation:', error);
+        res.status(500).send('Error deleting calculation.');
     }
 };

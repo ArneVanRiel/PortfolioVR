@@ -107,6 +107,38 @@ const Analysis = () => {
   const [modalData, setModalData] = useState(null);
   const [modalError, setModalError] = useState('');
   const [selectedCalculationDetail, setSelectedCalculationDetail] = useState(null);
+  const [showDeleteCalcConfirmModal, setShowDeleteCalcConfirmModal] = useState(false);
+  const [calcToDelete, setCalcToDelete] = useState(null);
+
+  const handleDeleteCalculationClick = (calculation) => {
+    setCalcToDelete(calculation);
+    setShowDeleteCalcConfirmModal(true);
+  };
+
+  const handleCancelDeleteCalculation = () => {
+    setShowDeleteCalcConfirmModal(false);
+    setCalcToDelete(null);
+  };
+
+  const handleConfirmDeleteCalculation = async () => {
+    if (!calcToDelete) return;
+    try {
+      setLoading(true);
+      await http.delete(`/calculations/${calcToDelete.id}`);
+      alert('Calculation deleted successfully.');
+      setShowDeleteCalcConfirmModal(false);
+      setCalcToDelete(null);
+      fetchExistingCalculations();
+      if (selectedCalculationDetail && selectedCalculationDetail.id === calcToDelete.id) {
+        setSelectedCalculationDetail(null);
+      }
+    } catch (err) {
+      setError(`Error deleting calculation: ${err.response?.data?.message || err.message}`);
+      console.error('Error deleting calculation:', err);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const fetchStocks = useCallback(async () => {
     try {
@@ -912,24 +944,33 @@ const Analysis = () => {
                         <table className="min-w-full divide-y divide-gray-200">
                           <thead className="bg-gray-50">
                             <tr>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period End Date</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period End</th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
-                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Calculation Date</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">FCF Groei</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">WF FCF</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">WF ROE</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">WF LTD/E</th>
+                              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Criteria</th>
                               <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
                             </tr>
                           </thead>
                           <tbody className="bg-white divide-y divide-gray-200">
                             {existingCalculations.map((calc) => (
                               <tr key={calc.id}>
-                                <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.period_end_date).toLocaleDateString()}</td>
-                                <td className="px-6 py-4 whitespace-nowrap cursor-pointer text-blue-600 hover:underline" onClick={() => handleShowDataModal(calc.id)}>{calc.intrinsieke_waarde}</td>
-                                <td className="px-6 py-4 whitespace-nowrap">{calc.waarde_verdeling}</td>
-                                <td className="px-6 py-4 whitespace-nowrap">{new Date(calc.calculation_date).toLocaleString()}</td>
-                                <td className="px-6 py-4 whitespace-nowrap">
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{new Date(calc.period_end_date).toLocaleDateString()}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{typeof calc.intrinsieke_waarde === 'number' ? calc.intrinsieke_waarde.toFixed(2) : 'N/A'}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{typeof calc.waarde_verdeling === 'number' ? calc.waarde_verdeling.toFixed(4) : 'N/A'}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{typeof calc.gem_groeipercentage_FCF === 'number' ? (calc.gem_groeipercentage_FCF * 100).toFixed(2) + '%' : 'N/A'}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{typeof calc.waardefactor_FCF === 'number' ? calc.waardefactor_FCF.toFixed(4) : 'N/A'}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{typeof calc.waardefactor_ROE === 'number' ? calc.waardefactor_ROE.toFixed(4) : 'N/A'}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{typeof calc.waardefactor_LTD_equity === 'number' ? calc.waardefactor_LTD_equity.toFixed(4) : 'N/A'}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">{calc.selectiecriteria} / 5</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm">
                                   <button
                                     onClick={() => handleRunCalculation(calc.period_end_date)}
                                     className="text-indigo-600 hover:text-indigo-900"
+                                    title="Herberekenen voor deze periode"
                                   >
                                     Herberekenen
                                   </button>
@@ -938,6 +979,13 @@ const Analysis = () => {
                                     className="text-green-600 hover:text-green-900 ml-4"
                                   >
                                     Details
+                                  </button>
+                                  <button
+                                    onClick={() => handleDeleteCalculationClick(calc)}
+                                    className="text-red-600 hover:text-red-900 ml-4"
+                                    title="Verwijder deze berekening"
+                                  >
+                                    Verwijderen
                                   </button>
                                 </td>
                               </tr>
@@ -1024,6 +1072,25 @@ const Analysis = () => {
         data={modalData}
         error={modalError}
       />
+
+      {showDeleteCalcConfirmModal && calcToDelete && (
+        <Modal isOpen={showDeleteCalcConfirmModal} onClose={handleCancelDeleteCalculation}>
+          <div className="p-6">
+            <h5 className="text-lg font-bold text-red-600">Bevestig Verwijdering</h5>
+            <p className="mt-2">
+              Weet je zeker dat je de berekening voor de periode eindigend op {new Date(calcToDelete.period_end_date).toLocaleDateString()} wilt verwijderen?
+            </p>
+            <div className="mt-6 flex justify-end space-x-4">
+              <button type="button" className="bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded" onClick={handleCancelDeleteCalculation}>
+                Annuleren
+              </button>
+              <button type="button" className="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded" onClick={handleConfirmDeleteCalculation}>
+                Verwijderen
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 };

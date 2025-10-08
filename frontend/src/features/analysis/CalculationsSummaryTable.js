@@ -26,6 +26,10 @@ const CalculationsSummaryTable = () => {
         fetchSummary();
     }, []);
 
+    const totalWaardeVerdeling = summaryData
+        .filter(item => item.waarde_verdeling > 0)
+        .reduce((sum, item) => sum + item.waarde_verdeling, 0);
+
     if (loading) {
         return <p className="text-gray-500">Overzichtstabel wordt geladen...</p>;
     }
@@ -43,19 +47,40 @@ const CalculationsSummaryTable = () => {
                         <tr>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Aandeel</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Verschil Max</th>
+                            <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Percentage</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Intrinsieke Waarde</th>
                             <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Berekeningsdatum</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                        {summaryData.map((item) => (
-                            <tr key={item.ticker_symbol}>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.name} ({item.ticker_symbol})</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.waarde_verdeling?.toFixed(2)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.intrinsieke_waarde?.toFixed(2)}</td>
-                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(item.calculation_date).toLocaleDateString()}</td>
-                            </tr>
-                        ))}
+                        {summaryData.map((item) => {
+                            const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0
+                                ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
+                                : 0;
+
+                            let diffPercentage = null;
+                            if (item.num_calculations > 1 && item.max_waarde_verdeling) {
+                                diffPercentage = (item.waarde_verdeling / item.max_waarde_verdeling - 1) * 100;
+                            }
+
+                            return (
+                                <tr key={item.ticker_symbol}>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">{item.name} ({item.ticker_symbol})</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.waarde_verdeling?.toFixed(2)}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                                        {diffPercentage !== null && (
+                                            <span className={`${diffPercentage >= -0.001 ? 'text-green-600' : 'text-red-600'}`}>
+                                                {diffPercentage >= -0.001 ? '+' : ''}{diffPercentage.toFixed(2)}%
+                                            </span>
+                                        )}
+                                    </td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{percentage.toFixed(2)}%</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{item.intrinsieke_waarde?.toFixed(2)}</td>
+                                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(item.calculation_date).toLocaleDateString()}</td>
+                                </tr>
+                            );
+                        })}
                     </tbody>
                 </table>
             </div>

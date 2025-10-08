@@ -14,4 +14,9 @@ router.post('/:stockId', calculationController.runCalculationForStock);
 // Route to get fundamental data for a specific calculation
 router.get('/:calculationId/fundamental-data', calculationController.getFundamentalDataForCalculation);
 
+
+// Route to delete a calculation
+router.delete('/:id', calculationController.deleteCalculation);
+
 module.exports = router;
+
