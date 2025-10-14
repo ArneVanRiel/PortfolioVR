@@ -352,6 +352,70 @@ exports.getFundamentalDataForCalculation = async (req, res) => {
     }
 };
 
+
+exports.getSummaryByDate = async (req, res) => {
+    const { date } = req.query;
+
+    if (!date) {
+        return res.status(400).send('A date is required.');
+    }
+
+    try {
+        const pool = await sql.connect(dbConfig);
+        const query = `
+            WITH CalculationsOnOrBeforeDate AS (
+                SELECT 
+                    sc.*,
+                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.period_end_date DESC, sc.calculation_date DESC) as rn
+                FROM 
+                    stock_calculations sc
+                WHERE 
+                    CAST(sc.period_end_date AS DATE) <= @date
+            ),
+            LatestCalculations AS (
+                SELECT * FROM CalculationsOnOrBeforeDate WHERE rn = 1
+            ),
+            HighestPreviousWaarde AS (
+                SELECT 
+                    lc.id as calculation_id,
+                    MAX(prev_sc.waarde_verdeling) as highest_previous_waarde_verdeling
+                FROM 
+                    LatestCalculations lc
+                LEFT JOIN 
+                    stock_calculations prev_sc ON lc.stock_id = prev_sc.stock_id AND prev_sc.period_end_date < lc.period_end_date
+                GROUP BY
+                    lc.id
+            )
+            SELECT 
+                s.name,
+                s.ticker_symbol,
+                lc.id as calculation_id, -- Added for key prop in frontend
+                lc.stock_id, -- Added for navigation
+                lc.waarde_verdeling,
+                lc.intrinsieke_waarde,
+                lc.calculation_date,
+                lc.period_end_date, -- Make sure to return this
+                hpw.highest_previous_waarde_verdeling
+            FROM 
+                LatestCalculations lc
+            JOIN 
+                stocks s ON lc.stock_id = s.aandeel_id
+            LEFT JOIN
+                HighestPreviousWaarde hpw ON lc.id = hpw.calculation_id
+            ORDER BY 
+                lc.waarde_verdeling DESC;
+        `;
+        const result = await pool.request()
+            .input('date', sql.Date, date)
+            .query(query);
+        
+        res.status(200).json(result.recordset);
+    } catch (error) {
+        console.error('Error fetching calculations summary by date:', error);
+        res.status(500).send('Error fetching calculations summary by date.');
+    }
+};
+
 exports.deleteCalculation = async (req, res) => {
     const { id } = req.params;
     try {

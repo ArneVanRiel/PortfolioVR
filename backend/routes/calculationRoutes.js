@@ -5,6 +5,9 @@ const calculationController = require('../controllers/calculationController');
 // Route to get the latest calculations summary for all stocks
 router.get('/latest-summary', calculationController.getLatestCalculationsSummary);
 
+// Route to get calculations summary by date
+router.get('/summary-by-date', calculationController.getSummaryByDate);
+
 // Route to get existing calculations for a specific stock
 router.get('/:stockId', calculationController.getCalculationsForStock);
 

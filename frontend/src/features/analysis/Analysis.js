@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import http from '../../http-common';
 import Modal from '../../components/ui/modal';
 
@@ -109,6 +109,20 @@ const Analysis = () => {
   const [selectedCalculationDetail, setSelectedCalculationDetail] = useState(null);
   const [showDeleteCalcConfirmModal, setShowDeleteCalcConfirmModal] = useState(false);
   const [calcToDelete, setCalcToDelete] = useState(null);
+
+  const { stockId: urlStockId, tab: urlTab } = useParams();
+
+  useEffect(() => {
+    if (urlStockId && stocks.length > 0) {
+      const stockToSelect = stocks.find(s => s.stock_id === parseInt(urlStockId));
+      if (stockToSelect) {
+        setSelectedStock(stockToSelect);
+      }
+    }
+    if (urlTab) {
+      setActiveTab(urlTab);
+    }
+  }, [urlStockId, urlTab, stocks]);
 
   const handleDeleteCalculationClick = (calculation) => {
     setCalcToDelete(calculation);

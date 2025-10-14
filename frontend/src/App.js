@@ -117,7 +117,7 @@ function App() {
           <Routes>
             <Route path='/login' element={<LoginPageTest/>} />
             <Route path='/dashboard' element={<Dashboard/>} />
-            <Route path='/analysis' element={<Analysis/>} />
+                        <Route path='/analysis/*' element={<Analysis />} />
             <Route path='/portfolio' element={<PortfolioManager/>} />
             <Route path='/settings' element={<Settings/>} />
           </Routes>
