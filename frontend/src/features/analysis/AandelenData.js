@@ -5,6 +5,7 @@ import axios from 'axios';
 
 const API_BASE_URL = 'http://localhost:5000/api/fundamental-data'; // Endpoint for fundamental data
 const WATCHLIST_API_BASE_URL = 'http://localhost:5000/api/watchlist'; // For fetching stocks
+const SEC_IMPORT_API_URL = 'http://localhost:5000/api/sec'; // For SEC import
 
 // Define the fundamental data types you want to add/analyze
 const FUNDAMENTAL_DATA_TYPES = [
@@ -90,10 +91,10 @@ const AandelenData = () => {
 
 
   // States for SEC API input
-  const [cik, setCik] = useState(''); // CIK (Central Index Key) for SEC API
-  const [secFetchYear, setSecFetchYear] = useState(''); // Year for SEC API fetch
-  const [secFetchedData, setSecFetchedData] = useState(null); // Data fetched from SEC API, for preview
-  const [isSecFetching, setIsSecFetching] = useState(false);
+  const [secPeriodOption, setSecPeriodOption] = useState('all'); // 'all', 'last', 'lastYear'
+  const [isImporting, setIsImporting] = useState(false);
+  const [importLog, setImportLog] = useState([]);
+  const [importProgress, setImportProgress] = useState(0);
 
   // States for Alpha Vantage API input
   const [alphaVantageFunction, setAlphaVantageFunction] = useState(''); // INCOME_STATEMENT, BALANCE_SHEET, CASH_FLOW
@@ -221,7 +222,6 @@ const AandelenData = () => {
     setNearbyDateSuggestion(null); // Reset nearby date suggestion
     setCanEditMetaData(true); // Reset metadata editability
 
-    setSecFetchedData(null);
     setAlphaVantageFetchedData(null);
     setSingleStockAnalysisResult(null); // NEW: Reset analysis result
     setFilterStartDate(''); // Reset filters
@@ -409,57 +409,74 @@ const AandelenData = () => {
     }
   };
 
-  // Function to fetch SEC data
-  const fetchSecData = async () => {
-    if (!selectedStockId || !cik || !secFetchYear) {
-      setError('Please select a stock, enter CIK and year.');
+  // NEW: Function to handle SEC data import with streaming
+  const handleImportSecData = async () => {
+    if (!selectedStockTicker) {
+      setError('Please select a stock first.');
       return;
     }
-    setIsSecFetching(true);
+
+    setIsImporting(true);
+    setImportLog([]);
+    setImportProgress(0);
     setError('');
     setSuccessMessage('');
-    setSecFetchedData(null);
-    setAlphaVantageFetchedData(null);
-    try {
-      const response = await axios.post(`${API_BASE_URL}/fetch-sec`, {
-        stock_id: parseInt(selectedStockId),
-        ticker: selectedStockTicker,
-        cik: cik,
-        year: parseInt(secFetchYear)
-      });
-      setSecFetchedData(response.data.data);
-      setSuccessMessage('SEC data successfully fetched. Review and save.');
-    } catch (err) {
-      setError(`Error fetching SEC data: ${err.response?.data?.message || err.message}`);
-      console.error('Error in SEC data fetch:', err);
-    } finally {
-      setIsSecFetching(false);
-    }
-  };
 
-  // Function to save fetched SEC data
-  const handleSaveSecData = async () => {
-    if (!secFetchedData || !selectedStockId) {
-      setError('No SEC data to save or no stock selected.');
-      return;
-    }
     try {
-      setLoading(true);
-      setError('');
-      setSuccessMessage('');
-      const response = await axios.post(`${API_BASE_URL}/save-sec-fetched`, {
-        stock_id: parseInt(selectedStockId),
-        data: secFetchedData
+      const response = await fetch(`${SEC_IMPORT_API_URL}/import`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          ticker: selectedStockTicker,
+          periodOption: secPeriodOption,
+        }),
       });
-      setSuccessMessage(response.data.message);
-      setSecFetchedData(null);
-      fetchExistingFundamentalData();
-      fetchSingleStockAnalysis(); // Re-check data sufficiency
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let totalItems = 0;
+      let processedItems = 0;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+        lines.forEach(line => {
+          setImportLog(prev => [...prev, line]);
+
+          if (line.startsWith('TOTAL_ITEMS:')) {
+            totalItems = parseInt(line.split(':')[1], 10);
+          }
+
+          if (line.startsWith('✅') || line.startsWith('🔄') || line.startsWith('ℹ️')) {
+            if (totalItems > 0) {
+              processedItems++;
+              setImportProgress((processedItems / totalItems) * 100);
+            }
+          }
+        });
+      }
+
+      setSuccessMessage('Import finished successfully.');
+      fetchExistingFundamentalData(); // Refresh data table
+      fetchSingleStockAnalysis(); // Refresh analysis
+
     } catch (err) {
-      setError(`Error saving SEC data: ${err.response?.data?.message || err.message}`);
-      console.error('Error saving SEC fetched data:', err);
+      setError(`Error importing SEC data: ${err.message}`);
+      console.error('Error in SEC data import:', err);
+      setImportLog(prev => [...prev, `--- ERROR ---`, err.message]);
     } finally {
-      setLoading(false);
+      setIsImporting(false);
+      setImportProgress(100); // Ensure progress bar completes
     }
   };
 
@@ -473,7 +490,6 @@ const AandelenData = () => {
     setError('');
     setSuccessMessage('');
     setAlphaVantageFetchedData(null);
-    setSecFetchedData(null);
     try {
       const response = await axios.post(`${API_BASE_URL}/fetch-alphavantage`, {
         stock_id: parseInt(selectedStockId),
@@ -828,50 +844,80 @@ const AandelenData = () => {
                 )}
               </div>
             ) : inputMethod === 'sec_api' ? (
-              // SEC API input
+              // SEC API input - NEW IMPLEMENTATION
               <div>
                 <div className="mb-3">
-                  <label htmlFor="cik" className="form-label">CIK (Central Index Key):</label>
-                  <input
-                    type="text"
-                    id="cik"
-                    className="form-control"
-                    value={cik}
-                    onChange={(e) => setCik(e.target.value)}
-                    placeholder="Voer CIK in"
-                  />
+                    <label className="form-label">Periode Selectie:</label>
+                    <div>
+                        <div className="form-check form-check-inline">
+                        <input
+                            className="form-check-input"
+                            type="radio"
+                            name="secPeriodOption"
+                            id="secAllData"
+                            value="all"
+                            checked={secPeriodOption === 'all'}
+                            onChange={() => setSecPeriodOption('all')}
+                            disabled={isImporting}
+                        />
+                        <label className="form-check-label" htmlFor="secAllData">Alle data</label>
+                        </div>
+                        <div className="form-check form-check-inline">
+                        <input
+                            className="form-check-input"
+                            type="radio"
+                            name="secPeriodOption"
+                            id="secLastPeriod"
+                            value="last"
+                            checked={secPeriodOption === 'last'}
+                            onChange={() => setSecPeriodOption('last')}
+                            disabled={isImporting}
+                        />
+                        <label className="form-check-label" htmlFor="secLastPeriod">Laatste periode</label>
+                        </div>
+                        <div className="form-check form-check-inline">
+                        <input
+                            className="form-check-input"
+                            type="radio"
+                            name="secPeriodOption"
+                            id="secLastYear"
+                            value="lastYear"
+                            checked={secPeriodOption === 'lastYear'}
+                            onChange={() => setSecPeriodOption('lastYear')}
+                            disabled={isImporting}
+                        />
+                        <label className="form-check-label" htmlFor="secLastYear">Laatste jaar</label>
+                        </div>
+                    </div>
                 </div>
-                <div className="mb-3">
-                  <label htmlFor="secFetchYear" className="form-label">Jaar:</label>
-                  <input
-                    type="number"
-                    id="secFetchYear"
-                    className="form-control"
-                    value={secFetchYear}
-                    onChange={(e) => setSecFetchYear(e.target.value)}
-                    placeholder="Voer jaar in (bijv. 2023)"
-                  />
-                </div>
+
                 <button
                   className="btn btn-primary me-2"
-                  onClick={fetchSecData}
-                  disabled={isSecFetching || !selectedStockId || !cik || !secFetchYear}
+                  onClick={handleImportSecData}
+                  disabled={isImporting || !selectedStockTicker}
                 >
-                  {isSecFetching ? 'Bezig met ophalen...' : 'Haal SEC Data Op'}
+                  {isImporting ? 'Bezig met importeren...' : 'Importeer van SEC'}
                 </button>
-                {secFetchedData && (
-                  <button
-                    className="btn btn-success"
-                    onClick={handleSaveSecData}
-                    disabled={loading}
-                  >
-                    Sla SEC Data Op
-                  </button>
+
+                {isImporting && (
+                    <div className="progress mt-3">
+                        <div
+                            className="progress-bar progress-bar-striped progress-bar-animated"
+                            role="progressbar"
+                            style={{ width: `${importProgress}%` }}
+                            aria-valuenow={importProgress}
+                            aria-valuemin="0"
+                            aria-valuemax="100"
+                        ></div>
+                    </div>
                 )}
-                {secFetchedData && (
-                  <div className="mt-3 p-3 border rounded bg-light">
-                    <h6>Opgehaalde SEC Data Voorbeeld:</h6>
-                    <pre className="small text-muted">{JSON.stringify(secFetchedData, null, 2)}</pre>
+
+                {importLog.length > 0 && (
+                  <div className="mt-3 p-3 border rounded bg-light" style={{ maxHeight: '300px', overflowY: 'auto' }}>
+                    <h6>Import Log:</h6>
+                    <pre className="small text-muted mb-0">
+                        {importLog.join('\n')}
+                    </pre>
                   </div>
                 )}
               </div>

@@ -47,14 +47,12 @@ const AddData = ({
     handleAddManualData,
     loading,
     // SEC Props
-    cik,
-    setCik,
-    secFetchYear,
-    setSecFetchYear,
-    fetchSecData,
-    isSecFetching,
-    secFetchedData,
-    handleSaveSecData,
+    secPeriodOption,
+    setSecPeriodOption,
+    handleImportSecData,
+    isImporting,
+    importProgress,
+    importLog,
     // Alpha Vantage Props
     alphaVantageFunction,
     setAlphaVantageFunction,
@@ -266,50 +264,76 @@ const AddData = ({
                 )}
               </div>
             ) : inputMethod === 'sec_api' ? (
-              // SEC API input
+              // SEC API input - NEW IMPLEMENTATION
               <div>
                 <div className="mb-3">
-                  <label htmlFor="cik" className="block text-sm font-medium text-gray-700">CIK (Central Index Key):</label>
-                  <input
-                    type="text"
-                    id="cik"
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-                    value={cik}
-                    onChange={(e) => setCik(e.target.value)}
-                    placeholder="Voer CIK in"
-                  />
+                    <label className="block text-sm font-medium text-gray-700">Periode Selectie:</label>
+                    <div className="flex space-x-4 mt-2">
+                        <div className="flex items-center">
+                        <input
+                            className="form-radio h-4 w-4 text-blue-600"
+                            type="radio"
+                            name="secPeriodOption"
+                            id="secAllData"
+                            value="all"
+                            checked={secPeriodOption === 'all'}
+                            onChange={() => setSecPeriodOption('all')}
+                            disabled={isImporting}
+                        />
+                        <label className="ml-2 text-gray-700" htmlFor="secAllData">Alle data</label>
+                        </div>
+                        <div className="flex items-center">
+                        <input
+                            className="form-radio h-4 w-4 text-blue-600"
+                            type="radio"
+                            name="secPeriodOption"
+                            id="secLastPeriod"
+                            value="last"
+                            checked={secPeriodOption === 'last'}
+                            onChange={() => setSecPeriodOption('last')}
+                            disabled={isImporting}
+                        />
+                        <label className="ml-2 text-gray-700" htmlFor="secLastPeriod">Laatste periode</label>
+                        </div>
+                        <div className="flex items-center">
+                        <input
+                            className="form-radio h-4 w-4 text-blue-600"
+                            type="radio"
+                            name="secPeriodOption"
+                            id="secLastYear"
+                            value="lastYear"
+                            checked={secPeriodOption === 'lastYear'}
+                            onChange={() => setSecPeriodOption('lastYear')}
+                            disabled={isImporting}
+                        />
+                        <label className="ml-2 text-gray-700" htmlFor="secLastYear">Laatste jaar</label>
+                        </div>
+                    </div>
                 </div>
-                <div className="mb-3">
-                  <label htmlFor="secFetchYear" className="block text-sm font-medium text-gray-700">Jaar:</label>
-                  <input
-                    type="number"
-                    id="secFetchYear"
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-                    value={secFetchYear}
-                    onChange={(e) => setSecFetchYear(e.target.value)}
-                    placeholder="Voer jaar in (bijv. 2023)"
-                  />
-                </div>
+
                 <button
                   className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow hover:bg-blue-700 transition-colors mr-2"
-                  onClick={fetchSecData}
-                  disabled={isSecFetching || !selectedStock || !cik || !secFetchYear}
+                  onClick={handleImportSecData}
+                  disabled={isImporting || !selectedStock}
                 >
-                  {isSecFetching ? 'Bezig met ophalen...' : 'Haal SEC Data Op'}
+                  {isImporting ? 'Bezig met importeren...' : 'Importeer van SEC'}
                 </button>
-                {secFetchedData && (
-                  <button
-                    className="bg-green-600 text-white px-4 py-2 rounded-lg shadow hover:bg-green-700 transition-colors"
-                    onClick={handleSaveSecData}
-                    disabled={loading}
-                  >
-                    Sla SEC Data Op
-                  </button>
+
+                {isImporting && (
+                    <div className="w-full bg-gray-200 rounded-full h-2.5 mt-3">
+                        <div
+                            className="bg-blue-600 h-2.5 rounded-full"
+                            style={{ width: `${importProgress}%` }}
+                        ></div>
+                    </div>
                 )}
-                {secFetchedData && (
-                  <div className="mt-3 p-3 border rounded bg-gray-50">
-                    <h6 className="text-sm font-semibold text-gray-700">Opgehaalde SEC Data Voorbeeld:</h6>
-                    <pre className="text-xs text-gray-500">{JSON.stringify(secFetchedData, null, 2)}</pre>
+
+                {importLog.length > 0 && (
+                  <div className="mt-3 p-3 border rounded bg-gray-50 h-64 overflow-y-auto">
+                    <h6 className="text-sm font-semibold text-gray-700">Import Log:</h6>
+                    <pre className="text-xs text-gray-500 whitespace-pre-wrap">
+                        {importLog.join('\n')}
+                    </pre>
                   </div>
                 )}
               </div>

@@ -82,10 +82,11 @@ const Analysis = () => {
   const [editedData, setEditedData] = useState([]); // Changed to array
 
   // States for SEC API input
-  const [cik, setCik] = useState('');
-  const [secFetchYear, setSecFetchYear] = useState('');
-  const [secFetchedData, setSecFetchedData] = useState(null);
-  const [isSecFetching, setIsSecFetching] = useState(false);
+  const [secPeriodOption, setSecPeriodOption] = useState('all'); // 'all', 'last', 'lastYear'
+  const [isImporting, setIsImporting] = useState(false);
+  const [importLog, setImportLog] = useState([]);
+  const [importProgress, setImportProgress] = useState(0);
+
 
   // States for Alpha Vantage API input
   const [alphaVantageFunction, setAlphaVantageFunction] = useState('');
@@ -344,7 +345,6 @@ const Analysis = () => {
     setIsDateConfirmed(false);
     setNearbyDateSuggestion(null);
     setCanEditMetaData(true);
-    setSecFetchedData(null);
     setAlphaVantageFetchedData(null);
     setSingleStockAnalysisResult(null);
     setFilterStartDate('');
@@ -559,55 +559,6 @@ const Analysis = () => {
     }
   };
 
-  const fetchSecData = async () => {
-    if (!selectedStock || !cik || !secFetchYear) {
-      setError('Please select a stock, enter CIK and year.');
-      return;
-    }
-    setIsSecFetching(true);
-    setError('');
-    setSecFetchedData(null);
-    setAlphaVantageFetchedData(null);
-    try {
-      const response = await http.post(`/fundamental-data/fetch-sec`, {
-        stock_id: parseInt(selectedStock.stock_id),
-        ticker: selectedStock.ticker,
-        cik: cik,
-        year: parseInt(secFetchYear)
-      });
-      setSecFetchedData(response.data.data);
-      alert('SEC data successfully fetched. Review and save.');
-    } catch (err) {
-      setError(`Error fetching SEC data: ${err.response?.data?.message || err.message}`);
-      console.error('Error in SEC data fetch:', err);
-    } finally {
-      setIsSecFetching(false);
-    }
-  };
-
-  const handleSaveSecData = async () => {
-    if (!secFetchedData || !selectedStock) {
-      setError('No SEC data to save or no stock selected.');
-      return;
-    }
-    try {
-      setLoading(true);
-      setError('');
-      const response = await http.post(`/fundamental-data/save-sec-fetched`, {
-        stock_id: parseInt(selectedStock.stock_id),
-        data: secFetchedData
-      });
-      alert(response.data.message);
-      setSecFetchedData(null);
-      fetchExistingFundamentalData();
-      fetchSingleStockAnalysis();
-    } catch (err) {
-      setError(`Error saving SEC data: ${err.response?.data?.message || err.message}`);
-      console.error('Error saving SEC fetched data:', err);
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const fetchAlphaVantageData = async () => {
     if (!selectedStock || !selectedStock.ticker || !alphaVantageFunction || !alphaVantageFetchYear) {
@@ -617,7 +568,6 @@ const Analysis = () => {
     setIsAlphaVantageFetching(true);
     setError('');
     setAlphaVantageFetchedData(null);
-    setSecFetchedData(null);
     try {
       const response = await http.post(`/fundamental-data/fetch-alphavantage`, {
         stock_id: parseInt(selectedStock.stock_id),
@@ -850,14 +800,6 @@ const Analysis = () => {
                     getFiscalYearOptions={getFiscalYearOptions}
                     handleAddManualData={handleAddManualData}
                     loading={loading}
-                    cik={cik}
-                    setCik={setCik}
-                    secFetchYear={secFetchYear}
-                    setSecFetchYear={setSecFetchYear}
-                    fetchSecData={fetchSecData}
-                    isSecFetching={isSecFetching}
-                    secFetchedData={secFetchedData}
-                    handleSaveSecData={handleSaveSecData}
                     alphaVantageFunction={alphaVantageFunction}
                     setAlphaVantageFunction={setAlphaVantageFunction}
                     alphaVantageFetchYear={alphaVantageFetchYear}
