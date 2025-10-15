@@ -328,7 +328,7 @@ const AddData = ({
                     </div>
                 )}
 
-                {importLog.length > 0 && (
+                {importLog && importLog.length > 0 && (
                   <div className="mt-3 p-3 border rounded bg-gray-50 h-64 overflow-y-auto">
                     <h6 className="text-sm font-semibold text-gray-700">Import Log:</h6>
                     <pre className="text-xs text-gray-500 whitespace-pre-wrap">

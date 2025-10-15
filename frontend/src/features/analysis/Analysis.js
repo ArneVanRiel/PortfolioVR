@@ -559,6 +559,75 @@ const Analysis = () => {
     }
   };
 
+  const handleImportSecData = useCallback(async () => {
+    if (!selectedStock) {
+        setError('Please select a stock first.');
+        return;
+    }
+
+    setIsImporting(true);
+    setImportLog([`Starting import for ${selectedStock.ticker} (Period: ${secPeriodOption})...`]);
+    setImportProgress(0);
+    setError('');
+
+    try {
+        const response = await fetch(`http://localhost:5000/api/sec/import`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                ticker: selectedStock.ticker,
+                periodOption: secPeriodOption,
+            }),
+        });
+
+        if (!response.body) {
+            throw new Error('Response body is null');
+        }
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let totalItems = 0;
+        let processedItems = 0;
+
+        const read = async () => {
+            const { done, value } = await reader.read();
+            if (done) {
+                setImportLog(prev => [...prev, '\nImport process finished successfully.']);
+                setIsImporting(false);
+                // Refresh data after import
+                fetchExistingFundamentalData();
+                fetchSingleStockAnalysis();
+                return;
+            }
+
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n').filter(line => line.trim() !== '');
+
+            setImportLog(prev => [...prev, ...lines]);
+
+            lines.forEach(line => {
+                if (line.startsWith('TOTAL_ITEMS:')) {
+                    totalItems = parseInt(line.split(':')[1], 10);
+                } else if (totalItems > 0 && (line.startsWith('✅') || line.startsWith('🔄') || line.startsWith('✅ No update needed:'))) {
+                    processedItems++;
+                    const progress = Math.round((processedItems / totalItems) * 100);
+                    setImportProgress(progress);
+                }
+            });
+
+            read(); // Continue reading
+        };
+
+        read();
+
+    } catch (err) {
+        setError(`Error importing SEC data: ${err.message}`);
+        setImportLog(prev => [...prev, `\n--- ERROR ---\n${err.message}`]);
+        setIsImporting(false);
+        console.error('Error importing SEC data:', err);
+    }
+}, [selectedStock, secPeriodOption, fetchExistingFundamentalData, fetchSingleStockAnalysis]);
+
 
   const fetchAlphaVantageData = async () => {
     if (!selectedStock || !selectedStock.ticker || !alphaVantageFunction || !alphaVantageFetchYear) {
@@ -800,6 +869,12 @@ const Analysis = () => {
                     getFiscalYearOptions={getFiscalYearOptions}
                     handleAddManualData={handleAddManualData}
                     loading={loading}
+                    secPeriodOption={secPeriodOption}
+                    setSecPeriodOption={setSecPeriodOption}
+                    handleImportSecData={handleImportSecData}
+                    isImporting={isImporting}
+                    importProgress={importProgress}
+                    importLog={importLog}
                     alphaVantageFunction={alphaVantageFunction}
                     setAlphaVantageFunction={setAlphaVantageFunction}
                     alphaVantageFetchYear={alphaVantageFetchYear}
