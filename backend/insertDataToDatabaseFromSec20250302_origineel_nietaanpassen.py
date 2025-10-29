@@ -222,4 +222,4 @@ def main(ticker):
     store_data_in_db(df)
 
 # 🚀 Start de functie voor een voorbeeldticker
-main("PG")
+main("INTU")

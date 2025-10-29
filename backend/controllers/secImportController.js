@@ -26,7 +26,7 @@ const FIELDS_TO_CHECK = {
     "NetCashProvidedByUsedInOperatingActivities": ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "NetCashProvidedByUsedInInvestingActivities": ["NetCashProvidedByUsedInInvestingActivities"],
     "NetCashProvidedByUsedInFinancingActivities": ["NetCashProvidedByUsedInFinancingActivities"],
-    "PurchasesOfPropertyAndEquipment": ["PurchasesOfPropertyAndEquipment"],
+    "PurchasesOfPropertyAndEquipment": ["PurchasesOfPropertyAndEquipment", "PaymentsToAcquirePropertyPlantAndEquipment", "PurchasesOfPropertyAndEquipmentAndIntangibleAssets", "PaymentsToAcquireProductiveAssets", ],
     "Revenues": ["Revenues"],
     "WeightedAverageNumberOfDilutedSharesOutstanding": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
     "Dividend": ["PaymentsOfDividends", "CommonStockDividendsPerShareDeclared"]
