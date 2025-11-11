@@ -64,6 +64,11 @@ const CalculationsSummaryTable = () => {
                             <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Percentage</th>
                             <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Intrinsieke Waarde</th>
                             <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Period End Date</th>
+                            <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Signal Line</th>
+                            <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Type Melding</th>
+                            <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Laatste Alert</th>
+                            <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Trade Bedrag (Alert)</th>
+                            <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Aanbevolen Bedrag (Huidig)</th>
                             <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Actie</th>
                         </tr>
                     </thead>
@@ -93,6 +98,11 @@ const CalculationsSummaryTable = () => {
 
                             const highlightClass = getHighlightClass(item.period_end_date, selectedDate);
 
+                            const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
+                                ? Math.max(0, 25000 * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100)/10
+                                : null;
+
+
                             return (
                                 <tr key={item.calculation_id} >
                                     <td className="p-2 whitespace-nowrap text-sm font-medium text-gray-900">{item.name} ({item.ticker_symbol})</td>
@@ -106,6 +116,11 @@ const CalculationsSummaryTable = () => {
                                     <td className="p-2 whitespace-nowrap text-sm text-gray-500">{percentage.toFixed(2)}%</td>
                                     <td className="p-2 whitespace-nowrap text-sm text-gray-500">{item.intrinsieke_waarde?.toFixed(2)}</td>
                                     <td className={highlightClass}>{new Date(item.period_end_date).toLocaleDateString()}</td>
+                                    <td className="p-2 whitespace-nowrap text-sm text-gray-500">{item.current_signal_line?.toFixed(4)}</td>
+                                    <td className="p-2 whitespace-nowrap text-sm text-gray-500">{item.latest_alert_type || 'N/A'}</td>
+                                    <td className="p-2 whitespace-nowrap text-sm text-gray-500">{item.latest_alert_date ? new Date(item.latest_alert_date).toLocaleDateString() : 'N/A'}</td>
+                                    <td className="p-2 whitespace-nowrap text-sm text-gray-500">{item.latest_trade_amount ? `€${item.latest_trade_amount.toFixed(2)}` : 'N/A'}</td>
+                                    <td className="p-2 whitespace-nowrap text-sm text-gray-500">{currentRecommendedAmount !== null ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A'}</td>
                                     <td className="p-2 whitespace-nowrap text-right text-sm font-medium space-x-2">
                                         {highlightClass && (
                                             <button 

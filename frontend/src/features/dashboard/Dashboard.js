@@ -1,6 +1,6 @@
 import React from 'react';
 import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
-
+import WatchlistPortfolioTable from './WatchlistPortfolioTable'
 
 // Placeholder components for stats and charts
 const StatCard = ({ title, value }) => (
@@ -58,6 +58,7 @@ const Dashboard = () => {
 
       {/* Calculations Summary Table */}
       <CalculationsSummaryTable />
+      <WatchlistPortfolioTable />
 
       {/* Recent Activity Table */}
       <div className="bg-white p-6 rounded-lg shadow-md">

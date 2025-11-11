@@ -385,23 +385,63 @@ exports.getSummaryByDate = async (req, res) => {
                     stock_calculations prev_sc ON lc.stock_id = prev_sc.stock_id AND prev_sc.period_end_date < lc.period_end_date
                 GROUP BY
                     lc.id
+            ),
+            LatestDailyData AS (
+                SELECT 
+                    aandeel_id,
+                    closing_price as current_price,
+                    ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+                FROM
+                    DailyClosingPrices
+            ),
+            LatestMACD AS (
+                 SELECT
+                    aandeel_id,
+                    signalLine as current_signal_line,
+                    ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+                FROM
+                    MACDValues
+            ),
+            LatestAlert AS (
+                SELECT
+                    aandeel_id,
+                    date as latest_alert_date,
+                    trade_amount as latest_trade_amount,
+                    type_melding,
+                    ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+                FROM
+                    MACDAlerts
             )
             SELECT 
                 s.name,
                 s.ticker_symbol,
-                lc.id as calculation_id, -- Added for key prop in frontend
-                lc.stock_id, -- Added for navigation
+                at.type_name as asset_type_name,
+                lc.id as calculation_id,
+                lc.stock_id,
                 lc.waarde_verdeling,
                 lc.intrinsieke_waarde,
                 lc.calculation_date,
-                lc.period_end_date, -- Make sure to return this
-                hpw.highest_previous_waarde_verdeling
+                lc.period_end_date,
+                hpw.highest_previous_waarde_verdeling,
+                ldd.current_price,
+                lm.current_signal_line,
+                la.latest_alert_date,
+                la.latest_trade_amount,
+                la.type_melding as latest_alert_type
             FROM 
                 LatestCalculations lc
             JOIN 
                 stocks s ON lc.stock_id = s.aandeel_id
             LEFT JOIN
+                AssetTypes at ON s.asset_type_id = at.asset_type_id
+            LEFT JOIN
                 HighestPreviousWaarde hpw ON lc.id = hpw.calculation_id
+            LEFT JOIN
+                LatestDailyData ldd ON lc.stock_id = ldd.aandeel_id AND ldd.rn = 1
+            LEFT JOIN
+                LatestMACD lm ON lc.stock_id = lm.aandeel_id AND lm.rn = 1
+            LEFT JOIN
+                LatestAlert la ON lc.stock_id = la.aandeel_id AND la.rn = 1
             ORDER BY 
                 lc.waarde_verdeling DESC;
         `;
