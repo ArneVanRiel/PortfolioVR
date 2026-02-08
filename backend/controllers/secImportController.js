@@ -2,10 +2,10 @@
 const axios = require('axios');
 const { sql } = require('../config/database');
 
-// Headers for SEC API Requests
+// Headers voor SEC API-verzoeken (User-Agent is verplicht door SEC)
 const HEADERS = { 'User-Agent': "arne.van.riel@hotmail.be" };
 
-// Data mapping with fallback keys and calculations, mirroring the Python script
+// Data mapping met fallback sleutels en berekeningen, analoog aan het Python script
 const FIELDS_TO_CHECK = {
     "AssetsCurrent": ["AssetsCurrent"],
     "Assets": ["Assets"],
@@ -32,10 +32,10 @@ const FIELDS_TO_CHECK = {
     "Dividend": ["PaymentsOfDividends", "CommonStockDividendsPerShareDeclared"]
 };
 
-// Fields that represent a point in time and don't have a start date (balance sheet items)
+// Velden die een momentopname vertegenwoordigen en geen startdatum hebben (balansposten)
 const NO_START_FIELDS = new Set(["AssetsCurrent", "Assets", "LiabilitiesCurrent", "Liabilities", "StockholdersEquity"]);
 
-// Helper function to get CIK number
+// Helper functie om het CIK-nummer op te halen op basis van de ticker
 const getCik = async (ticker) => {
     const response = await axios.get("https://www.sec.gov/files/company_tickers.json", { headers: HEADERS });
     const companyTickers = response.data;
@@ -47,20 +47,20 @@ const getCik = async (ticker) => {
     return null;
 };
 
-// Helper function to get financial data from SEC
+// Helper functie om financiële data (XBRL facts) op te halen van de SEC
 const getFinancialData = async (cik) => {
     const url = `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
     const response = await axios.get(url, { headers: HEADERS });
     return response.data.facts['us-gaap'] || {};
 };
 
-// Helper function to process the financial data, now with calculation and date logic
+// Helper functie om de financiële data te verwerken, inclusief berekeningen en datumlogica
 const processFinancialData = (financialData, ticker) => {
     const processedData = [];
 
     for (const [columnName, possibleApiKeys] of Object.entries(FIELDS_TO_CHECK)) {
         for (const key of possibleApiKeys) {
-            // Handle calculated fields
+            // Verwerk berekende velden (formules)
             if (typeof key === 'object' && key.formula) {
                 const { formula, requiredKeys } = key;
                 const values = {};
@@ -69,12 +69,12 @@ const processFinancialData = (financialData, ticker) => {
 
                 for (const reqKey of requiredKeys) {
                     if (financialData[reqKey] && financialData[reqKey].units && financialData[reqKey].units.USD) {
-                        // Find a recent entry for the required key
-                        const entry = financialData[reqKey].units.USD[0]; // Simplified: taking the first entry
+                        // Zoek een recente invoer voor de vereiste sleutel
+                        const entry = financialData[reqKey].units.USD[0]; // Vereenvoudigd: neemt de eerste invoer
                         if (entry) {
                             values[reqKey] = entry.val;
                             if (!periodEndDate) periodEndDate = entry.end;
-                            // A simple check to ensure all parts of the calculation are from the same period
+                            // Een eenvoudige controle om ervoor te zorgen dat alle delen van de berekening uit dezelfde periode komen
                             if (periodEndDate !== entry.end) {
                                 allKeysFound = false;
                                 break;
@@ -90,10 +90,10 @@ const processFinancialData = (financialData, ticker) => {
                 }
 
                 if (allKeysFound) {
-                    // Super simple eval-like function for safety
+                    // Eenvoudige evaluatie van de formule (sommeren van waarden)
                     const computedValue = formula.split(' + ').reduce((acc, currentKey) => acc + (values[currentKey] || 0), 0);
                     processedData.push({
-                        period_start_date: periodEndDate, // For calculated balance sheet items
+                        period_start_date: periodEndDate, // Voor berekende balansposten
                         period_end_date: periodEndDate,
                         value: computedValue,
                         metric: columnName,
@@ -103,10 +103,10 @@ const processFinancialData = (financialData, ticker) => {
                         form: null,
                         ticker: ticker
                     });
-                    break; // Move to the next metric
+                    break; // Ga naar de volgende metriek
                 }
             }
-            // Handle direct fields
+            // Verwerk directe velden (strings)
             else if (typeof key === 'string' && financialData[key] && financialData[key].units && financialData[key].units.USD) {
                 const dataEntries = financialData[key].units.USD;
                 for (const entry of dataEntries) {
@@ -114,7 +114,7 @@ const processFinancialData = (financialData, ticker) => {
                         continue;
                     }
 
-                    let period_start_date = entry.end; // Default for balance sheet items
+                    let period_start_date = entry.end; // Standaard voor balansposten (momentopname)
 
                     if (!NO_START_FIELDS.has(columnName) && entry.start) {
                         const startDate = new Date(entry.start);
@@ -132,7 +132,7 @@ const processFinancialData = (financialData, ticker) => {
                         if (startDate < checkDate) {
                             period_start_date = entry.start;
                         } else {
-                            continue; // Skip entry that doesn't meet the date criteria
+                            continue; // Sla invoer over die niet aan de datumcriteria voldoet
                         }
                     }
 
@@ -148,7 +148,7 @@ const processFinancialData = (financialData, ticker) => {
                         ticker: ticker
                     });
                 }
-                break; // Found data for this metric, move to the next
+                break; // Data gevonden voor deze metriek, ga naar de volgende
             }
         }
     }
@@ -156,7 +156,7 @@ const processFinancialData = (financialData, ticker) => {
 };
 
 
-// Helper function to get IDs from the database
+// Helper functie om IDs uit de database te halen
 const getStockId = async (ticker) => {
     const request = new sql.Request();
     const result = await request.input('ticker_symbol', sql.NVarChar, ticker).query("SELECT aandeel_id FROM Stocks WHERE ticker_symbol = @ticker_symbol");
@@ -177,9 +177,9 @@ const getFormId = async (form) => {
     return result.recordset.length > 0 ? result.recordset[0].form_id : null;
 };
 
-// Main import function
+// Hoofd import functie
 const importSecData = async (req, res) => {
-    const { ticker, periodOption = 'all' } = req.body; // Default to 'all'
+    const { ticker, periodOption = 'all' } = req.body; // Standaard naar 'all'
     if (!ticker) {
         return res.status(400).json({ message: 'Ticker symbol is required' });
     }
@@ -207,7 +207,7 @@ const importSecData = async (req, res) => {
         write('Processing financial data...');
         let processedData = processFinancialData(financialData, ticker);
         
-        // --- PERIOD FILTERING LOGIC ---
+        // --- PERIODE FILTER LOGICA ---
         if (periodOption === 'last' && processedData.length > 0) {
             processedData.sort((a, b) => new Date(b.period_end_date) - new Date(a.period_end_date));
             const lastDate = processedData[0].period_end_date;
@@ -219,7 +219,7 @@ const importSecData = async (req, res) => {
             processedData = processedData.filter(d => new Date(d.period_end_date) >= oneYearAgo);
             write(`ℹ️ Filtering for entries since ${oneYearAgo.toISOString().split('T')[0]}`);
         }
-        // --- END OF PERIOD FILTERING ---
+        // --- EINDE PERIODE FILTERING ---
 
         if (processedData.length === 0) {
             write('❌ No data to process after filtering.');
@@ -253,7 +253,7 @@ const importSecData = async (req, res) => {
 
             if (existingResult.recordset.length > 0) {
                 const existingValue = existingResult.recordset[0].value;
-                // Using parseFloat for comparison to avoid type issues
+                // Gebruik parseFloat voor vergelijking om typeproblemen te voorkomen
                 if (parseFloat(existingValue) !== parseFloat(row.value)) {
                     const updateReq = new sql.Request();
                     await updateReq

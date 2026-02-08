@@ -1,8 +1,8 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, forwardRef, useImperativeHandle } from 'react';
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
-const WatchlistPortfolioTable = () => {
+export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = () => {} }, ref) {
   const [viewType, setViewType] = useState('idealePortfolio');
   const [stocks, setStocks] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -169,6 +169,17 @@ const WatchlistPortfolioTable = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // Expose function to parent to open the modal
+  useImperativeHandle(ref, () => ({
+    openAddStockModal: () => {
+      handleAddStockClick();
+    }
+  }));
+
+  useEffect(() => {
+    onViewTypeChange(viewType);
+  }, [viewType, onViewTypeChange]);
 
   const handleViewTypeChange = (event) => {
     setViewType(event.target.value);
@@ -657,16 +668,15 @@ const WatchlistPortfolioTable = () => {
 
         {/* Knop om aandelen toe te voegen aan de geselecteerde lijst */}
         <div className="mt-6 text-center">
-          <button
-            onClick={handleAddStockClick}
-            disabled={stocks.length >= MAX_STOCKS}
-            className="bg-blue-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
-          </button>
-          {stocks.length >= MAX_STOCKS && (
-            <p className="text-red-600 text-sm mt-2">Maximum aantal stocks ({MAX_STOCKS}) bereikt.</p>
-          )}
+          <div className="flex justify-center space-x-4">
+            <button
+              onClick={handleUpdateData}
+              disabled={isUpdatingData}
+              className="bg-green-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {isUpdatingData ? 'Bezig met bijwerken...' : 'Update Prijzen & Meldingen'}
+            </button>
+          </div>
         </div>
 
         {/* Modal voor het toevoegen van een stock */}
@@ -781,6 +791,4 @@ const WatchlistPortfolioTable = () => {
       </div>
     </div>
   );
-};
-
-export default WatchlistPortfolioTable;
+});

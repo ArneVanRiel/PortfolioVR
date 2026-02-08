@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useState, useRef } from 'react';
 import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
+import AlertsSummaryTable from '../analysis/AlertsSummaryTable';
 import WatchlistPortfolioTable from './WatchlistPortfolioTable'
 
 // Placeholder components for stats and charts
@@ -20,13 +21,28 @@ const ChartCard = ({ title, children }) => (
 );
 
 const Dashboard = () => {
+  const [viewType, setViewType] = useState('idealePortfolio');
+  const watchlistTableRef = useRef(null);
+
+  const handleAddStock = () => {
+    if (watchlistTableRef.current) {
+      watchlistTableRef.current.openAddStockModal();
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
         <div className="flex space-x-4">
-          <button className="bg-blue-600 text-white px-4 py-2 rounded-lg shadow hover:bg-blue-700 transition-colors">
+          <button
+            onClick={handleAddStock}
+            className="bg-blue-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+          >
+            Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
+          </button>
+          <button className="bg-gray-500 text-white px-4 py-2 rounded-lg shadow hover:bg-gray-600 transition-colors">
             Generate Report
           </button>
         </div>
@@ -57,8 +73,9 @@ const Dashboard = () => {
       </div>
 
       {/* Calculations Summary Table */}
+      <AlertsSummaryTable />
       <CalculationsSummaryTable />
-      <WatchlistPortfolioTable />
+      <WatchlistPortfolioTable ref={watchlistTableRef} onViewTypeChange={setViewType} />
 
       {/* Recent Activity Table */}
       <div className="bg-white p-6 rounded-lg shadow-md">

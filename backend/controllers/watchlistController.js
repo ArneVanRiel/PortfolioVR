@@ -82,14 +82,7 @@ const calculateMACD = (closingPrices) => {
 };
 
 
-// Nieuwe helperfunctie om het aanbevolen bedrag te berekenen
-const calculateRecommendedAmount = (signalLine, currentPrice) => {
-    if (!isNaN(signalLine) && currentPrice > 0) {
-        let tradeAmount = 1000 * (1 + (-signalLine / currentPrice) * 4);
-        return Math.max(0, tradeAmount); // Zorg ervoor dat het bedrag niet negatief is
-    }
-    return null;
-};
+
 
 /**
  * Haalt een lijst met aandelen op basis van de 'view' parameter (watchlist of idealePortfolio).
@@ -504,7 +497,7 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
                 if (alertType) {
                     if (!isNaN(signalLine) && currentPrice > 0) {
-                        tradeAmount = 1000 * (1 + (-signalLine / currentPrice) * 4);
+                        tradeAmount = 25000 * (1 + (-signalLine / currentPrice) * 4);
                         tradeAmount = Math.max(0, tradeAmount);
                     } else {
                         tradeAmount = null;
