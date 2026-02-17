@@ -102,9 +102,11 @@ async function performCalculations(stockId, periodEndDate = null) {
                 const currentFcf = quarterlyData[currentQuarterIndex].fcf_yearly_ttm;
                 const prevFcf = quarterlyData[prevQuarterIndex].fcf_yearly_ttm;
 
-                if (currentFcf && prevFcf && prevFcf !== 0) {
+                // Filter: prevFcf moet groot genoeg zijn (bv. > 100k) om extreme percentages door kleine noemers te voorkomen
+                if (currentFcf && prevFcf && Math.abs(prevFcf) > 100000) {
                     const growthRate = Math.pow(currentFcf / prevFcf, 1 / years) - 1;
-                    if (isFinite(growthRate)) {
+                    // Cap de groei: negeer waarden > 100% of < -90% om het gemiddelde niet te verpesten
+                    if (isFinite(growthRate) && growthRate < 1.0 && growthRate > -0.9) {
                         fcfGrowthRates.push(growthRate);
                     }
                 }
@@ -112,7 +114,10 @@ async function performCalculations(stockId, periodEndDate = null) {
         }
     }
 
-    const gem_groeipercentage_FCF = calculateMean(fcfGrowthRates);
+    let gem_groeipercentage_FCF = calculateMean(fcfGrowthRates);
+    // Veiligheidslimiet: Cap de gemiddelde groei op max 50% voor de DCF berekening
+    if (gem_groeipercentage_FCF > 0.5) gem_groeipercentage_FCF = 0.5;
+
     const standaard_deviatie_FCF = calculateStdDev(fcfGrowthRates);
     const waardefactor_FCF = standaard_deviatie_FCF ? gem_groeipercentage_FCF / (standaard_deviatie_FCF * standaard_deviatie_FCF) : 0;
 
@@ -176,6 +181,7 @@ async function performCalculations(stockId, periodEndDate = null) {
 
         // Final Values
         selectiecriteria,
+        criteria, // Voeg het criteria object toe aan de return (voor frontend gebruik direct na berekening)
         waarde_verdeling,
         koopmarge: null
     };
@@ -199,6 +205,11 @@ exports.runCalculationForStock = async (req, res) => {
     try {
         // 1. Perform all calculations in memory
         const fullCalculationResult = await performCalculations(stockId, period_end_date);
+
+        // DEBUG: Log waarschuwing als de waarde nog steeds extreem hoog is
+        if (fullCalculationResult.intrinsieke_waarde > 1000000) {
+            console.warn(`[WARNING] Extreem hoge intrinsieke waarde berekend: ${fullCalculationResult.intrinsieke_waarde} voor stock ${stockId}`);
+        }
 
         const pool = await sql.connect(dbConfig);
 
@@ -241,8 +252,8 @@ exports.runCalculationForStock = async (req, res) => {
                 type = sql.DateTime;
             } else if (key === 'selectiecriteria' || key === 'stock_id') {
                 type = sql.Int;
-            } else if (['latest_fcf_yearly_ttm', 'dcf_sum', 'discounted_terminal_value', 'total_value', 'latest_shares_outstanding'].includes(key)) {
-                type = sql.Decimal(24, 4);
+            } else if (['latest_fcf_yearly_ttm', 'dcf_sum', 'discounted_terminal_value', 'total_value', 'latest_shares_outstanding', 'intrinsieke_waarde', 'waarde_verdeling'].includes(key)) {
+                type = sql.Decimal(38, 4);
             }
             else {
                 type = sql.Decimal(18, 4);
@@ -291,16 +302,18 @@ exports.getLatestCalculationsSummary = async (req, res) => {
             LatestCalculations AS (
                 SELECT 
                     sc.*,
-                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.calculation_date DESC) as rn
+                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.period_end_date DESC, sc.calculation_date DESC) as rn
                 FROM 
                     stock_calculations sc
             )
             SELECT 
+                lc.stock_id,
                 s.name,
                 s.ticker_symbol,
                 lc.waarde_verdeling,
                 lc.intrinsieke_waarde,
                 lc.period_end_date,
+                lc.selectiecriteria,
                 mw.max_waarde_verdeling,
                 mw.num_calculations
             FROM 
@@ -319,6 +332,48 @@ exports.getLatestCalculationsSummary = async (req, res) => {
     } catch (error) {
         console.error('Error fetching latest calculations summary:', error);
         res.status(500).send('Error fetching latest calculations summary.');
+    }
+};
+
+exports.getPriceHistory = async (req, res) => {
+    const { stockId } = req.params;
+    try {
+        const pool = await sql.connect(dbConfig);
+        const result = await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .query('SELECT date, closing_price FROM DailyClosingPrices WHERE aandeel_id = @stockId ORDER BY date ASC');
+        res.status(200).json(result.recordset);
+    } catch (error) {
+        console.error('Error fetching price history:', error);
+        res.status(500).send('Error fetching price history.');
+    }
+};
+
+exports.getMACDHistory = async (req, res) => {
+    const { stockId } = req.params;
+    try {
+        const pool = await sql.connect(dbConfig);
+        const result = await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .query('SELECT date, macdLine, signalLine FROM MACDValues WHERE aandeel_id = @stockId ORDER BY date ASC');
+        res.status(200).json(result.recordset);
+    } catch (error) {
+        console.error('Error fetching MACD history:', error);
+        res.status(500).send('Error fetching MACD history.');
+    }
+};
+
+exports.getMACDAlerts = async (req, res) => {
+    const { stockId } = req.params;
+    try {
+        const pool = await sql.connect(dbConfig);
+        const result = await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .query('SELECT date, type_melding, signal_line_value, prijs_op_moment FROM MACDAlerts WHERE aandeel_id = @stockId ORDER BY date ASC');
+        res.status(200).json(result.recordset);
+    } catch (error) {
+        console.error('Error fetching MACD alerts:', error);
+        res.status(500).send('Error fetching MACD alerts.');
     }
 };
 
@@ -386,6 +441,18 @@ exports.getSummaryByDate = async (req, res) => {
                 GROUP BY
                     lc.id
             ),
+            PreviousWaarde AS (
+                 SELECT 
+                    lc.id as calculation_id,
+                    prev.waarde_verdeling as previous_waarde_verdeling
+                 FROM LatestCalculations lc
+                 OUTER APPLY (
+                    SELECT TOP 1 p.waarde_verdeling
+                    FROM stock_calculations p
+                    WHERE p.stock_id = lc.stock_id AND p.period_end_date < lc.period_end_date
+                    ORDER BY p.period_end_date DESC
+                 ) prev
+            ),
             LatestDailyData AS (
                 SELECT 
                     aandeel_id,
@@ -422,7 +489,9 @@ exports.getSummaryByDate = async (req, res) => {
                 lc.intrinsieke_waarde,
                 lc.calculation_date,
                 lc.period_end_date,
+                lc.selectiecriteria,
                 hpw.highest_previous_waarde_verdeling,
+                pw.previous_waarde_verdeling,
                 ldd.current_price,
                 lm.current_signal_line,
                 la.latest_alert_date,
@@ -436,6 +505,8 @@ exports.getSummaryByDate = async (req, res) => {
                 AssetTypes at ON s.asset_type_id = at.asset_type_id
             LEFT JOIN
                 HighestPreviousWaarde hpw ON lc.id = hpw.calculation_id
+            LEFT JOIN
+                PreviousWaarde pw ON lc.id = pw.calculation_id
             LEFT JOIN
                 LatestDailyData ldd ON lc.stock_id = ldd.aandeel_id AND ldd.rn = 1
             LEFT JOIN

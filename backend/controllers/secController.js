@@ -70,7 +70,7 @@ const addMissingData = async (req, res) => {
 
 const getAllStocks = async (req, res) => {
   try {
-    const result = await sql.query`SELECT aandeel_id as stock_id, ticker_symbol as ticker, name FROM Stocks`;
+    const result = await sql.query`SELECT aandeel_id as stock_id, ticker_symbol as ticker, name, isin, asset_type_id FROM Stocks`;
     res.json(result.recordset);
   } catch (error) {
     console.error('Fout bij het ophalen van alle aandelen:', error);
@@ -78,4 +78,34 @@ const getAllStocks = async (req, res) => {
   }
 };
 
-module.exports = { getSecData, fetchMissingData, addMissingData, getAllStocks };
+const createStock = async (req, res) => {
+  const { name, ticker_symbol, stock_exchange_id, asset_type_id, isin } = req.body;
+
+  if (!name || !ticker_symbol || !asset_type_id) {
+    return res.status(400).json({ message: 'Naam, ticker en asset type zijn verplicht.' });
+  }
+
+  try {
+    const request = new sql.Request();
+    await request
+      .input('name', sql.NVarChar, name)
+      .input('ticker_symbol', sql.NVarChar, ticker_symbol)
+      .input('stock_exchange_id', sql.Int, stock_exchange_id || null)
+      .input('asset_type_id', sql.Int, asset_type_id)
+      .input('isin', sql.NVarChar, isin || null)
+      .query(`
+        INSERT INTO Stocks (name, ticker_symbol, stock_exchange_id, asset_type_id, isin)
+        VALUES (@name, @ticker_symbol, @stock_exchange_id, @asset_type_id, @isin)
+      `);
+
+    res.status(201).json({ message: 'Aandeel succesvol toegevoegd.' });
+  } catch (error) {
+    if (error.number === 2627 || error.number === 2601) { // Unique constraint violation
+        return res.status(409).json({ message: 'Aandeel met deze ticker bestaat al.' });
+    }
+    console.error('Fout bij het aanmaken van aandeel:', error);
+    res.status(500).json({ message: 'Serverfout bij het aanmaken van aandeel.' });
+  }
+};
+
+module.exports = { getSecData, fetchMissingData, addMissingData, getAllStocks, createStock };

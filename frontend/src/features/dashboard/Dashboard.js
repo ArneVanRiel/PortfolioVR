@@ -2,6 +2,8 @@ import React, { useState, useRef } from 'react';
 import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
 import AlertsSummaryTable from '../analysis/AlertsSummaryTable';
 import WatchlistPortfolioTable from './WatchlistPortfolioTable'
+import Modal from '../../components/ui/modal';
+import http from '../../http-common';
 
 // Placeholder components for stats and charts
 const StatCard = ({ title, value }) => (
@@ -23,10 +25,142 @@ const ChartCard = ({ title, children }) => (
 const Dashboard = () => {
   const [viewType, setViewType] = useState('idealePortfolio');
   const watchlistTableRef = useRef(null);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportDate, setExportDate] = useState(new Date().toISOString().split('T')[0]);
 
   const handleAddStock = () => {
     if (watchlistTableRef.current) {
       watchlistTableRef.current.openAddStockModal();
+    }
+  };
+
+  const handleOpenExportModal = () => setShowExportModal(true);
+  const handleCloseExportModal = () => setShowExportModal(false);
+
+  const fetchReportData = async () => {
+    try {
+      const response = await http.get('/calculations/summary-by-date', {
+        params: { date: exportDate }
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Fout bij ophalen rapport data", error);
+      throw error;
+    }
+  };
+
+  const processReportData = (data) => {
+    if (!data || data.length === 0) return [];
+
+    const totalWaardeVerdeling = data
+      .filter(item => item.waarde_verdeling > 0)
+      .reduce((sum, item) => sum + item.waarde_verdeling, 0);
+
+    return data.map(item => {
+      const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0
+        ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
+        : 0;
+
+      let koopmargefactor = 1;
+      if (item.current_price && item.intrinsieke_waarde && item.intrinsieke_waarde > 0) {
+        const ratio = item.current_price / item.intrinsieke_waarde;
+        if (item.current_price < item.intrinsieke_waarde * 0.75) {
+          koopmargefactor = Math.abs(ratio - 1) + 1;
+        } else {
+          koopmargefactor = 1 / ratio;
+        }
+      }
+
+      const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
+        ? Math.max(0, 30000 * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
+        : 0;
+
+      const latestTradeAmountProcessed = item.latest_trade_amount != null 
+        ? (item.latest_trade_amount * (percentage / 100) / 10) 
+        : null;
+
+      const priceToIntrinsic = (item.current_price && item.intrinsieke_waarde > 0)
+          ? (item.current_price / item.intrinsieke_waarde) - 1
+          : null;
+
+      return {
+        'Aandeel': `${item.name} (${item.ticker_symbol})`,
+        'Laatste Prijs': item.current_price ? `€${Number(item.current_price).toFixed(2)}` : 'N/A',
+        'Waardeverdeling': item.waarde_verdeling ? Number(item.waarde_verdeling).toFixed(2) : 'N/A',
+        'Percentage': `${percentage.toFixed(2)}%`,
+        'Intrinsieke Waarde': item.intrinsieke_waarde ? `€${Number(item.intrinsieke_waarde).toFixed(2)}` : 'N/A',
+        'Koopmarge': priceToIntrinsic != null ? `${(priceToIntrinsic * 100).toFixed(2)}%` : 'N/A',
+        'Period End Date': item.period_end_date ? new Date(item.period_end_date).toLocaleDateString() : 'N/A',
+        'Signal Line': item.current_signal_line ? Number(item.current_signal_line).toFixed(4) : 'N/A',
+        'Type Melding': item.latest_alert_type || 'N/A',
+        'Laatste Alert': item.latest_alert_date ? new Date(item.latest_alert_date).toLocaleDateString() : 'N/A',
+        'Trade Bedrag (Alert)': latestTradeAmountProcessed != null ? `€${latestTradeAmountProcessed.toFixed(2)}` : 'N/A',
+        'Aanbevolen Bedrag (Huidig)': currentRecommendedAmount ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A'
+      };
+    });
+  };
+
+  const handleExportExcel = async () => {
+    try {
+      const rawData = await fetchReportData();
+      const data = processReportData(rawData);
+      if (!data || data.length === 0) {
+        alert("Geen data gevonden voor de geselecteerde datum.");
+        return;
+      }
+
+      const headers = Object.keys(data[0]);
+      const csvRows = [];
+      csvRows.push(headers.join(','));
+
+      for (const row of data) {
+        const values = headers.map(header => {
+          const escaped = ('' + (row[header] || '')).replace(/"/g, '\\"');
+          return `"${escaped}"`;
+        });
+        csvRows.push(values.join(','));
+      }
+
+      const csvData = csvRows.join('\n');
+      const blob = new Blob([csvData], { type: 'text/csv' });
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.setAttribute('hidden', '');
+      a.setAttribute('href', url);
+      a.setAttribute('download', `Calculations_Report_${exportDate}.csv`);
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      handleCloseExportModal();
+    } catch (error) {
+      alert("Er is een fout opgetreden bij het exporteren naar Excel.");
+    }
+  };
+
+  const handleExportPDF = async () => {
+    try {
+      const rawData = await fetchReportData();
+      const data = processReportData(rawData);
+      if (!data || data.length === 0) {
+        alert("Geen data gevonden voor de geselecteerde datum.");
+        return;
+      }
+      
+      const printWindow = window.open('', '_blank');
+      let html = `<html><head><title>Rapport ${exportDate}</title><style>table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; } th, td { border: 1px solid #ddd; padding: 8px; text-align: left; } th { background-color: #f2f2f2; } h1 { font-family: Arial, sans-serif; }</style></head><body>`;
+      html += `<h1>Calculations Summary Rapport - ${exportDate}</h1>`;
+      html += `<table><thead><tr>${Object.keys(data[0]).map(key => `<th>${key}</th>`).join('')}</tr></thead><tbody>`;
+      data.forEach(row => {
+        html += `<tr>${Object.values(row).map(val => `<td>${val !== null ? val : ''}</td>`).join('')}</tr>`;
+      });
+      html += `</tbody></table></body></html>`;
+      
+      printWindow.document.write(html);
+      printWindow.document.close();
+      printWindow.print();
+      handleCloseExportModal();
+    } catch (error) {
+      alert("Er is een fout opgetreden bij het genereren van de PDF.");
     }
   };
 
@@ -42,7 +176,10 @@ const Dashboard = () => {
           >
             Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
           </button>
-          <button className="bg-gray-500 text-white px-4 py-2 rounded-lg shadow hover:bg-gray-600 transition-colors">
+          <button 
+            onClick={handleOpenExportModal}
+            className="bg-gray-500 text-white px-4 py-2 rounded-lg shadow hover:bg-gray-600 transition-colors"
+          >
             Generate Report
           </button>
         </div>
@@ -106,6 +243,36 @@ const Dashboard = () => {
           </tbody>
         </table>
       </div>
+
+      {/* Export Modal */}
+      <Modal isOpen={showExportModal} onClose={handleCloseExportModal}>
+        <div className="p-6">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Rapport Exporteren</h3>
+          <div className="mb-4">
+            <label className="block text-sm font-medium text-gray-700 mb-2">Selecteer Datum:</label>
+            <input 
+              type="date" 
+              value={exportDate} 
+              onChange={(e) => setExportDate(e.target.value)}
+              className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
+            />
+          </div>
+          <p className="text-sm text-gray-600 mb-6">
+            Kies een formaat om de <strong>Calculations Summary Table</strong> te exporteren.
+          </p>
+          <div className="flex justify-end space-x-3">
+            <button onClick={handleCloseExportModal} className="px-4 py-2 bg-gray-200 text-gray-800 rounded hover:bg-gray-300">
+              Annuleren
+            </button>
+            <button onClick={handleExportExcel} className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700">
+              Excel (CSV)
+            </button>
+            <button onClick={handleExportPDF} className="px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">
+              PDF (Print)
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 };

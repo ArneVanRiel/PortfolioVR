@@ -37,6 +37,17 @@ const CalculationDetail = ({ result }) => {
     return null;
   }
 
+  // Criteria afleiden op basis van de opgeslagen waarden
+  const fcfGrowthPositive = result.gem_groeipercentage_FCF > 0;
+  const avgRoe10Y_gt_15 = result.gemiddelde_stijging_ROE_10_Y >= 0.15;
+  const roeWaardefactorPositive = result.waardefactor_ROE > 0;
+  const ltdWaardefactor_lt_1 = result.waardefactor_LTD_equity < 1;
+  
+  // Het 5e criterium (Alle FCF Positief) wordt niet apart opgeslagen, maar kunnen we afleiden uit het totaal.
+  // Totaal score = som van alle 'true' criteria.
+  const knownCount = [fcfGrowthPositive, avgRoe10Y_gt_15, roeWaardefactorPositive, ltdWaardefactor_lt_1].filter(Boolean).length;
+  const allFcfPositive = (result.selectiecriteria - knownCount) === 1;
+
   return (
     <div className="mt-8 p-6 bg-white rounded-lg shadow-lg">
       <h3 className="text-2xl font-bold mb-6 text-gray-800 border-b pb-2">Calculation Details</h3>
@@ -88,6 +99,33 @@ const CalculationDetail = ({ result }) => {
         <div className="space-y-2 col-span-1 md:col-span-2 lg:col-span-3">
             <h4 className="text-lg font-semibold text-yellow-600">Eindresultaat</h4>
             <DetailRow label="Selectiecriteria (op 5)" value={result.selectiecriteria} formattingOptions={{ decimals: 0 }} />
+            
+            <div className="mt-3 p-4 bg-gray-50 rounded-md border border-gray-200">
+              <h5 className="text-sm font-bold text-gray-700 mb-2">Criteria Analyse:</h5>
+              <ul className="space-y-1 text-sm">
+                <li className="flex items-center">
+                  <span className={`mr-2 font-bold ${allFcfPositive ? 'text-green-600' : 'text-red-600'}`}>{allFcfPositive ? '✓' : '✗'}</span>
+                  <span className={allFcfPositive ? 'text-gray-800' : 'text-gray-500'}>Alle FCF Positief (10j)</span>
+                </li>
+                <li className="flex items-center">
+                  <span className={`mr-2 font-bold ${fcfGrowthPositive ? 'text-green-600' : 'text-red-600'}`}>{fcfGrowthPositive ? '✓' : '✗'}</span>
+                  <span className={fcfGrowthPositive ? 'text-gray-800' : 'text-gray-500'}>FCF Groei &gt; 0%</span>
+                </li>
+                <li className="flex items-center">
+                  <span className={`mr-2 font-bold ${avgRoe10Y_gt_15 ? 'text-green-600' : 'text-red-600'}`}>{avgRoe10Y_gt_15 ? '✓' : '✗'}</span>
+                  <span className={avgRoe10Y_gt_15 ? 'text-gray-800' : 'text-gray-500'}>Gem. ROE (10j) &ge; 15%</span>
+                </li>
+                <li className="flex items-center">
+                  <span className={`mr-2 font-bold ${roeWaardefactorPositive ? 'text-green-600' : 'text-red-600'}`}>{roeWaardefactorPositive ? '✓' : '✗'}</span>
+                  <span className={roeWaardefactorPositive ? 'text-gray-800' : 'text-gray-500'}>Waardefactor ROE &gt; 0</span>
+                </li>
+                <li className="flex items-center">
+                  <span className={`mr-2 font-bold ${ltdWaardefactor_lt_1 ? 'text-green-600' : 'text-red-600'}`}>{ltdWaardefactor_lt_1 ? '✓' : '✗'}</span>
+                  <span className={ltdWaardefactor_lt_1 ? 'text-gray-800' : 'text-gray-500'}>Waardefactor LTD/Equity &lt; 1</span>
+                </li>
+              </ul>
+            </div>
+
             <DetailRow label="Waardeverdeling Score" value={result.waarde_verdeling} formattingOptions={{ decimals: 4 }} />
         </div>
 

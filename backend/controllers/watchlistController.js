@@ -187,7 +187,7 @@ const getAvailableStocks = async (req, res) => {
     try {
         const pool = await sql.connect(config);
         const query = `
-            SELECT s.aandeel_id, s.name, s.ticker_symbol, s.inWatchlist, s.inIdealePortfolio, at.type_name AS asset_type_name
+            SELECT s.aandeel_id, s.name, s.ticker_symbol, s.inWatchlist, s.inIdealePortfolio, at.type_name AS asset_type_name, s.asset_type_id
             FROM [dbo].[Stocks] s
             JOIN [dbo].[AssetTypes] at ON s.asset_type_id = at.asset_type_id
             ORDER BY s.name ASC;
@@ -213,6 +213,22 @@ const getAssetTypes = async (req, res) => {
     } catch (err) {
         console.error('Fout bij ophalen asset types:', err.message);
         res.status(500).json({ message: 'Fout bij het ophalen van asset types.' });
+    }
+};
+
+/**
+ * Haalt alle beschikbare stock exchanges op.
+ * @param {object} req - Het request object.
+ * @param {object} res - Het response object.
+ */
+const getStockExchanges = async (req, res) => {
+    try {
+        const pool = await sql.connect(config);
+        const result = await pool.request().query('SELECT stock_exchange_id, name FROM [dbo].[StockExchange] ORDER BY name;');
+        res.json(result.recordset);
+    } catch (err) {
+        console.error('Fout bij ophalen stock exchanges:', err.message);
+        res.status(500).json({ message: 'Fout bij het ophalen van stock exchanges.' });
     }
 };
 
@@ -565,5 +581,6 @@ module.exports = {
   addStockToPortfolio,
   removeStockFromPortfolio,
   getAvailableStocks,
-  getAssetTypes // NIEUW: Exporteer de functie voor asset types
+  getAssetTypes,
+  getStockExchanges
 };

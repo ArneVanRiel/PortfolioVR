@@ -1,6 +1,19 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import http from '../../http-common';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
+
+ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const CalculationsSummaryTable = () => {
     const navigate = useNavigate();
@@ -12,17 +25,28 @@ const CalculationsSummaryTable = () => {
     // --- State for sorting and filtering ---
     const [sortConfig, setSortConfig] = useState({ key: 'waarde_verdeling', direction: 'desc' });
     const [tickerFilter, setTickerFilter] = useState('');
+    const [scoreFilter, setScoreFilter] = useState('5');
     const [priceToIntrinsicFilter, setPriceToIntrinsicFilter] = useState('');
     const [signalLineFilter, setSignalLineFilter] = useState('');
     const [alertTypeFilter, setAlertTypeFilter] = useState('');
+    const [showHighestEver, setShowHighestEver] = useState(false);
+    const [percentageFilter, setPercentageFilter] = useState('');
+
+    // --- State for hover chart ---
+    const [hoveredStockId, setHoveredStockId] = useState(null);
+    const [chartData, setChartData] = useState(null);
+    const [popupPosition, setPopupPosition] = useState({ x: 0, y: 0 });
+    const [isChartLoading, setIsChartLoading] = useState(false);
+    const [chartTitle, setChartTitle] = useState('');
 
     const ALL_COLUMNS = useMemo(() => [
         { key: 'name', label: 'Aandeel', sortable: true, defaultVisible: true, type: 'string' },
+        { key: 'selectiecriteria', label: 'Score', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'current_price', label: 'Laatste Prijs', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'waarde_verdeling', label: 'Waardeverdeling', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'percentage', label: 'Percentage', sortable: false, defaultVisible: true, type: 'number' },
         { key: 'intrinsieke_waarde', label: 'Intrinsieke Waarde', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'price_to_intrinsic', label: 'Prijs/Intrinsiek', sortable: true, defaultVisible: true, type: 'number' },
+        { key: 'price_to_intrinsic', label: 'Koopmarge', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'period_end_date', label: 'Period End Date', sortable: true, defaultVisible: true, type: 'date' },
         { key: 'current_signal_line', label: 'Signal Line', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'latest_alert_type', label: 'Type Melding', sortable: true, defaultVisible: true, type: 'string' },
@@ -61,7 +85,7 @@ const CalculationsSummaryTable = () => {
     }, [selectedDate]);
 
     const totalWaardeVerdeling = useMemo(() => summaryData
-        .filter(item => item.waarde_verdeling > 0)
+        .filter(item => item.waarde_verdeling > 0 && item.selectiecriteria === 5)
         .reduce((sum, item) => sum + item.waarde_verdeling, 0), [summaryData]);
 
     const handleSort = (key) => {
@@ -91,7 +115,17 @@ const CalculationsSummaryTable = () => {
             const priceToIntrinsic = (item.current_price && item.intrinsieke_waarde > 0)
                 ? (item.current_price / item.intrinsieke_waarde) - 1
                 : null;
-            return { ...item, price_to_intrinsic: priceToIntrinsic };
+            
+            let diffPercentage = null;
+            if (item.highest_previous_waarde_verdeling) {
+                diffPercentage = ((item.waarde_verdeling - item.highest_previous_waarde_verdeling) / item.highest_previous_waarde_verdeling) * 100;
+            }
+
+            let prevDiffPercentage = null;
+            if (item.previous_waarde_verdeling) {
+                prevDiffPercentage = ((item.waarde_verdeling - item.previous_waarde_verdeling) / item.previous_waarde_verdeling) * 100;
+            }
+            return { ...item, price_to_intrinsic: priceToIntrinsic, diffPercentage, prevDiffPercentage };
         });
 
         if (tickerFilter) {
@@ -99,6 +133,14 @@ const CalculationsSummaryTable = () => {
                 item.ticker_symbol.toLowerCase().includes(tickerFilter.toLowerCase()) ||
                 item.name.toLowerCase().includes(tickerFilter.toLowerCase())
             );
+        }
+
+        if (scoreFilter) {
+            currentData = currentData.filter(item => {
+                if (scoreFilter === '5') return item.selectiecriteria === 5;
+                if (scoreFilter === '<5') return item.selectiecriteria < 5;
+                return true;
+            });
         }
         
         if (priceToIntrinsicFilter === 'lt') {
@@ -117,6 +159,17 @@ const CalculationsSummaryTable = () => {
             currentData = currentData.filter(item => item.latest_alert_type === alertTypeFilter);
         }
 
+        if (percentageFilter === 'gt0') {
+            currentData = currentData.filter(item => {
+                const val = showHighestEver ? item.diffPercentage : item.prevDiffPercentage;
+                return val !== null && val > 0;
+            });
+        } else if (percentageFilter === 'lt0') {
+            currentData = currentData.filter(item => {
+                const val = showHighestEver ? item.diffPercentage : item.prevDiffPercentage;
+                return val !== null && val < 0;
+            });
+        }
 
         if (sortConfig.key) {
             currentData.sort((a, b) => {
@@ -143,8 +196,189 @@ const CalculationsSummaryTable = () => {
             });
         }
         return currentData;
-    }, [summaryData, tickerFilter, priceToIntrinsicFilter, signalLineFilter, alertTypeFilter, sortConfig, ALL_COLUMNS]);
+    }, [summaryData, tickerFilter, scoreFilter, priceToIntrinsicFilter, signalLineFilter, alertTypeFilter, percentageFilter, showHighestEver, sortConfig, ALL_COLUMNS]);
 
+    const handleMouseEnterPrice = async (e, stockId) => {
+        const rect = e.target.getBoundingClientRect();
+        setPopupPosition({
+            x: rect.right + 10, // 10px rechts van de cel
+            y: rect.top + window.scrollY - 50 // Iets omhoog gecentreerd
+        });
+        setHoveredStockId(stockId);
+        setIsChartLoading(true);
+        setChartData(null);
+        setChartTitle('Prijsgeschiedenis');
+
+        try {
+            const [historyResponse, alertsResponse] = await Promise.all([
+                http.get(`/calculations/${stockId}/price-history`),
+                http.get(`/calculations/${stockId}/macd-alerts`)
+            ]);
+            const history = historyResponse.data;
+            const alerts = alertsResponse.data;
+            
+            // Beperk data punten voor performance indien nodig, hier nemen we alles
+            const labels = history.map(h => new Date(h.date).toLocaleDateString());
+            const prices = history.map(h => h.closing_price);
+
+            const buyAlerts = [];
+            const sellAlerts = [];
+
+            alerts.forEach(alert => {
+                const alertDate = new Date(alert.date).toLocaleDateString();
+                if (alert.type_melding === 'Koopsignaal') {
+                    if (alert.signal_line_value < 0) {
+                        buyAlerts.push({ x: alertDate, y: alert.prijs_op_moment });
+                    }
+                } else if (alert.type_melding === 'Verkoopsignaal') {
+                    sellAlerts.push({ x: alertDate, y: alert.prijs_op_moment });
+                }
+            });
+
+            setChartData({
+                labels,
+                datasets: [
+                    {
+                        label: 'Prijs',
+                        data: prices,
+                        borderColor: 'rgb(75, 192, 192)',
+                        backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                        tension: 0.1,
+                        pointRadius: 0, // Verberg punten voor een schonere lijn
+                        borderWidth: 2,
+                        order: 1
+                    },
+                    {
+                        label: 'Koopsignaal',
+                        data: buyAlerts,
+                        type: 'line',
+                        showLine: false,
+                        backgroundColor: 'green',
+                        borderColor: 'green',
+                        pointStyle: 'triangle',
+                        pointRadius: 8,
+                        rotation: 0, // Driehoek omhoog
+                        order: 0
+                    },
+                    {
+                        label: 'Verkoopsignaal',
+                        data: sellAlerts,
+                        type: 'line',
+                        showLine: false,
+                        backgroundColor: 'red',
+                        borderColor: 'red',
+                        pointStyle: 'triangle',
+                        pointRadius: 8,
+                        rotation: 180, // Driehoek omlaag
+                        order: 0
+                    }
+                ]
+            });
+        } catch (err) {
+            console.error("Failed to load price history or alerts", err);
+        } finally {
+            setIsChartLoading(false);
+        }
+    };
+
+    const handleMouseEnterSignal = async (e, stockId) => {
+        const rect = e.target.getBoundingClientRect();
+        setPopupPosition({
+            x: rect.right + 10,
+            y: rect.top + window.scrollY - 50
+        });
+        setHoveredStockId(stockId);
+        setIsChartLoading(true);
+        setChartData(null);
+        setChartTitle('MACD & Signal Line');
+
+        try {
+            const [historyResponse, alertsResponse] = await Promise.all([
+                http.get(`/calculations/${stockId}/macd-history`),
+                http.get(`/calculations/${stockId}/macd-alerts`)
+            ]);
+            const history = historyResponse.data;
+            const alerts = alertsResponse.data;
+            
+            const labels = history.map(h => new Date(h.date).toLocaleDateString());
+            const macdData = history.map(h => h.macdLine);
+            const signalData = history.map(h => h.signalLine);
+
+            const buyAlerts = [];
+            const sellAlerts = [];
+
+            alerts.forEach(alert => {
+                const alertDate = new Date(alert.date).toLocaleDateString();
+                if (alert.type_melding === 'Koopsignaal') {
+                    if (alert.signal_line_value < 0) {
+                        buyAlerts.push({ x: alertDate, y: alert.signal_line_value });
+                    }
+                } else if (alert.type_melding === 'Verkoopsignaal') {
+                    sellAlerts.push({ x: alertDate, y: alert.signal_line_value });
+                }
+            });
+
+            setChartData({
+                labels,
+                datasets: [
+                    {
+                        label: 'MACD',
+                        data: macdData,
+                        borderColor: 'rgb(54, 162, 235)', // Blauw
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                        tension: 0.1,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                        order: 2
+                    },
+                    {
+                        label: 'Signal',
+                        data: signalData,
+                        borderColor: 'rgb(255, 99, 132)', // Rood
+                        backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                        tension: 0.1,
+                        pointRadius: 0,
+                        borderWidth: 2,
+                        order: 1
+                    },
+                    {
+                        label: 'Koopsignaal',
+                        data: buyAlerts,
+                        type: 'line', // Gebruik line type maar verberg de lijn
+                        showLine: false,
+                        backgroundColor: 'green',
+                        borderColor: 'green',
+                        pointStyle: 'triangle',
+                        pointRadius: 8,
+                        rotation: 0, // Driehoek omhoog
+                        order: 0 // Zorg dat deze bovenop ligt
+                    },
+                    {
+                        label: 'Verkoopsignaal',
+                        data: sellAlerts,
+                        type: 'line',
+                        showLine: false,
+                        backgroundColor: 'red',
+                        borderColor: 'red',
+                        pointStyle: 'triangle',
+                        pointRadius: 8,
+                        rotation: 180, // Driehoek omlaag
+                        order: 0
+                    }
+                ]
+            });
+        } catch (err) {
+            console.error("Failed to load MACD history or alerts", err);
+        } finally {
+            setIsChartLoading(false);
+        }
+    };
+
+    const handleMouseLeaveChart = () => {
+        setHoveredStockId(null);
+        setChartData(null);
+        setChartTitle('');
+    };
 
     if (loading) {
         return <p className="text-gray-500">Overzichtstabel wordt geladen...</p>;
@@ -159,8 +393,22 @@ const CalculationsSummaryTable = () => {
     return (
         <div className="bg-white bg-white border border-gray-200 rounded-xl shadow-sm p-3 mb-4">
             <div className="overflow-x-auto">
-                <h3 className="text-lg font-semibold text-gray-800">Overzicht Berekeningen</h3>
-                <div className="my-4 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 items-end">
+                <div className="flex justify-between items-center mb-4">
+                    <h3 className="text-lg font-semibold text-gray-800">Overzicht Berekeningen</h3>
+                    <div className="flex items-center">
+                        <input
+                            id="showHighestEver"
+                            type="checkbox"
+                            checked={showHighestEver}
+                            onChange={(e) => setShowHighestEver(e.target.checked)}
+                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                        />
+                        <label htmlFor="showHighestEver" className="ml-2 block text-sm text-gray-900">
+                            Toon % vs Hoogste Ooit
+                        </label>
+                    </div>
+                </div>
+                <div className="my-4 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
                     <div>
                         <label htmlFor="date-picker" className="block text-sm font-medium text-gray-700">Selecteer een datum</label>
                         <input
@@ -181,6 +429,14 @@ const CalculationsSummaryTable = () => {
                             value={tickerFilter}
                             onChange={handleTickerFilterChange}
                         />
+                    </div>
+                    <div>
+                        <label htmlFor="scoreFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Score:</label>
+                        <select id="scoreFilter" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                            <option value="">Alles</option>
+                            <option value="5">5</option>
+                            <option value="<5">&lt; 5</option>
+                        </select>
                     </div>
                     <div>
                         <label htmlFor="priceToIntrinsicFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Prijs/Intrinsiek:</label>
@@ -204,6 +460,14 @@ const CalculationsSummaryTable = () => {
                             <option value="">Alles</option>
                             <option value="Koopsignaal">Koopsignaal</option>
                             <option value="Verkoopsignaal">Verkoopsignaal</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label htmlFor="percentageFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Percentage ({showHighestEver ? 'H' : 'Q'}):</label>
+                        <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                            <option value="">Alles</option>
+                            <option value="gt0">Boven 0%</option>
+                            <option value="lt0">Onder 0%</option>
                         </select>
                     </div>
                 </div>
@@ -231,14 +495,9 @@ const CalculationsSummaryTable = () => {
                             </tr>
                         ) : (
                             filteredAndSortedData.map((item) => {
-                                const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0
+                                const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
                                     ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
                                     : 0;
-
-                                let diffPercentage = null;
-                                if (item.highest_previous_waarde_verdeling) {
-                                    diffPercentage = ((item.waarde_verdeling - item.highest_previous_waarde_verdeling) / item.highest_previous_waarde_verdeling) * 100;
-                                }
 
                                 const getHighlightClass = (periodEndDate, selectedDate) => {
                                     const periodDate = new Date(periodEndDate);
@@ -274,19 +533,32 @@ const CalculationsSummaryTable = () => {
                                     switch (col.key) {
                                         case 'name':
                                             return `${item.name} (${item.ticker_symbol})`;
+                                        case 'selectiecriteria':
+                                            return value !== null ? value : '-';
                                         case 'waarde_verdeling':
+                                            const percentageToShow = showHighestEver ? item.diffPercentage : item.prevDiffPercentage;
+                                            const label = showHighestEver ? 'H' : 'Q';
                                             return (
-                                                <>
-                                                    {value?.toFixed(2)}
-                                                    {diffPercentage !== null && (
-                                                        <span className={`ml-2 ${diffPercentage >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                                                            ({diffPercentage > 0 ? '+' : ''}{diffPercentage.toFixed(2)}%)
-                                                        </span>
-                                                    )}
-                                                </>
+                                                <div className="flex flex-col">
+                                                    <span className="font-medium">{value?.toFixed(2)}</span>
+                                                    <div className="text-xs flex flex-col">
+                                                        {percentageToShow !== null && (
+                                                            <span className={`${percentageToShow >= 0 ? 'text-green-600' : 'text-red-600'}`} title={showHighestEver ? "Vs Hoogste Ooit" : "Vs Vorige Kwartaal"}>
+                                                                {label}: {percentageToShow > 0 ? '+' : ''}{percentageToShow.toFixed(2)}%
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                </div>
                                             );
                                         case 'current_price':
                                         case 'intrinsieke_waarde':
+                                            if (col.key === 'current_price') {
+                                                return (
+                                                    <div onMouseEnter={(e) => handleMouseEnterPrice(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className="cursor-pointer underline decoration-dotted decoration-gray-400">
+                                                        {value != null ? `€${Number(value).toFixed(2)}` : 'N/A'}
+                                                    </div>
+                                                );
+                                            }
                                             return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
                                         case 'percentage':
                                             return `${percentage.toFixed(2)}%`;
@@ -296,7 +568,11 @@ const CalculationsSummaryTable = () => {
                                             return <span className={highlightClass}>{value ? new Date(value).toLocaleDateString() : 'N/A'}</span>;
                                         case 'current_signal_line':
                                             const signalLineClass = value != null && value < 0 ? 'text-green-600 font-bold' : '';
-                                            return <span className={signalLineClass}>{value != null ? Number(value).toFixed(4) : 'N/A'}</span>;
+                                            return (
+                                                <div onMouseEnter={(e) => handleMouseEnterSignal(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className={`cursor-pointer underline decoration-dotted decoration-gray-400 ${signalLineClass}`}>
+                                                    {value != null ? Number(value).toFixed(4) : 'N/A'}
+                                                </div>
+                                            );
                                         case 'latest_alert_date':
                                              return value ? new Date(value).toLocaleDateString() : 'N/A';
                                         case 'latest_trade_amount':
@@ -334,6 +610,50 @@ const CalculationsSummaryTable = () => {
                     </tbody>
                 </table>
             </div>
+
+            {/* Hover Chart Popup */}
+            {hoveredStockId && (
+                <div 
+                    style={{
+                        position: 'absolute',
+                        left: popupPosition.x,
+                        top: popupPosition.y,
+                        zIndex: 1000,
+                        backgroundColor: 'white',
+                        border: '1px solid #ccc',
+                        borderRadius: '8px',
+                        padding: '10px',
+                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+                        width: '350px',
+                        height: '250px'
+                    }}
+                >
+                    {isChartLoading ? (
+                        <div className="flex items-center justify-center h-full text-sm text-gray-500">Laden...</div>
+                    ) : chartData ? (
+                        <Line 
+                            data={chartData} 
+                            options={{
+                                responsive: true,
+                                maintainAspectRatio: false,
+                                plugins: {
+                                    legend: { display: true },
+                                    title: { display: true, text: chartTitle }
+                                },
+                                scales: {
+                                    x: { 
+                                        display: true,
+                                        ticks: { maxTicksLimit: 8 } // Beperk aantal labels op x-as
+                                    },
+                                    y: { beginAtZero: false }
+                                }
+                            }} 
+                        />
+                    ) : (
+                        <div className="flex items-center justify-center h-full text-sm text-gray-500">Geen data</div>
+                    )}
+                </div>
+            )}
         </div>
     );
 };

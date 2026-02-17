@@ -14,6 +14,15 @@ router.get('/:stockId', calculationController.getCalculationsForStock);
 // Route to trigger a calculation for a specific stock
 router.post('/:stockId', calculationController.runCalculationForStock);
 
+// Route to get price history for chart
+router.get('/:stockId/price-history', calculationController.getPriceHistory);
+
+// Route to get MACD history for chart
+router.get('/:stockId/macd-history', calculationController.getMACDHistory);
+
+// Route to get MACD alerts for chart
+router.get('/:stockId/macd-alerts', calculationController.getMACDAlerts);
+
 // Route to get fundamental data for a specific calculation
 router.get('/:calculationId/fundamental-data', calculationController.getFundamentalDataForCalculation);
 
@@ -22,4 +31,3 @@ router.get('/:calculationId/fundamental-data', calculationController.getFundamen
 router.delete('/:id', calculationController.deleteCalculation);
 
 module.exports = router;
-

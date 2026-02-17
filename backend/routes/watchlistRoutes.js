@@ -32,4 +32,8 @@ router.get('/available-stocks', watchlistController.getAvailableStocks);
 // Voorbeeld: GET /api/watchlist/asset-types
 router.get('/asset-types', watchlistController.getAssetTypes);
 
+// Route om alle beschikbare stock exchanges op te halen
+// Voorbeeld: GET /api/watchlist/stock-exchanges
+router.get('/stock-exchanges', watchlistController.getStockExchanges);
+
 module.exports = router;

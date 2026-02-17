@@ -20,9 +20,26 @@ const FIELDS_TO_CHECK = {
             requiredKeys: ["UnearnedPremiums", "LiabilityForClaimsAndClaimsAdjustmentExpense", "AccountsPayableAndAccruedLiabilitiesCurrentAndNoncurrent"]
         }
     ],
-    "Liabilities": ["Liabilities"],
+    "Liabilities": ["Liabilities",
+        {
+            formula: "LiabilitiesAndStockholdersEquity - StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            requiredKeys: ["LiabilitiesAndStockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]
+        },
+        {
+            formula: "LiabilitiesAndStockholdersEquity - StockholdersEquity",
+            requiredKeys: ["LiabilitiesAndStockholdersEquity", "StockholdersEquity"]
+        },
+        {
+            formula: "Assets - StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest",
+            requiredKeys: ["Assets", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"]
+        },
+        {
+            formula: "Assets - StockholdersEquity",
+            requiredKeys: ["Assets", "StockholdersEquity"]
+        }
+    ],
     "StockholdersEquity": ["StockholdersEquity", "StockholdersEquityIncludingPortionAttributableToNoncontrollingInterest"],
-    "NetIncomeLoss": ["NetIncomeLoss"],
+    "NetIncomeLoss": ["NetIncomeLoss", "ProfitLoss","NetIncomeLossAvailableToCommonStockholdersBasic"],
     "NetCashProvidedByUsedInOperatingActivities": ["NetCashProvidedByUsedInOperatingActivities", "NetCashProvidedByUsedInOperatingActivitiesContinuingOperations"],
     "NetCashProvidedByUsedInInvestingActivities": ["NetCashProvidedByUsedInInvestingActivities"],
     "NetCashProvidedByUsedInFinancingActivities": ["NetCashProvidedByUsedInFinancingActivities"],
@@ -55,64 +72,101 @@ const getFinancialData = async (cik) => {
 };
 
 // Helper functie om de financiële data te verwerken, inclusief berekeningen en datumlogica
-const processFinancialData = (financialData, ticker) => {
+const processFinancialData = (financialData, ticker, write = () => {}) => {
     const processedData = [];
 
     for (const [columnName, possibleApiKeys] of Object.entries(FIELDS_TO_CHECK)) {
+        let foundForColumn = false;
+        // We houden bij welke datums we al hebben gevonden voor deze metriek.
+        // Hierdoor krijgt de eerste key in de lijst voorrang, maar vullen latere keys de gaten in de data op (per datum).
+        const datesCovered = new Set(); 
         for (const key of possibleApiKeys) {
             // Verwerk berekende velden (formules)
             if (typeof key === 'object' && key.formula) {
                 const { formula, requiredKeys } = key;
-                const values = {};
-                let periodEndDate = null;
-                let allKeysFound = true;
+                
+                // Check of alle benodigde keys bestaan in de data
+                const allKeysExist = requiredKeys.every(reqKey => 
+                    financialData[reqKey] && 
+                    financialData[reqKey].units && 
+                    (financialData[reqKey].units.USD || financialData[reqKey].units.shares)
+                );
 
-                for (const reqKey of requiredKeys) {
-                    if (financialData[reqKey] && financialData[reqKey].units && financialData[reqKey].units.USD) {
-                        // Zoek een recente invoer voor de vereiste sleutel
-                        const entry = financialData[reqKey].units.USD[0]; // Vereenvoudigd: neemt de eerste invoer
-                        if (entry) {
-                            values[reqKey] = entry.val;
-                            if (!periodEndDate) periodEndDate = entry.end;
-                            // Een eenvoudige controle om ervoor te zorgen dat alle delen van de berekening uit dezelfde periode komen
-                            if (periodEndDate !== entry.end) {
-                                allKeysFound = false;
-                                break;
-                            }
+                if (!allKeysExist) continue;
+
+                const primaryKey = requiredKeys[0];
+                const primaryUnits = financialData[primaryKey].units.USD || financialData[primaryKey].units.shares;
+                let calculationAdded = false;
+
+                for (const entry of primaryUnits) {
+                    const targetDate = entry.end;
+                    if (datesCovered.has(targetDate)) continue; // Sla over als datum al bestaat
+
+                    const values = { [primaryKey]: entry.val };
+                    let match = true;
+
+                    for (let i = 1; i < requiredKeys.length; i++) {
+                        const otherKey = requiredKeys[i];
+                        const otherUnits = financialData[otherKey].units.USD || financialData[otherKey].units.shares;
+                        const matchingEntry = otherUnits.find(u => u.end === targetDate);
+                        
+                        if (matchingEntry) {
+                            values[otherKey] = matchingEntry.val;
                         } else {
-                            allKeysFound = false;
+                            match = false;
                             break;
                         }
-                    } else {
-                        allKeysFound = false;
-                        break;
+                    }
+
+                    if (match) {
+                        const tokens = formula.split(' ');
+                        let computedValue = values[tokens[0]] || 0;
+
+                        for (let i = 1; i < tokens.length; i += 2) {
+                            const operator = tokens[i];
+                            const nextKey = tokens[i + 1];
+                            const nextValue = values[nextKey] || 0;
+
+                            if (operator === '+') {
+                                computedValue += nextValue;
+                            } else if (operator === '-') {
+                                computedValue -= nextValue;
+                            }
+                        }
+
+                        processedData.push({
+                            period_start_date: entry.end,
+                            period_end_date: entry.end,
+                            value: computedValue,
+                            metric: columnName,
+                            how_added: `Computed: ${formula}`,
+                            fy: entry.fy,
+                            fp: entry.fp,
+                            form: entry.form,
+                            ticker: ticker
+                        });
+                        datesCovered.add(targetDate); // Markeer datum als gevonden
+                        calculationAdded = true;
                     }
                 }
 
-                if (allKeysFound) {
-                    // Eenvoudige evaluatie van de formule (sommeren van waarden)
-                    const computedValue = formula.split(' + ').reduce((acc, currentKey) => acc + (values[currentKey] || 0), 0);
-                    processedData.push({
-                        period_start_date: periodEndDate, // Voor berekende balansposten
-                        period_end_date: periodEndDate,
-                        value: computedValue,
-                        metric: columnName,
-                        how_added: `Computed: ${formula}`,
-                        fy: null,
-                        fp: null,
-                        form: null,
-                        ticker: ticker
-                    });
-                    break; // Ga naar de volgende metriek
+                if (calculationAdded) {
+                    write(`[DEBUG] ${columnName}: Calculated using formula`);
+                    foundForColumn = true;
                 }
             }
             // Verwerk directe velden (strings)
-            else if (typeof key === 'string' && financialData[key] && financialData[key].units && financialData[key].units.USD) {
-                const dataEntries = financialData[key].units.USD;
+            else if (typeof key === 'string' && financialData[key] && financialData[key].units) {
+                const dataEntries = financialData[key].units.USD || financialData[key].units.shares;
+                if (!dataEntries) continue;
+
+                let dataAdded = false;
                 for (const entry of dataEntries) {
                     if (!entry.end || !entry.val || !entry.fy || !entry.fp || !entry.form) {
                         continue;
                     }
+
+                    if (datesCovered.has(entry.end)) continue; // Sla over als datum al bestaat
 
                     let period_start_date = entry.end; // Standaard voor balansposten (momentopname)
 
@@ -147,9 +201,17 @@ const processFinancialData = (financialData, ticker) => {
                         form: entry.form,
                         ticker: ticker
                     });
+                    datesCovered.add(entry.end); // Markeer datum als gevonden
+                    dataAdded = true;
                 }
-                break; // Data gevonden voor deze metriek, ga naar de volgende
+                if (dataAdded) {
+                    write(`[DEBUG] ${columnName}: Found direct data using key '${key}'`);
+                    foundForColumn = true;
+                }
             }
+        }
+        if (!foundForColumn) {
+            write(`[DEBUG] ⚠️ No data found for ${columnName}`);
         }
     }
     return processedData;
@@ -205,7 +267,7 @@ const importSecData = async (req, res) => {
         write('✅ Financial data fetched.');
 
         write('Processing financial data...');
-        let processedData = processFinancialData(financialData, ticker);
+        let processedData = processFinancialData(financialData, ticker, write);
         
         // --- PERIODE FILTER LOGICA ---
         if (periodOption === 'last' && processedData.length > 0) {
@@ -216,7 +278,17 @@ const importSecData = async (req, res) => {
         } else if (periodOption === 'lastYear' && processedData.length > 0) {
             const oneYearAgo = new Date();
             oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+            
+            // DEBUG: Check of Liabilities aanwezig zijn VOOR het filteren
+            const liabilitiesBefore = processedData.filter(d => d.metric === 'Liabilities').length;
+
             processedData = processedData.filter(d => new Date(d.period_end_date) >= oneYearAgo);
+            
+            const liabilitiesAfter = processedData.filter(d => d.metric === 'Liabilities').length;
+            if (liabilitiesBefore > 0 && liabilitiesAfter === 0) {
+                 write(`[DEBUG] ⚠️ All calculated Liabilities were filtered out (older than ${oneYearAgo.toISOString().split('T')[0]}). Trying fallback formulas...`);
+            }
+
             write(`ℹ️ Filtering for entries since ${oneYearAgo.toISOString().split('T')[0]}`);
         }
         // --- EINDE PERIODE FILTERING ---

@@ -10,7 +10,7 @@ const fundamentalDataRoutes = require('./routes/fundamentalDataRoutes'); // NIEU
 const secImportRoutes = require('./routes/secImportRoutes');
 const calculationRoutes = require('./routes/calculationRoutes');
 const alertsRoutes = require('./routes/alertsRoutes');
-
+const secFieldRoutes = require('./routes/secFieldRoutes');
 
 const app = express();
 app.use(express.json());
@@ -31,6 +31,7 @@ app.use('/api/fundamental-data', fundamentalDataRoutes); // NIEUW
 app.use('/api/sec', secImportRoutes);
 app.use('/api/calculations', calculationRoutes);
 app.use('/api/alerts', alertsRoutes);
+app.use('/api/sec-fields', secFieldRoutes);
 
 
 // Algemene foutafhandeling

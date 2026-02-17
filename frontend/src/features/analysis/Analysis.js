@@ -11,6 +11,7 @@ import ExistingData from './ExistingData';
 import CalculationFormulas from './CalculationFormulas';
 import CalculationDataModal from './CalculationDataModal';
 import CalculationDetail from './CalculationDetail';
+import SearchSecFields from './searchSecFields';
 
 const dataPeriods = {
   StockholdersEquity: 44 * 3,
@@ -97,6 +98,7 @@ const Analysis = () => {
   // State for all stocks analysis
   const [allAnalyses, setAllAnalyses] = useState({});
   const [isAllAnalysesLoading, setIsAllAnalysesLoading] = useState(false);
+  const [latestCalculationsMap, setLatestCalculationsMap] = useState({});
 
   // States for calculations
   const [calculationResult, setCalculationResult] = useState(null);
@@ -296,11 +298,25 @@ const Analysis = () => {
     }
   }, []);
 
+  const fetchLatestCalculations = useCallback(async () => {
+    try {
+      const response = await http.get('/calculations/latest-summary');
+      const map = {};
+      response.data.forEach(calc => {
+        map[calc.stock_id] = calc;
+      });
+      setLatestCalculationsMap(map);
+    } catch (err) {
+      console.error('Error fetching latest calculations:', err);
+    }
+  }, []);
+
   useEffect(() => {
     fetchStocks();
     fetchFiscalPeriods();
     fetchFormTypes();
-  }, [fetchStocks, fetchFiscalPeriods, fetchFormTypes]);
+    fetchLatestCalculations();
+  }, [fetchStocks, fetchFiscalPeriods, fetchFormTypes, fetchLatestCalculations]);
 
   useEffect(() => {
     if (stocks.length > 0) {
@@ -483,6 +499,7 @@ const Analysis = () => {
       setCalculationResult(response.data.data);
       setSelectedCalculationDetail(response.data.data);
       fetchExistingCalculations(); 
+      fetchLatestCalculations(); // Refresh list scores
     } catch (err) {
       setCalculationError(`Error running calculation: ${err.response?.data?.message || err.message}`);
       console.error('Error running calculation:', err);
@@ -801,6 +818,7 @@ const Analysis = () => {
         allAnalyses={allAnalyses}
         isAllAnalysesLoading={isAllAnalysesLoading}
         loading={loading}
+        latestCalculationsMap={latestCalculationsMap}
       />
 
       <div className="w-3/4 p-8 space-y-8 overflow-y-auto">
@@ -833,6 +851,15 @@ const Analysis = () => {
                     }`}
                 >
                   Berekeningen
+                </button>
+                <button
+                  onClick={() => setActiveTab('SecFields')}
+                  className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'SecFields'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }`}
+                >
+                  Zoek Sec velden
                 </button>
               </nav>
             </div>
@@ -1030,6 +1057,11 @@ const Analysis = () => {
                   </div>
 
                   {selectedCalculationDetail && <CalculationDetail result={selectedCalculationDetail} />}
+                </div>
+              )}
+              {activeTab === 'SecFields' && (
+                <div className="mt-6">
+                  <SearchSecFields />
                 </div>
               )}
             </div>
