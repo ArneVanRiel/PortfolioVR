@@ -2,6 +2,17 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import http from '../../http-common';
 import Modal from '../../components/ui/modal';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
+import { Line } from 'react-chartjs-2';
 
 // Import the new components
 import StockList from './StockList';
@@ -12,6 +23,16 @@ import CalculationFormulas from './CalculationFormulas';
 import CalculationDataModal from './CalculationDataModal';
 import CalculationDetail from './CalculationDetail';
 import SearchSecFields from './searchSecFields';
+
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
 const dataPeriods = {
   StockholdersEquity: 44 * 3,
@@ -112,6 +133,10 @@ const Analysis = () => {
   const [selectedCalculationDetail, setSelectedCalculationDetail] = useState(null);
   const [showDeleteCalcConfirmModal, setShowDeleteCalcConfirmModal] = useState(false);
   const [calcToDelete, setCalcToDelete] = useState(null);
+  
+  // State for Analysis Chart
+  const [analysisChartData, setAnalysisChartData] = useState(null);
+
 
   const { stockId: urlStockId, tab: urlTab } = useParams();
 
@@ -298,6 +323,179 @@ const Analysis = () => {
     }
   }, []);
 
+  const fetchAnalysisChartData = useCallback(async () => {
+    if (!selectedStock) return;
+    setLoading(true);
+    try {
+        const [priceRes, alertsRes, calcsRes, macdRes] = await Promise.all([
+            http.get(`/calculations/${selectedStock.stock_id}/price-history`),
+            http.get(`/calculations/${selectedStock.stock_id}/macd-alerts`),
+            http.get(`/calculations/${selectedStock.stock_id}`),
+            http.get(`/calculations/${selectedStock.stock_id}/macd-history`)
+        ]);
+
+        const prices = priceRes.data; // [{date, closing_price}, ...]
+        const alerts = alertsRes.data; // [{date, type_melding, prijs_op_moment}, ...]
+        const calcs = calcsRes.data; // [{period_end_date, waarde_verdeling}, ...]
+        const macdHistory = macdRes.data; // [{date, macdLine, signalLine}, ...]
+
+        // 1. Create unified date list from all sources
+        const allDates = new Set();
+        prices.forEach(p => allDates.add(new Date(p.date).toISOString().split('T')[0]));
+        calcs.forEach(c => allDates.add(new Date(c.period_end_date).toISOString().split('T')[0]));
+        macdHistory.forEach(m => allDates.add(new Date(m.date).toISOString().split('T')[0]));
+        alerts.forEach(a => allDates.add(new Date(a.date).toISOString().split('T')[0]));
+
+        const sortedDates = Array.from(allDates).sort((a, b) => new Date(a) - new Date(b));
+        
+        // 2. Create lookup maps
+        const priceMap = new Map(prices.map(p => [new Date(p.date).toISOString().split('T')[0], p.closing_price]));
+        const macdMap = new Map(macdHistory.map(m => [new Date(m.date).toISOString().split('T')[0], m]));
+        const calcMap = new Map(calcs.map(c => [new Date(c.period_end_date).toISOString().split('T')[0], c.waarde_verdeling]));
+        
+        const alertsMap = new Map();
+        alerts.forEach(a => {
+            const d = new Date(a.date).toISOString().split('T')[0];
+            if (!alertsMap.has(d)) alertsMap.set(d, []);
+            alertsMap.get(d).push(a);
+        });
+        // 3. Build data arrays aligned with sortedDates
+        const priceData = [];
+        const waardeverdelingData = [];
+        const signalLineData = [];
+        const macdLineData = [];
+        const buySignalData = [];
+        const sellSignalData = [];
+        const zeroLineData = [];
+
+        sortedDates.forEach(date => {
+            // Price
+            priceData.push(priceMap.get(date) || null);
+
+            // Waardeverdeling
+            waardeverdelingData.push(calcMap.get(date) || null);
+
+            // MACD
+            const m = macdMap.get(date);
+            if (m) {
+                signalLineData.push(m.signalLine);
+                macdLineData.push(m.macdLine);
+            } else {
+                signalLineData.push(null);
+                macdLineData.push(null);
+            }
+            zeroLineData.push(0);
+
+            // Alerts
+            const daysAlerts = alertsMap.get(date);
+            let buyVal = null;
+            let sellVal = null;
+            if (daysAlerts) {
+                daysAlerts.forEach(a => {
+                    if (a.type_melding === 'Koopsignaal' && a.signal_line_value < 0) {
+                        buyVal = a.prijs_op_moment;
+                    } else if (a.type_melding === 'Verkoopsignaal') {
+                        sellVal = a.prijs_op_moment;
+                    }
+                });
+            }
+            buySignalData.push(buyVal);
+            sellSignalData.push(sellVal);
+        });
+
+        setAnalysisChartData({
+            labels: sortedDates.map(d => new Date(d).toLocaleDateString()),
+            datasets: [
+                {
+                    label: 'Prijs',
+                    data: priceData,
+                    borderColor: 'rgb(75, 192, 192)',
+                    backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                    yAxisID: 'y',
+                    pointRadius: 0,
+                    borderWidth: 2,
+                    tension: 0.1,
+                    order: 2
+                },
+                {
+                    label: 'Waardeverdeling',
+                    data: waardeverdelingData,
+                    borderColor: 'rgb(153, 102, 255)',
+                    backgroundColor: 'rgba(153, 102, 255, 0.5)',
+                    yAxisID: 'y1',
+                    spanGaps: true, // Verbind de punten met elkaar
+                    pointRadius: 4,
+                    borderWidth: 2,
+                    tension: 0.1,
+                    order: 1
+                },
+                {
+                    label: 'Signal Line',
+                    data: signalLineData,
+                    borderColor: 'rgb(255, 99, 132)',
+                    backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                    yAxisID: 'y_macd',
+                    pointRadius: 0,
+                    borderWidth: 1.5,
+                    tension: 0.1,
+                    order: 3
+                },
+                {
+                    label: 'MACD Line',
+                    data: macdLineData,
+                    borderColor: 'rgb(54, 162, 235)',
+                    backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                    yAxisID: 'y_macd',
+                    pointRadius: 0,
+                    borderWidth: 1.5,
+                    tension: 0.1,
+                    order: 3
+                },
+                {
+                    label: 'Zero Line',
+                    data: zeroLineData,
+                    borderColor: 'black',
+                    borderWidth: 1,
+                    pointRadius: 0,
+                    borderDash: [5, 5],
+                    yAxisID: 'y_macd',
+                    order: 4
+                },
+                {
+                    label: 'Koopsignaal',
+                    data: buySignalData,
+                    borderColor: 'green',
+                    backgroundColor: 'green',
+                    pointStyle: 'triangle',
+                    pointRadius: 8,
+                    rotation: 0,
+                    showLine: false,
+                    yAxisID: 'y',
+                    order: 0
+                },
+                {
+                    label: 'Verkoopsignaal',
+                    data: sellSignalData,
+                    borderColor: 'red',
+                    backgroundColor: 'red',
+                    pointStyle: 'triangle',
+                    pointRadius: 8,
+                    rotation: 180,
+                    showLine: false,
+                    yAxisID: 'y',
+                    order: 0
+                }
+            ]
+        });
+
+    } catch (err) {
+        console.error("Error fetching analysis chart data", err);
+        setError("Kon grafiek data niet laden.");
+    } finally {
+        setLoading(false);
+    }
+  }, [selectedStock]);
+
   const fetchLatestCalculations = useCallback(async () => {
     try {
       const response = await http.get('/calculations/latest-summary');
@@ -312,6 +510,7 @@ const Analysis = () => {
   }, []);
 
   useEffect(() => {
+
     fetchStocks();
     fetchFiscalPeriods();
     fetchFormTypes();
@@ -338,6 +537,12 @@ const Analysis = () => {
       fetchAnalysisForCalculations();
     }
   }, [selectedStock, calculationAnalysisDate, activeTab, fetchAnalysisForCalculations]);
+
+  useEffect(() => {
+    if (selectedStock && activeTab === 'Analyse') {
+        fetchAnalysisChartData();
+    }
+  }, [selectedStock, activeTab, fetchAnalysisChartData]);
 
   useEffect(() => {
     if (existingFundamentalData.length > 0) {
@@ -371,10 +576,7 @@ const Analysis = () => {
     // Reset calculation tab states as well
     setCalculationAnalysisResult(null);
     setSelectedCalculationDetail(null);
-  };
-
-  const handleManualValueChange = (key, value) => {
-    setManualDataValues(prev => ({ ...prev, [key]: value }));
+    setAnalysisChartData(null);
   };
 
   const checkDate = useCallback(async (date) => {
@@ -853,6 +1055,15 @@ const Analysis = () => {
                   Berekeningen
                 </button>
                 <button
+                  onClick={() => setActiveTab('Analyse')}
+                  className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'Analyse'
+                      ? 'border-blue-500 text-blue-600'
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                    }`}
+                >
+                  Analyse
+                </button>
+                <button
                   onClick={() => setActiveTab('SecFields')}
                   className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${activeTab === 'SecFields'
                       ? 'border-blue-500 text-blue-600'
@@ -882,7 +1093,7 @@ const Analysis = () => {
                     manualFormId={manualFormId}
                     setManualFormId={setManualFormId}
                     manualDataValues={manualDataValues}
-                    handleManualValueChange={handleManualValueChange}
+                    //handleManualValueChange={handleManualValueChange}
                     isDateConfirmed={isDateConfirmed}
                     setIsDateConfirmed={setIsDateConfirmed}
                     nearbyDateSuggestion={nearbyDateSuggestion}
@@ -1058,6 +1269,83 @@ const Analysis = () => {
 
                   {selectedCalculationDetail && <CalculationDetail result={selectedCalculationDetail} />}
                 </div>
+              )}
+              {activeTab === 'Analyse' && (
+                  <div className="bg-white p-6 rounded-lg shadow-md">
+                      <h3 className="text-xl font-bold mb-4">Grafische Analyse</h3>
+                      {loading && !analysisChartData ? (
+                          <p>Grafiek laden...</p>
+                
+            ) : analysisChartData ? (
+                          <div style={{ height: '700px', marginBottom: '20px' }}>
+                              <Line 
+                                  data={analysisChartData} 
+                                  options={{
+                                      responsive: true,
+                                      maintainAspectRatio: false,
+                                      interaction: {
+                                          mode: 'index',
+                                          intersect: false,
+                                      },
+                                      stacked: false,
+                                      plugins: {
+                                          legend: { position: 'top' },
+                                          title: { display: true, text: `Prijs, Waardeverdeling & MACD - ${selectedStock.ticker}` },
+                                          tooltip: {
+                                              callbacks: {
+                                                  label: function(context) {
+                                                      let label = context.dataset.label || '';
+                                                      if (label) {
+                                                          label += ': ';
+                                                      }
+                                                      if (context.parsed.y !== null) {
+                                                          label += context.parsed.y.toFixed(2);
+                                                      }
+                                                      return label;
+                                                  }
+                                              }
+                                          }
+                                      },
+                                      scales: {
+                                          x: {
+                                              ticks: { maxTicksLimit: 20 }
+                                          },
+                                          y: {
+                                              type: 'linear',
+                                              display: true,
+                                              position: 'left',
+                                              title: { display: true, text: 'Prijs (€)' },
+                                              stack: 'main',
+                                              stackWeight: 2,
+                                              beginAtZero: false
+                                          },
+                                          y1: {
+                                              type: 'linear',
+                                              display: true,
+                                              position: 'right',
+                                              grid: { drawOnChartArea: false },
+                                              title: { display: true, text: 'Waardeverdeling' },
+                                              stack: 'main',
+                                              stackWeight: 2
+                                          },
+                                  y_macd: {
+                                              type: 'linear',
+                                              display: true,
+                                              position: 'left',
+                                              title: { display: true, text: 'MACD' },
+                                              stack: 'main',
+                                              stackWeight: 1,
+                                              offset: true,
+                                              grid: {
+                                                  drawOnChartArea: true
+                                              }
+                                          }
+                                      }
+                                  }} 
+                              />
+                          </div>
+                      ) : <p>Geen data beschikbaar voor grafiek.</p>}
+                  </div>
               )}
               {activeTab === 'SecFields' && (
                 <div className="mt-6">

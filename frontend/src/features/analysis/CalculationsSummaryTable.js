@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { useNavigate } from 'react-router-dom';
 import http from '../../http-common';
 import {
@@ -15,12 +15,13 @@ import { Line } from 'react-chartjs-2';
 
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
-const CalculationsSummaryTable = () => {
+const CalculationsSummaryTable = forwardRef((props, ref) => {
     const navigate = useNavigate();
     const [summaryData, setSummaryData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
     const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+    const [baseAmount, setBaseAmount] = useState(30000); // Default fallback
 
     // --- State for sorting and filtering ---
     const [sortConfig, setSortConfig] = useState({ key: 'waarde_verdeling', direction: 'desc' });
@@ -63,26 +64,58 @@ const CalculationsSummaryTable = () => {
         return ALL_COLUMNS.filter(col => visibleColumnKeys.includes(col.key));
     }, [ALL_COLUMNS, visibleColumnKeys]);
 
-
+    // Fetch available balance for calculations
     useEffect(() => {
-        const fetchSummary = async () => {
+        const fetchBalance = async () => {
             try {
-                setLoading(true);
-                const response = await http.get('/calculations/summary-by-date', {
-                    params: { date: selectedDate }
-                });
-                setSummaryData(response.data);
-                setError('');
+                const response = await http.get('/balance/available/latest-balance');
+                if (response.data.totalAmount) {
+                    setBaseAmount(response.data.totalAmount);
+                }
             } catch (err) {
-                setError('Kon de samenvatting van de berekeningen niet laden.');
-                console.error('Error fetching calculations summary:', err);
-            } finally {
-                setLoading(false);
+                console.error("Error fetching balance for calculations:", err);
             }
         };
+        fetchBalance();
+    }, []);
 
-        fetchSummary();
+    const fetchSummary = useCallback(async () => {
+        try {
+            setLoading(true);
+            const response = await http.get('/calculations/summary-by-date', {
+                params: { date: selectedDate }
+            });
+            setSummaryData(response.data);
+            setError('');
+        } catch (err) {
+            setError('Kon de samenvatting van de berekeningen niet laden.');
+            console.error('Error fetching calculations summary:', err);
+        } finally {
+            setLoading(false);
+        }
     }, [selectedDate]);
+
+    useEffect(() => {
+        fetchSummary();
+    }, [fetchSummary]);
+
+    useImperativeHandle(ref, () => ({
+        updateStockLocal: (updatedData) => {
+            setSummaryData(prevData => prevData.map(item => {
+                if (item.stock_id === updatedData.aandeel_id) {
+                    return {
+                        ...item,
+                        current_price: updatedData.current_price,
+                        current_signal_line: updatedData.current_signal_line,
+                        latest_alert_type: updatedData.latest_alert_type || item.latest_alert_type,
+                        latest_alert_date: updatedData.latest_alert_date || item.latest_alert_date
+                    };
+                }
+                return item;
+            }));
+        },
+        refreshData: fetchSummary
+    }));
 
     const totalWaardeVerdeling = useMemo(() => summaryData
         .filter(item => item.waarde_verdeling > 0 && item.selectiecriteria === 5)
@@ -525,7 +558,7 @@ const CalculationsSummaryTable = () => {
                                 }
 
                                 const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
-                                    ? Math.max(0, 30000 * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
+                                    ? Math.max(0, baseAmount * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
                                     : null;
 
                                 const renderCell = (col) => {
@@ -656,6 +689,6 @@ const CalculationsSummaryTable = () => {
             )}
         </div>
     );
-};
+});
 
 export default CalculationsSummaryTable;

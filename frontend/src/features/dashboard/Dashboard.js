@@ -1,9 +1,10 @@
 import React, { useState, useRef } from 'react';
 import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
 import AlertsSummaryTable from '../analysis/AlertsSummaryTable';
-import WatchlistPortfolioTable from './WatchlistPortfolioTable'
 import Modal from '../../components/ui/modal';
 import http from '../../http-common';
+import toast from 'react-hot-toast';
+import Score5DistributionChart from './Score5DistributionChart';
 
 // Placeholder components for stats and charts
 const StatCard = ({ title, value }) => (
@@ -25,8 +26,11 @@ const ChartCard = ({ title, children }) => (
 const Dashboard = () => {
   const [viewType, setViewType] = useState('idealePortfolio');
   const watchlistTableRef = useRef(null);
+  const calculationsTableRef = useRef(null);
+  const alertsTableRef = useRef(null);
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportDate, setExportDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isUpdatingData, setIsUpdatingData] = useState(false);
 
   const handleAddStock = () => {
     if (watchlistTableRef.current) {
@@ -164,17 +168,94 @@ const Dashboard = () => {
     }
   };
 
+  // NIEUW: Functie om data te updaten met streaming response
+  const handleUpdateData = async () => {
+    setIsUpdatingData(true);
+    const toastId = toast.loading('Verbinden met server...');
+
+    try {
+      const response = await fetch('http://localhost:5000/api/watchlist/update-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop(); // Bewaar het laatste onvolledige stukje
+
+        for (const line of lines) {
+          if (!line.trim()) continue;
+          try {
+            const data = JSON.parse(line);
+            
+            if (data.type === 'progress') {
+               // Optioneel: update toast bericht, maar kan te snel gaan
+               // toast.loading(data.message, { id: toastId });
+            } else if (data.type === 'stock_update') {
+               // Update de tabel direct via de ref
+               if (watchlistTableRef.current) {
+                 watchlistTableRef.current.updateStockLocal(data);
+               }
+               if (calculationsTableRef.current) {
+                 calculationsTableRef.current.updateStockLocal(data);
+               }
+               toast.success(`Updated: Aandeel ID ${data.aandeel_id}`, { id: toastId, duration: 1000 });
+            } else if (data.type === 'complete') {
+               toast.success(data.message, { id: toastId });
+            } else if (data.type === 'error') {
+               toast.error(data.message, { id: toastId });
+            }
+          } catch (e) {
+            console.error("Error parsing JSON chunk", e);
+          }
+        }
+      }
+    } catch (err) {
+      toast.error(`Fout bij bijwerken: ${err.message}`, { id: toastId });
+    } finally {
+      setIsUpdatingData(false);
+      // Optioneel: doe nog een volledige refresh aan het einde om zeker te zijn
+      if (watchlistTableRef.current) {
+        watchlistTableRef.current.refreshData();
+      }
+      if (calculationsTableRef.current) {
+        calculationsTableRef.current.refreshData();
+      }
+      if (alertsTableRef.current) {
+        alertsTableRef.current.refreshData();
+      }
+    }
+  };
+
   return (
     <div className="space-y-8">
       {/* Header */}
       <div className="flex justify-between items-center">
         <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
         <div className="flex space-x-4">
+          {/* Knoppen */}
           <button
             onClick={handleAddStock}
             className="bg-blue-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
           >
             Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
+          </button>
+          <button 
+            onClick={handleUpdateData}
+            disabled={isUpdatingData}
+            className="bg-green-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {isUpdatingData ? 'Bezig met bijwerken...' : 'Update Prijzen & Meldingen'}
           </button>
           <button 
             onClick={handleOpenExportModal}
@@ -201,18 +282,15 @@ const Dashboard = () => {
             <p className="text-gray-500">Portfolio Performance Chart</p>
           </div>
         </ChartCard>
-        <ChartCard title="Asset Allocation">
-          {/* Placeholder for Pie Chart */}
-          <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg">
-            <p className="text-gray-500">Asset Allocation Donut Chart</p>
-          </div>
+        <ChartCard title="Waardeverdeling (Score 5)">
+          {/* Donut Chart voor aandelen met score 5 */}
+          <Score5DistributionChart />
         </ChartCard>
       </div>
 
       {/* Calculations Summary Table */}
-      <AlertsSummaryTable />
-      <CalculationsSummaryTable />
-      <WatchlistPortfolioTable ref={watchlistTableRef} onViewTypeChange={setViewType} />
+      <AlertsSummaryTable ref={alertsTableRef} />
+      <CalculationsSummaryTable ref={calculationsTableRef} />
 
       {/* Recent Activity Table */}
       <div className="bg-white p-6 rounded-lg shadow-md">

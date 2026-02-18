@@ -355,6 +355,13 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
   }
 
   console.log(`[${isStartup ? 'Startup' : 'Manual'}] Starten met het bijwerken en verwerken van aandelen.`);
+  
+  // Als er een response object is (niet startup), stel headers in voor streaming
+  if (res) {
+      res.setHeader('Content-Type', 'application/json'); // Of text/event-stream, maar NDJSON werkt goed met fetch readers
+      res.setHeader('Transfer-Encoding', 'chunked');
+  }
+
   try {
     const stocksQuery = `
       SELECT s.aandeel_id, s.ticker_symbol, s.name, at.type_name AS asset_type
@@ -373,6 +380,19 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
     const twoYearsAgoFormatted = twoYearsAgo.toISOString().split("T")[0];
 
     const pool = await sql.connect(config);
+
+    // 0.5 Haal het totale beschikbare vermogen op voor tradeAmount berekening
+    const balanceQuery = `
+        SELECT SUM(amount) as total
+        FROM AvailableBalances ab
+        WHERE ab.update_date = (
+            SELECT MAX(update_date)
+            FROM AvailableBalances ab2
+            WHERE ab2.balance_type_id = ab.balance_type_id
+        )
+    `;
+    const balanceResult = await pool.request().query(balanceQuery);
+    const baseTradeAmount = balanceResult.recordset[0].total || 30000; // Fallback naar 30000 als er geen saldo is
 
     // 0. Verwijder oude data (ouder dan 2 jaar) uit de database
     console.log(`Verwijderen van data ouder dan ${twoYearsAgoFormatted}...`);
@@ -421,6 +441,12 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
             } else {
                 apiData = await response.json();
                 console.log(`API data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
+                
+                // Stuur voortgang naar client
+                if (res) {
+                    const progressMsg = JSON.stringify({ type: 'progress', message: `Data opgehaald voor ${stock.ticker_symbol}` }) + '\n';
+                    res.write(progressMsg);
+                }
             }
           } catch (apiError) {
             console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
@@ -505,7 +531,10 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
                 let tradeAmount = null;
 
                 if (macdLine > signalLine && previousMacdLine <= previousSignalLine) {
-                    alertType = 'Koopsignaal';
+                    // NIEUW: Alleen koopsignaal als signalLine onder 0 is
+                    if (signalLine < 0) {
+                        alertType = 'Koopsignaal';
+                    }
                 }
                 else if (macdLine < signalLine && previousMacdLine >= previousSignalLine) {
                     alertType = 'Verkoopsignaal';
@@ -513,7 +542,7 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
                 if (alertType) {
                     if (!isNaN(signalLine) && currentPrice > 0) {
-                        tradeAmount = 25000 * (1 + (-signalLine / currentPrice) * 4);
+                        tradeAmount = baseTradeAmount * (1 + (-signalLine / currentPrice) * 4);
                         tradeAmount = Math.max(0, tradeAmount);
                     } else {
                         tradeAmount = null;
@@ -552,6 +581,19 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
             } else {
                 console.log(`MACD/Signal Line kan niet berekend worden voor crossover check voor ${stock.ticker_symbol} op ${formattedLoopDate} (onvoldoende data of NaN waarden).`);
             }
+
+            // Stuur de update van dit specifieke aandeel direct naar de client
+            if (res && i === historicalPricesForMacd.length - 1) {
+                const updatePayload = JSON.stringify({
+                    type: 'stock_update',
+                    aandeel_id: stock.aandeel_id,
+                    current_price: currentPrice,
+                    current_signal_line: signalLine,
+                    latest_alert_type: !isNaN(macdLine) && !isNaN(signalLine) && !isNaN(previousMacdLine) && !isNaN(previousSignalLine) && macdLine > signalLine && previousMacdLine <= previousSignalLine && signalLine < 0 ? 'Koopsignaal' : (macdLine < signalLine && previousMacdLine >= previousSignalLine ? 'Verkoopsignaal' : null),
+                    latest_alert_date: formattedLoopDate
+                }) + '\n';
+                res.write(updatePayload);
+            }
           }
       } else if (stock.asset_type === 'CRYPTO') {
           console.log(`Ophalen van data voor CRYPTO (${stock.ticker_symbol}) wordt later geïmplementeerd.`);
@@ -561,14 +603,18 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
     }
 
     if (res) {
-      res.status(200).json({ message: "Prijzen, MACD en meldingen succesvol bijgewerkt." });
+      res.write(JSON.stringify({ type: 'complete', message: "Prijzen, MACD en meldingen succesvol bijgewerkt." }) + '\n');
+      res.end();
     }
     console.log(`[${isStartup ? 'Startup' : 'Manual'}] Aandelenverwerking voltooid.`);
 
   } catch (error) {
     console.error('Fout in updateAndProcessStocks:', error);
     if (res) {
-      res.status(500).json({ message: 'Fout bij het bijwerken en verwerken van aandelen.' });
+      // Als headers al verzonden zijn, kunnen we geen status 500 meer sturen, maar wel een error bericht in de stream
+      if (!res.headersSent) res.status(500);
+      res.write(JSON.stringify({ type: 'error', message: 'Fout bij het bijwerken en verwerken van aandelen.' }));
+      res.end();
     }
   }
 };

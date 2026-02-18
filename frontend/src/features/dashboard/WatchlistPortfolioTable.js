@@ -83,7 +83,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
 
       const todayFormatted = new Date().toISOString().split('T')[0];
       const currentDayAlerts = stocksData.filter(stock =>
-        stock.latest_alert_type && new Date(stock.latest_alert_date).toISOString().split('T')[0] === todayFormatted
+        stock.latest_alert_type && 
+        new Date(stock.latest_alert_date).toISOString().split('T')[0] === todayFormatted &&
+        !(stock.latest_alert_type === 'Koopsignaal' && stock.latest_alert_signal_line_value >= 0) // NIEUW: Filter onterechte koopsignalen
       ).map(s => ({
         aandeel_id: s.aandeel_id,
         symbol: s.ticker_symbol,
@@ -174,7 +176,23 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   useImperativeHandle(ref, () => ({
     openAddStockModal: () => {
       handleAddStockClick();
-    }
+    },
+    // NIEUW: Functie om één aandeel lokaal te updaten zonder refetch
+    updateStockLocal: (updatedData) => {
+      setStocks(prevStocks => prevStocks.map(stock => {
+        if (stock.aandeel_id === updatedData.aandeel_id) {
+          return {
+            ...stock,
+            current_price: updatedData.current_price,
+            current_signal_line: updatedData.current_signal_line,
+            latest_alert_type: updatedData.latest_alert_type || stock.latest_alert_type,
+            latest_alert_date: updatedData.latest_alert_date || stock.latest_alert_date
+          };
+        }
+        return stock;
+      }));
+    },
+    refreshData: fetchStocksAndAlerts // Exposeer de refresh functie
   }));
 
   useEffect(() => {
@@ -185,27 +203,6 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     setViewType(event.target.value);
   };
 
-  const handleUpdateData = async () => {
-    setIsUpdatingData(true);
-    const promise = fetch('http://localhost:5000/api/watchlist/update-data', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-    }).then(response => {
-      if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-      return response.json();
-    });
-
-    toast.promise(promise, {
-      loading: 'Prijzen en meldingen worden bijgewerkt...',
-      success: (result) => {
-        fetchStocksAndAlerts();
-        checkDailyUpdateStatus();
-        setIsUpdatingData(false);
-        return result.message || 'Update succesvol voltooid!';
-      },
-      error: (err) => `Fout bij bijwerken: ${err.message}`,
-    });
-  };
 
   const handleAddStockClick = () => {
     setSelectedStockToAdd('');
@@ -467,9 +464,6 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
               <option value="watchlist">Watchlist</option>
             </select>
           </div>
-          {/* Knop om data te updaten via de backend */}
-          {/* De knop is verplaatst naar de hoofd-header in de vorige stap, dus deze kan hier weg. */}
-        </div>
         </div>
 
         {error && (
@@ -666,18 +660,6 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
           </div>
         )}
 
-        {/* Knop om aandelen toe te voegen aan de geselecteerde lijst */}
-        <div className="mt-6 text-center">
-          <div className="flex justify-center space-x-4">
-            <button
-              onClick={handleUpdateData}
-              disabled={isUpdatingData}
-              className="bg-green-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {isUpdatingData ? 'Bezig met bijwerken...' : 'Update Prijzen & Meldingen'}
-            </button>
-          </div>
-        </div>
 
         {/* Modal voor het toevoegen van een stock */}
         {showAddStockModal && (
@@ -789,6 +771,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
           </div>
         )}
       </div>
+    </div>
     </div>
   );
 });
