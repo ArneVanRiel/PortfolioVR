@@ -1,3 +1,4 @@
+// c:\Arne\ArneVR\PortfolioVR\frontend\src\features\analysis\AlertsSummaryTable.js
 import React, { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import http from '../../http-common';
 import { useDebounce } from 'use-debounce';
@@ -48,6 +49,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     const [isContextLoaded, setIsContextLoaded] = useState(false);
     const [diffData, setDiffData] = useState({}); // Store diff percentages per stock
     const [percentageFilter, setPercentageFilter] = useState('');
+    const [virtualSellAlerts, setVirtualSellAlerts] = useState([]); // Nieuwe state voor gegenereerde verkoopsignalen
     
     // --- State for pagination ---
     const [currentPage, setCurrentPage] = useState(1);
@@ -113,6 +115,8 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
             const mapping = {};
             const score5Ids = new Set();
             const diffMapping = {};
+            const newVirtualAlerts = [];
+
             data.forEach(item => {
                 const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
                     ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
@@ -126,12 +130,29 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                 let prevDiffPercentage = null;
                 if (item.previous_waarde_verdeling) {
                     prevDiffPercentage = ((item.waarde_verdeling - item.previous_waarde_verdeling) / item.previous_waarde_verdeling) * 100;
+                    
+                    // STRATEGIE: Verkopen als waardeverdeling is gezakt (negatief verschil)
+                    if (prevDiffPercentage < 0) {
+                        newVirtualAlerts.push({
+                            alert_id: `virtual-sell-${item.stock_id}`,
+                            aandeel_id: item.stock_id,
+                            name: item.name,
+                            ticker_symbol: item.ticker_symbol,
+                            date: item.period_end_date,
+                            type_melding: 'Verkoopsignaal',
+                            prijs_op_moment: item.current_price,
+                            signal_line_value: null,
+                            trade_amount: prevDiffPercentage / 100, // Opslaan als decimaal voor consistentie
+                            is_percentage: true
+                        });
+                    }
                 }
                 diffMapping[item.stock_id] = prevDiffPercentage;
             });
             setCalculationData(mapping);
             setScore5Stocks(score5Ids);
             setDiffData(diffMapping);
+            setVirtualSellAlerts(newVirtualAlerts);
             setIsContextLoaded(true);
         } catch (err) {
             console.error("Error fetching calculation context for alerts", err);
@@ -170,13 +191,19 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     };
 
     const filteredAndSortedData = useMemo(() => {
+        // Combineer DB alerts en virtuele verkoopsignalen
+        const combinedData = [...allAlerts, ...virtualSellAlerts];
+
         // Filter: Toon alleen alerts van aandelen met score 5
-        let currentData = allAlerts.filter(item => {
+        let currentData = combinedData.filter(item => {
             // Check of aandeel score 5 heeft
             if (!score5Stocks.has(item.aandeel_id)) return false;
             
-            // NIEUW: Verberg Koopsignalen als de signal line >= 0 is (voor historische data)
+            // STRATEGIE KOPEN: Verberg Koopsignalen als de signal line >= 0 is
             if (item.type_melding === 'Koopsignaal' && item.signal_line_value >= 0) return false;
+
+            // STRATEGIE VERKOPEN: Verberg oude MACD Verkoopsignalen (die niet virtueel zijn)
+            if (item.type_melding === 'Verkoopsignaal' && !item.is_percentage) return false;
 
             // Filter: Percentage (Q)
             if (percentageFilter === 'gt0') {
@@ -215,7 +242,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
             });
         }
         return currentData;
-    }, [allAlerts, score5Stocks, sortConfig, ALL_COLUMNS, percentageFilter, diffData]);
+    }, [allAlerts, virtualSellAlerts, score5Stocks, sortConfig, ALL_COLUMNS, percentageFilter, diffData]);
 
     const itemsPerPage = 10;
     const totalPages = Math.ceil(filteredAndSortedData.length / itemsPerPage);
@@ -294,6 +321,10 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                             case 'prijs_op_moment':
                                                 return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
                                             case 'trade_amount':
+                                                if (item.is_percentage) {
+                                                    const pct = value * 100;
+                                                    return <span className="text-red-600 font-bold">{pct.toFixed(2)}%</span>;
+                                                }
                                                 // Apply weighting logic consistent with CalculationsSummaryTable
                                                 const percentage = calculationData[item.aandeel_id] || 0;
                                                 const adjustedValue = value != null ? value * (percentage / 100) / 10 : null;

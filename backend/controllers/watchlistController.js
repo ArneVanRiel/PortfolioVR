@@ -536,9 +536,10 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
                         alertType = 'Koopsignaal';
                     }
                 }
-                else if (macdLine < signalLine && previousMacdLine >= previousSignalLine) {
-                    alertType = 'Verkoopsignaal';
-                }
+                // VERWIJDERD: Verkoopsignaal op basis van MACD is niet meer gewenst.
+                // else if (macdLine < signalLine && previousMacdLine >= previousSignalLine) {
+                //     alertType = 'Verkoopsignaal';
+                // }
 
                 if (alertType) {
                     if (!isNaN(signalLine) && currentPrice > 0) {

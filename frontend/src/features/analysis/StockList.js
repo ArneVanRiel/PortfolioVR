@@ -31,7 +31,6 @@ const StockList = ({
   const processedStocks = useMemo(() => {
     let data = [...stocks];
 
-    // Filteren
     if (filterText) {
       const lowerFilter = filterText.toLowerCase();
       data = data.filter(stock => 
@@ -50,7 +49,6 @@ const StockList = ({
       });
     }
 
-    // Sorteren
     data.sort((a, b) => {
       let aValue, bValue;
 
@@ -60,7 +58,6 @@ const StockList = ({
       } else if (sortConfig.key === 'completeness') {
         const analysisA = allAnalyses[a.stock_id];
         const analysisB = allAnalyses[b.stock_id];
-        // Gebruik -1 voor null/undefined zodat ze onderaan komen bij desc sort (of bovenaan bij asc)
         aValue = analysisA ? analysisA.overallCompletenessPercentage : -1;
         bValue = analysisB ? analysisB.overallCompletenessPercentage : -1;
       } else if (sortConfig.key === 'score') {
@@ -107,22 +104,13 @@ const StockList = ({
       </div>
       
       <div className="flex justify-between items-center mb-2 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b pb-1">
-        <div 
-            className="cursor-pointer hover:text-gray-700 flex items-center"
-            onClick={() => handleSort('ticker')}
-        >
+        <div className="cursor-pointer hover:text-gray-700 flex items-center" onClick={() => handleSort('ticker')}>
             Ticker {getSortArrow('ticker')}
         </div>
-        <div 
-            className="cursor-pointer hover:text-gray-700 flex items-center"
-            onClick={() => handleSort('score')}
-        >
+        <div className="cursor-pointer hover:text-gray-700 flex items-center" onClick={() => handleSort('score')}>
             Score {getSortArrow('score')}
         </div>
-        <div 
-            className="cursor-pointer hover:text-gray-700 flex items-center"
-            onClick={() => handleSort('completeness')}
-        >
+        <div className="cursor-pointer hover:text-gray-700 flex items-center" onClick={() => handleSort('completeness')}>
             % {getSortArrow('completeness')}
         </div>
       </div>

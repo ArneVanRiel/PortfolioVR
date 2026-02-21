@@ -189,7 +189,19 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
         }
 
         if (alertTypeFilter) {
-            currentData = currentData.filter(item => item.latest_alert_type === alertTypeFilter);
+            currentData = currentData.filter(item => {
+                // STRATEGIE VERKOPEN: Als waardeverdeling is gezakt
+                const isSellSignal = item.prevDiffPercentage !== null && item.prevDiffPercentage < 0;
+                
+                let displayAlertType = item.latest_alert_type;
+                // Verberg oude MACD verkoopsignalen uit de DB (want we gebruiken nu waardeverdeling)
+                if (displayAlertType === 'Verkoopsignaal') displayAlertType = null; 
+                
+                // Als er een daling is, is het een verkoopsignaal
+                if (isSellSignal) displayAlertType = 'Verkoopsignaal';
+
+                return displayAlertType === alertTypeFilter;
+            });
         }
 
         if (percentageFilter === 'gt0') {
@@ -259,6 +271,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
 
             alerts.forEach(alert => {
                 const alertDate = new Date(alert.date).toLocaleDateString();
+                // STRATEGIE KOPEN: Alleen als signal line < 0
                 if (alert.type_melding === 'Koopsignaal') {
                     if (alert.signal_line_value < 0) {
                         buyAlerts.push({ x: alertDate, y: alert.prijs_op_moment });
@@ -342,6 +355,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
 
             alerts.forEach(alert => {
                 const alertDate = new Date(alert.date).toLocaleDateString();
+                // STRATEGIE KOPEN: Alleen als signal line < 0
                 if (alert.type_melding === 'Koopsignaal') {
                     if (alert.signal_line_value < 0) {
                         buyAlerts.push({ x: alertDate, y: alert.signal_line_value });
@@ -557,6 +571,15 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                     }
                                 }
 
+                                // STRATEGIE VERKOPEN: Als waardeverdeling is gezakt
+                                const isSellSignal = item.prevDiffPercentage !== null && item.prevDiffPercentage < 0;
+                                
+                                let displayAlertType = item.latest_alert_type;
+                                // Verberg oude MACD verkoopsignalen
+                                if (displayAlertType === 'Verkoopsignaal') displayAlertType = null; 
+                                
+                                if (isSellSignal) displayAlertType = 'Verkoopsignaal';
+
                                 const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
                                     ? Math.max(0, baseAmount * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
                                     : null;
@@ -606,10 +629,17 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                                     {value != null ? Number(value).toFixed(4) : 'N/A'}
                                                 </div>
                                             );
+                                        case 'latest_alert_type':
+                                            const typeClass = displayAlertType === 'Koopsignaal' ? 'text-green-600 font-bold' : displayAlertType === 'Verkoopsignaal' ? 'text-red-600 font-bold' : '';
+                                            return <span className={typeClass}>{displayAlertType || 'N/A'}</span>;
                                         case 'latest_alert_date':
-                                             return value ? new Date(value).toLocaleDateString() : 'N/A';
+                                             // Als het een verkoopsignaal is op basis van kwartaalcijfers, is de datum de period_end_date
+                                             return isSellSignal ? (item.period_end_date ? new Date(item.period_end_date).toLocaleDateString() : 'N/A') : (value ? new Date(value).toLocaleDateString() : 'N/A');
                                         case 'latest_trade_amount':
-                                            return value != null ? `€${(value * (percentage / 100) / 10).toFixed(2)}` : 'N/A';
+                                            if (isSellSignal) {
+                                                return <span className="text-red-600 font-bold">{item.prevDiffPercentage.toFixed(2)}%</span>;
+                                            }
+                                            return (value != null && displayAlertType === 'Koopsignaal') ? `€${(value * (percentage / 100) / 10).toFixed(2)}` : 'N/A';
                                         case 'current_recommended_amount':
                                              return currentRecommendedAmount != null ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A';
                                         default:

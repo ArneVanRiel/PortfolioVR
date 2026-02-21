@@ -1,3 +1,4 @@
+// c:\Arne\ArneVR\PortfolioVR\backend\controllers\calculationController.js
 const sql = require('mssql');
 const dbConfig = require('../config/database');
 
@@ -478,6 +479,7 @@ exports.getSummaryByDate = async (req, res) => {
                     ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
                 FROM
                     MACDAlerts
+                WHERE type_melding = 'Koopsignaal' AND signal_line_value < 0
             )
             SELECT 
                 s.name,
