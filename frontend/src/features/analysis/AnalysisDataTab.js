@@ -438,14 +438,14 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
 
       {showDeleteConfirmModal && (
           <Modal isOpen={showDeleteConfirmModal} onClose={() => setShowDeleteConfirmModal(false)}>
-              <div className="p-6">
+              <div className="p-8">
                   <h5 className="text-lg font-bold text-red-600">Bevestig Verwijdering</h5>
-                  <p>Weet je zeker dat je deze data wilt verwijderen?</p>
-                  {deleteError && <p className="text-red-500">{deleteError}</p>}
-                  <input type="date" className="border p-2 mt-2 w-full" value={deleteConfirmEndDate} onChange={e => setDeleteConfirmEndDate(e.target.value)} />
-                  <div className="mt-4 flex justify-end space-x-2">
-                      <button onClick={() => setShowDeleteConfirmModal(false)} className="bg-gray-300 px-4 py-2 rounded">Annuleren</button>
-                      <button onClick={handleConfirmDelete} className="bg-red-500 text-white px-4 py-2 rounded">Verwijderen</button>
+                  <p className="text-gray-600 mt-2">Weet je zeker dat je deze data wilt verwijderen? Dit kan niet ongedaan worden gemaakt.</p>
+                  {deleteError && <p className="text-red-500 mt-2 text-sm">{deleteError}</p>}
+                  <input type="date" className="border border-gray-300 rounded-lg p-2 mt-4 w-full focus:ring-2 focus:ring-red-500 focus:border-red-500" value={deleteConfirmEndDate} onChange={e => setDeleteConfirmEndDate(e.target.value)} />
+                  <div className="mt-6 flex justify-end space-x-3">
+                      <button onClick={() => setShowDeleteConfirmModal(false)} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors">Annuleren</button>
+                      <button onClick={handleConfirmDelete} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 shadow-sm transition-colors">Verwijderen</button>
                   </div>
               </div>
           </Modal>
@@ -453,30 +453,34 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
 
       {showMultiDateModal && multiDateAnomaly && (
         <Modal isOpen={showMultiDateModal} onClose={() => setShowMultiDateModal(false)} size="large">
-             <div className="p-6">
-                <h5 className="text-lg font-bold">Corrigeer Anomalie</h5>
-                <table className="min-w-full mt-4">
-                    <thead><tr><th className="text-left">Datum</th><th className="text-left">Waarde</th><th className="text-left">FP</th><th className="text-left">Actie</th></tr></thead>
-                    <tbody>
+             <div className="p-8">
+                <h5 className="text-xl font-bold text-gray-800 mb-4">Corrigeer Anomalie</h5>
+                <div className="overflow-x-auto border border-gray-200 rounded-lg">
+                <table className="min-w-full divide-y divide-gray-200">
+                    <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Datum</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Waarde</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">FP</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actie</th></tr></thead>
+                    <tbody className="bg-white divide-y divide-gray-200">
                         {editedData.map((item, idx) => (
                             <tr key={idx}>
-                                <td>{formatDate(new Date(item.period_end_date))}</td>
-                                <td>{item.value}</td>
-                                <td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{formatDate(new Date(item.period_end_date))}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">{item.value}</td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                     <select value={item.fp_id} onChange={(e) => {
                                         const newData = [...editedData];
                                         newData[idx].fp_id = e.target.value;
                                         setEditedData(newData);
-                                    }} className="border p-1">
+                                    }} className="border border-gray-300 rounded-md p-1 text-sm focus:ring-blue-500 focus:border-blue-500">
                                         {fiscalPeriods.map(fp => <option key={fp.fp_id} value={fp.fp_id}>{fp.fp}</option>)}
                                     </select>
                                 </td>
-                                <td><button onClick={() => handleUpdateDataPoint(item.id, idx)} className="bg-blue-500 text-white px-2 py-1 rounded">Opslaan</button></td>
+                                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900"><button onClick={() => handleUpdateDataPoint(item.id, idx)} className="bg-blue-600 text-white px-3 py-1.5 rounded-md text-xs font-medium hover:bg-blue-700 transition-colors">Opslaan</button></td>
                             </tr>
                         ))}
                     </tbody>
                 </table>
-                <button onClick={() => setShowMultiDateModal(false)} className="mt-4 bg-gray-300 px-4 py-2 rounded">Sluiten</button>
+                </div>
+                <div className="mt-6 flex justify-end">
+                    <button onClick={() => setShowMultiDateModal(false)} className="bg-gray-100 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-200 transition-colors">Sluiten</button>
+                </div>
              </div>
         </Modal>
       )}

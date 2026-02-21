@@ -116,14 +116,14 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
 
   return (
     <div>
-      <div className="bg-white p-6 rounded-lg shadow-md mb-8">
-        <h5 className="text-lg font-semibold text-gray-800 mb-4">Analyse voor Berekening</h5>
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-8">
+        <h5 className="text-xl font-bold text-gray-800 mb-4">Analyse voor Berekening</h5>
         <div className="mb-3">
-            <label htmlFor="calculationAnalysisDate" className="block text-sm font-medium text-gray-700">Analysedatum:</label>
+            <label htmlFor="calculationAnalysisDate" className="block text-sm font-semibold text-gray-700 mb-1">Analysedatum:</label>
             <input
                 type="date"
                 id="calculationAnalysisDate"
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2"
                 value={calculationAnalysisDate}
                 onChange={(e) => setCalculationAnalysisDate(e.target.value)}
             />
@@ -131,9 +131,9 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
         {isCalculatingAnalysis ? (
             <div>Analyse voor berekening wordt geladen...</div>
         ) : calculationAnalysisResult ? (
-            <p className="font-bold">Data Compleetheid: {calculationAnalysisResult.overallCompletenessPercentage.toFixed(2)}%</p>
+            <p className="font-medium text-gray-700 mt-2">Data Compleetheid: <span className={`font-bold ${calculationAnalysisResult.overallCompletenessPercentage === 100 ? 'text-green-600' : 'text-yellow-600'}`}>{calculationAnalysisResult.overallCompletenessPercentage.toFixed(2)}%</span></p>
         ) : (
-            <p>Selecteer een datum om de compleetheid te analyseren.</p>
+            <p className="text-gray-500 mt-2">Selecteer een datum om de compleetheid te analyseren.</p>
         )}
       </div>
 
@@ -149,7 +149,7 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
               new Date(calc.period_end_date).toISOString().split('T')[0] === new Date(calculationAnalysisResult.latest_period_end_date).toISOString().split('T')[0]
             ))
           }
-          className="bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
+          className="bg-blue-600 hover:bg-blue-700 text-white font-semibold py-2.5 px-6 rounded-lg shadow-sm transition-all duration-200 disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
           {isCalculating ? 'Berekenen...' : 'Start Nieuwe Berekening'}
         </button>
@@ -158,36 +158,36 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
 
       <div className="mt-8">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-2xl font-bold">Bestaande Berekeningen</h3>
-          <button onClick={() => setShowFormulas(!showFormulas)} className="text-sm text-blue-600 hover:underline">
+          <h3 className="text-xl font-bold text-gray-800">Bestaande Berekeningen</h3>
+          <button onClick={() => setShowFormulas(!showFormulas)} className="text-sm font-medium text-blue-600 hover:text-blue-800 transition-colors">
             {showFormulas ? 'Verberg' : 'Toon'} Formules
           </button>
         </div>
         {showFormulas && <CalculationFormulas />}
         
         {existingCalculations.length > 0 ? (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200">
+          <div className="overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+            <table className="min-w-full divide-y divide-gray-200 bg-white">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Period End</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Criteria</th>
-                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Period End</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Criteria</th>
+                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {existingCalculations.map((calc) => (
-                  <tr key={calc.id}>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{new Date(calc.period_end_date).toLocaleDateString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{calc.intrinsieke_waarde?.toFixed(2) || 'N/A'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{calc.waarde_verdeling?.toFixed(4) || 'N/A'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm">{calc.selectiecriteria} / 5</td>
+                  <tr key={calc.id} className="hover:bg-gray-50 transition-colors">
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{new Date(calc.period_end_date).toLocaleDateString()}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{calc.intrinsieke_waarde?.toFixed(2) || 'N/A'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{calc.waarde_verdeling?.toFixed(4) || 'N/A'}</td>
+                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{calc.selectiecriteria} / 5</td>
                     <td className="px-6 py-4 whitespace-nowrap text-sm space-x-2">
-                      <button onClick={() => handleRunCalculation(calc.period_end_date)} className="text-indigo-600 hover:text-indigo-900">Herberekenen</button>
-                      <button onClick={() => setSelectedCalculationDetail(calc)} className="text-green-600 hover:text-green-900">Details</button>
-                      <button onClick={() => handleDeleteCalculationClick(calc)} className="text-red-600 hover:text-red-900">Verwijderen</button>
+                      <button onClick={() => handleRunCalculation(calc.period_end_date)} className="text-blue-600 hover:text-blue-800 font-medium">Herberekenen</button>
+                      <button onClick={() => setSelectedCalculationDetail(calc)} className="text-emerald-600 hover:text-emerald-800 font-medium">Details</button>
+                      <button onClick={() => handleDeleteCalculationClick(calc)} className="text-red-600 hover:text-red-800 font-medium">Verwijderen</button>
                     </td>
                   </tr>
                 ))}
@@ -201,12 +201,12 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
 
       {showDeleteCalcConfirmModal && (
         <Modal isOpen={showDeleteCalcConfirmModal} onClose={() => setShowDeleteCalcConfirmModal(false)}>
-          <div className="p-6">
+          <div className="p-8">
             <h5 className="text-lg font-bold text-red-600">Bevestig Verwijdering</h5>
-            <p>Weet je zeker dat je deze berekening wilt verwijderen?</p>
+            <p className="text-gray-600 mt-2">Weet je zeker dat je deze berekening wilt verwijderen? Dit kan niet ongedaan worden gemaakt.</p>
             <div className="mt-6 flex justify-end space-x-4">
-              <button onClick={() => setShowDeleteCalcConfirmModal(false)} className="bg-gray-200 px-4 py-2 rounded">Annuleren</button>
-              <button onClick={handleConfirmDeleteCalculation} className="bg-red-500 text-white px-4 py-2 rounded">Verwijderen</button>
+              <button onClick={() => setShowDeleteCalcConfirmModal(false)} className="bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg hover:bg-gray-50 transition-colors">Annuleren</button>
+              <button onClick={handleConfirmDeleteCalculation} className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 shadow-sm transition-colors">Verwijderen</button>
             </div>
           </div>
         </Modal>

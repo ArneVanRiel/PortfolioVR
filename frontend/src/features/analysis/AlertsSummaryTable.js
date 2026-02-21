@@ -21,17 +21,17 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
             <button
                 onClick={handlePrevious}
                 disabled={currentPage === 1}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors duration-200"
             >
                 Vorige
             </button>
-            <span className="text-sm text-gray-700">
+            <span className="text-sm font-medium text-gray-700">
                 Pagina {currentPage} van {totalPages}
             </span>
             <button
                 onClick={handleNext}
                 disabled={currentPage === totalPages}
-                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors duration-200"
             >
                 Volgende
             </button>
@@ -47,9 +47,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     const [calculationData, setCalculationData] = useState({}); // Store percentages per stock
     const [score5Stocks, setScore5Stocks] = useState(new Set());
     const [isContextLoaded, setIsContextLoaded] = useState(false);
-    const [diffData, setDiffData] = useState({}); // Store diff percentages per stock
     const [percentageFilter, setPercentageFilter] = useState('');
-    const [virtualSellAlerts, setVirtualSellAlerts] = useState([]); // Nieuwe state voor gegenereerde verkoopsignalen
     
     // --- State for pagination ---
     const [currentPage, setCurrentPage] = useState(1);
@@ -114,8 +112,6 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
 
             const mapping = {};
             const score5Ids = new Set();
-            const diffMapping = {};
-            const newVirtualAlerts = [];
 
             data.forEach(item => {
                 const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
@@ -126,33 +122,9 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                 if (item.selectiecriteria === 5) {
                     score5Ids.add(item.stock_id);
                 }
-
-                let prevDiffPercentage = null;
-                if (item.previous_waarde_verdeling) {
-                    prevDiffPercentage = ((item.waarde_verdeling - item.previous_waarde_verdeling) / item.previous_waarde_verdeling) * 100;
-                    
-                    // STRATEGIE: Verkopen als waardeverdeling is gezakt (negatief verschil)
-                    if (prevDiffPercentage < 0) {
-                        newVirtualAlerts.push({
-                            alert_id: `virtual-sell-${item.stock_id}`,
-                            aandeel_id: item.stock_id,
-                            name: item.name,
-                            ticker_symbol: item.ticker_symbol,
-                            date: item.period_end_date,
-                            type_melding: 'Verkoopsignaal',
-                            prijs_op_moment: item.current_price,
-                            signal_line_value: null,
-                            trade_amount: prevDiffPercentage / 100, // Opslaan als decimaal voor consistentie
-                            is_percentage: true
-                        });
-                    }
-                }
-                diffMapping[item.stock_id] = prevDiffPercentage;
             });
             setCalculationData(mapping);
             setScore5Stocks(score5Ids);
-            setDiffData(diffMapping);
-            setVirtualSellAlerts(newVirtualAlerts);
             setIsContextLoaded(true);
         } catch (err) {
             console.error("Error fetching calculation context for alerts", err);
@@ -191,26 +163,24 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     };
 
     const filteredAndSortedData = useMemo(() => {
-        // Combineer DB alerts en virtuele verkoopsignalen
-        const combinedData = [...allAlerts, ...virtualSellAlerts];
-
         // Filter: Toon alleen alerts van aandelen met score 5
-        let currentData = combinedData.filter(item => {
+        let currentData = allAlerts.filter(item => {
             // Check of aandeel score 5 heeft
             if (!score5Stocks.has(item.aandeel_id)) return false;
             
             // STRATEGIE KOPEN: Verberg Koopsignalen als de signal line >= 0 is
             if (item.type_melding === 'Koopsignaal' && item.signal_line_value >= 0) return false;
 
-            // STRATEGIE VERKOPEN: Verberg oude MACD Verkoopsignalen (die niet virtueel zijn)
-            if (item.type_melding === 'Verkoopsignaal' && !item.is_percentage) return false;
+            // STRATEGIE VERKOPEN: Verkoopsignalen komen nu uit DB (via calculationController)
+            // We filteren eventuele oude signalen die nog een signal_line_value hebben (de nieuwe hebben NULL)
+            if (item.type_melding === 'Verkoopsignaal' && item.signal_line_value != null) return false;
 
             // Filter: Percentage (Q)
             if (percentageFilter === 'gt0') {
-                const val = diffData[item.aandeel_id];
+                const val = item.diff_percentage;
                 if (val === null || val === undefined || val <= 0) return false;
             } else if (percentageFilter === 'lt0') {
-                const val = diffData[item.aandeel_id];
+                const val = item.diff_percentage;
                 if (val === null || val === undefined || val >= 0) return false;
             }
 
@@ -242,7 +212,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
             });
         }
         return currentData;
-    }, [allAlerts, virtualSellAlerts, score5Stocks, sortConfig, ALL_COLUMNS, percentageFilter, diffData]);
+    }, [allAlerts, score5Stocks, sortConfig, ALL_COLUMNS, percentageFilter]);
 
     const itemsPerPage = 10;
     const totalPages = Math.ceil(filteredAndSortedData.length / itemsPerPage);
@@ -253,32 +223,32 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     }
 
     return (
-        <div className="bg-white bg-white border border-gray-200 rounded-xl shadow-sm p-3 mb-4">
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 mb-6">
             <div className="overflow-x-auto">
-                <h3 className="text-lg font-semibold text-gray-800">Overzicht Meldingen</h3>
-                <div className="my-4 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+                <h3 className="text-xl font-bold text-gray-800 mb-4">Overzicht Meldingen</h3>
+                <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
                      <div>
-                        <label htmlFor="tickerFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Aandeel:</label>
+                        <label htmlFor="tickerFilter" className="block text-sm font-semibold text-gray-700 mb-1">Filter Aandeel:</label>
                         <input
                             type="text"
                             id="tickerFilter"
-                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2"
                             placeholder="Zoek op Ticker"
                             value={tickerFilter}
                             onChange={(e) => setTickerFilter(e.target.value)}
                         />
                     </div>
                     <div>
-                        <label htmlFor="alertTypeFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Type Melding:</label>
-                        <select id="alertTypeFilter" value={alertTypeFilter} onChange={e => setAlertTypeFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="alertTypeFilter" className="block text-sm font-semibold text-gray-700 mb-1">Filter Type Melding:</label>
+                        <select id="alertTypeFilter" value={alertTypeFilter} onChange={e => setAlertTypeFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="Koopsignaal">Koopsignaal</option>
                             <option value="Verkoopsignaal">Verkoopsignaal</option>
                         </select>
                     </div>
                     <div>
-                        <label htmlFor="percentageFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Percentage (Q):</label>
-                        <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="percentageFilter" className="block text-sm font-semibold text-gray-700 mb-1">Filter Percentage (Q):</label>
+                        <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="gt0">Boven 0%</option>
                             <option value="lt0">Onder 0%</option>
@@ -290,13 +260,13 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                      <p className="text-gray-500">Meldingen worden geladen...</p>
                 ) : (
                 <>
-                    <table className="min-w-full divide-y divide-gray-200">
+                    <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg overflow-hidden">
                         <thead className="bg-gray-50 border-b border-gray-200">
                             <tr>
                                 {ALL_COLUMNS.map(col => (
                                     <th 
                                         key={col.key}
-                                        className={`p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
+                                        className={`px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
                                         onClick={() => col.sortable && handleSort(col.key)}
                                     >
                                         {col.label}{col.sortable ? getSortArrow(col.key) : ''}
@@ -321,9 +291,9 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                             case 'prijs_op_moment':
                                                 return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
                                             case 'trade_amount':
-                                                if (item.is_percentage) {
+                                                if (item.type_melding === 'Verkoopsignaal') {
                                                     const pct = value * 100;
-                                                    return <span className="text-red-600 font-bold">{pct.toFixed(2)}%</span>;
+                                                    return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{pct.toFixed(2)}%</span>;
                                                 }
                                                 // Apply weighting logic consistent with CalculationsSummaryTable
                                                 const percentage = calculationData[item.aandeel_id] || 0;
@@ -334,7 +304,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                             case 'signal_line_value':
                                                 return value != null ? Number(value).toFixed(4) : 'N/A';
                                             case 'type_melding':
-                                                const typeClass = value === 'Koopsignaal' ? 'text-green-600 font-bold' : value === 'Verkoopsignaal' ? 'text-red-600 font-bold' : '';
+                                                const typeClass = value === 'Koopsignaal' ? 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800' : value === 'Verkoopsignaal' ? 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800' : '';
                                                 return <span className={typeClass}>{value}</span>;
                                             default:
                                                 return value || 'N/A';
@@ -342,9 +312,9 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                     };
                                     
                                     return (
-                                        <tr key={item.alert_id}>
+                                        <tr key={item.alert_id} className="hover:bg-gray-50 transition-colors duration-150">
                                             {ALL_COLUMNS.map(col => (
-                                                <td key={col.key} className="p-2 whitespace-nowrap text-sm text-gray-700">
+                                                <td key={col.key} className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
                                                     {renderCell(col)}
                                                 </td>
                                             ))}

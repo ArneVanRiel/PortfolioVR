@@ -7,19 +7,26 @@ import toast from 'react-hot-toast';
 import Score5DistributionChart from './Score5DistributionChart';
 
 // Placeholder components for stats and charts
-const StatCard = ({ title, value }) => (
-  <div className="bg-white p-6 rounded-lg shadow-md flex items-center space-x-4">
-    <div>
-      <p className="text-sm font-medium text-gray-500">{title}</p>
-      <p className="text-2xl font-semibold text-gray-800">{value}</p>
+const StatCard = ({ title, value, trend, trendUp }) => (
+  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300">
+    <div className="flex justify-between items-start">
+      <div>
+        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
+        <h3 className="text-2xl font-bold text-gray-900 mt-2">{value}</h3>
+      </div>
+      {trend && (
+        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${trendUp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+          {trend}
+        </span>
+      )}
     </div>
   </div>
 );
 
 const ChartCard = ({ title, children }) => (
-  <div className="bg-white p-6 rounded-lg shadow-md">
+  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-full">
     <h3 className="text-lg font-semibold text-gray-800 mb-4">{title}</h3>
-    <div className="h-64">{children}</div>
+    <div className="h-72">{children}</div>
   </div>
 );
 
@@ -246,20 +253,20 @@ const Dashboard = () => {
           {/* Knoppen */}
           <button
             onClick={handleAddStock}
-            className="bg-blue-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+            className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
           >
             Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
           </button>
           <button 
             onClick={handleUpdateData}
             disabled={isUpdatingData}
-            className="bg-green-600 text-white font-semibold py-2 px-4 rounded-md shadow-sm hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isUpdatingData ? 'Bezig met bijwerken...' : 'Update Prijzen & Meldingen'}
           </button>
           <button 
             onClick={handleOpenExportModal}
-            className="bg-gray-500 text-white px-4 py-2 rounded-lg shadow hover:bg-gray-600 transition-colors"
+            className="bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"
           >
             Generate Report
           </button>
@@ -268,10 +275,10 @@ const Dashboard = () => {
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard title="Total Portfolio Value" value="$125,680.50" />
+        <StatCard title="Total Portfolio Value" value="$125,680.50" trend="+2.5%" trendUp={true} />
         <StatCard title="Available Cash" value="$15,230.00" />
-        <StatCard title="Today's Gain/Loss" value="+$542.30" />
-        <StatCard title="Asset Allocation" value="60% Stocks / 40% Bonds" />
+        <StatCard title="Today's Gain/Loss" value="+$542.30" trend="+0.4%" trendUp={true} />
+        <StatCard title="Asset Allocation" value="60% Stocks" trend="Balanced" trendUp={true} />
       </div>
 
       {/* Charts Grid */}
@@ -293,28 +300,28 @@ const Dashboard = () => {
       <CalculationsSummaryTable ref={calculationsTableRef} />
 
       {/* Recent Activity Table */}
-      <div className="bg-white p-6 rounded-lg shadow-md">
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
         <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h3>
         <table className="min-w-full divide-y divide-gray-200">
           <thead className="bg-gray-50">
             <tr>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Type</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stock</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
-              <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Date</th>
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Stock</th>
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
+              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
             </tr>
           </thead>
           <tbody className="bg-white divide-y divide-gray-200">
             {/* Placeholder rows */}
-            <tr>
-              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-green-600">BUY</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">AAPL</td>
+            <tr className="hover:bg-gray-50 transition-colors">
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">BUY</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">AAPL</td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">$5,000</td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-21</td>
             </tr>
-            <tr>
-              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-red-600">SELL</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">GOOGL</td>
+            <tr className="hover:bg-gray-50 transition-colors">
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">SELL</td>
+              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">GOOGL</td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">$3,500</td>
               <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-20</td>
             </tr>

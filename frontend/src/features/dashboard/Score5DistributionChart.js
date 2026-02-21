@@ -1,3 +1,4 @@
+// c:\Arne\ArneVR\PortfolioVR\frontend\src\features\dashboard\Score5DistributionChart.js
 import React, { useState, useEffect } from 'react';
 import { Doughnut } from 'react-chartjs-2';
 import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
@@ -13,7 +14,6 @@ const Score5DistributionChart = () => {
   useEffect(() => {
     const fetchData = async () => {
       try {
-        // Gebruik de datum van vandaag voor de meest recente status
         const today = new Date().toISOString().split('T')[0];
         const response = await http.get('/calculations/summary-by-date', {
           params: { date: today }
@@ -24,19 +24,28 @@ const Score5DistributionChart = () => {
         // Filter: alleen aandelen met score 5 en een positieve waardeverdeling
         const filteredData = data.filter(item => item.selectiecriteria === 5 && item.waarde_verdeling > 0);
         
-        // Sorteer van hoog naar laag voor een logische volgorde in de chart
+        // Sorteer van hoog naar laag
         filteredData.sort((a, b) => b.waarde_verdeling - a.waarde_verdeling);
 
         const labels = filteredData.map(item => item.ticker_symbol);
         const values = filteredData.map(item => item.waarde_verdeling);
         
-        // Kleurenpalet
+        // Modern Kleurenpalet (Tailwind-ish kleuren)
         const backgroundColors = [
-          '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40',
-          '#E7E9ED', '#76A346', '#FDB45C', '#949FB1', '#4D5360', '#C9CBCF'
+          '#3B82F6', // Blue 500
+          '#10B981', // Emerald 500
+          '#F59E0B', // Amber 500
+          '#EF4444', // Red 500
+          '#8B5CF6', // Violet 500
+          '#EC4899', // Pink 500
+          '#6366F1', // Indigo 500
+          '#14B8A6', // Teal 500
+          '#F97316', // Orange 500
+          '#06B6D4', // Cyan 500
+          '#0EA5E9', // Sky 500
+          '#64748B'  // Slate 500
         ];
 
-        // Zorg voor voldoende kleuren door te herhalen indien nodig
         const colors = values.map((_, i) => backgroundColors[i % backgroundColors.length]);
 
         setChartData({
@@ -46,7 +55,10 @@ const Score5DistributionChart = () => {
               data: values,
               backgroundColor: colors,
               hoverBackgroundColor: colors,
-              borderWidth: 1,
+              borderWidth: 2,
+              borderColor: '#ffffff',
+              hoverBorderWidth: 0,
+              hoverOffset: 10, // Laat segment uitspringen bij hover
             },
           ],
         });
@@ -64,17 +76,34 @@ const Score5DistributionChart = () => {
   const options = {
     responsive: true,
     maintainAspectRatio: false,
+    cutout: '75%', // Dunnere ring voor moderne look
+    animation: {
+      animateScale: true,
+      animateRotate: true
+    },
     plugins: {
       legend: {
         position: 'right',
         labels: {
-          boxWidth: 12,
+          usePointStyle: true,
+          pointStyle: 'circle',
+          padding: 15,
           font: {
-            size: 11
-          }
+            size: 12,
+            family: "'Inter', sans-serif"
+          },
+          color: '#4B5563' // Gray-600
         }
       },
       tooltip: {
+        backgroundColor: 'rgba(255, 255, 255, 0.9)',
+        titleColor: '#1F2937',
+        bodyColor: '#4B5563',
+        borderColor: '#E5E7EB',
+        borderWidth: 1,
+        padding: 10,
+        boxPadding: 4,
+        usePointStyle: true,
         callbacks: {
           label: function(context) {
             let label = context.label || '';
@@ -83,7 +112,7 @@ const Score5DistributionChart = () => {
             }
             const value = context.raw;
             const total = context.chart._metasets[context.datasetIndex].total;
-            const percentage = ((value / total) * 100).toFixed(2) + '%';
+            const percentage = ((value / total) * 100).toFixed(1) + '%';
             return `${label}${value.toFixed(2)} (${percentage})`;
           }
         }
@@ -91,11 +120,33 @@ const Score5DistributionChart = () => {
     },
   };
 
-  if (loading) return <div className="flex items-center justify-center h-full text-gray-500 text-sm">Laden...</div>;
-  if (error) return <div className="flex items-center justify-center h-full text-red-500 text-sm">{error}</div>;
-  if (!chartData || chartData.labels.length === 0) return <div className="flex items-center justify-center h-full text-gray-500 text-sm">Geen aandelen met score 5 gevonden.</div>;
+  if (loading) return (
+    <div className="flex items-center justify-center h-full">
+      <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+    </div>
+  );
+  
+  if (error) return (
+    <div className="flex items-center justify-center h-full text-red-500 text-sm font-medium">
+      {error}
+    </div>
+  );
+  
+  if (!chartData || chartData.labels.length === 0) return (
+    <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
+      <svg className="w-10 h-10 mb-2 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"></path>
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path>
+      </svg>
+      Geen aandelen met score 5 gevonden.
+    </div>
+  );
 
-  return <Doughnut data={chartData} options={options} />;
+  return (
+    <div className="relative h-full w-full">
+      <Doughnut data={chartData} options={options} />
+    </div>
+  );
 };
 
 export default Score5DistributionChart;

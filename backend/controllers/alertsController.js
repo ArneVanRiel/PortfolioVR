@@ -44,14 +44,27 @@ exports.getAllAlerts = async (req, res) => {
                 SELECT
                     a.alert_id, a.aandeel_id, s.name, s.ticker_symbol, a.date,
                     a.type_melding, a.status, a.prijs_op_moment, a.signal_line_value, a.trade_amount,
+                    (CurrentCalc.waarde_verdeling - PrevCalc.waarde_verdeling) / NULLIF(PrevCalc.waarde_verdeling, 0) as diff_percentage,
                     ROW_NUMBER() OVER (ORDER BY a.date DESC) as row_num
                 FROM
                     MACDAlerts a
                 JOIN
                     stocks s ON a.aandeel_id = s.aandeel_id
+                OUTER APPLY (
+                    SELECT TOP 1 sc.waarde_verdeling, sc.period_end_date
+                    FROM stock_calculations sc
+                    WHERE sc.stock_id = a.aandeel_id AND sc.period_end_date <= a.date
+                    ORDER BY sc.period_end_date DESC
+                ) as CurrentCalc
+                OUTER APPLY (
+                    SELECT TOP 1 sc_prev.waarde_verdeling
+                    FROM stock_calculations sc_prev
+                    WHERE sc_prev.stock_id = a.aandeel_id AND sc_prev.period_end_date < CurrentCalc.period_end_date
+                    ORDER BY sc_prev.period_end_date DESC
+                ) as PrevCalc
                 ${whereCondition}
             )
-            SELECT alert_id, aandeel_id, name, ticker_symbol, date, type_melding, status, prijs_op_moment, signal_line_value, trade_amount
+            SELECT alert_id, aandeel_id, name, ticker_symbol, date, type_melding, status, prijs_op_moment, signal_line_value, trade_amount, diff_percentage
             FROM NumberedRows
             WHERE row_num > ${offset} AND row_num <= ${offset + limitNum};
         `;

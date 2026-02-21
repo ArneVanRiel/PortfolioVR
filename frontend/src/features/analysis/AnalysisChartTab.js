@@ -60,32 +60,15 @@ const AnalysisChartTab = ({ selectedStock }) => {
         
         const alertsMap = new Map();
         
-        // 1. Voeg bestaande DB alerts toe (voornamelijk Koopsignalen)
+        // 1. Voeg alerts toe
         alerts.forEach(a => {
-            // STRATEGIE VERKOPEN: Filter oude MACD verkoopsignalen eruit
-            if (a.type_melding === 'Verkoopsignaal') return;
+            // Filter oude MACD verkoopsignalen eruit (die hebben een signal_line_value)
+            if (a.type_melding === 'Verkoopsignaal' && a.signal_line_value != null) return;
             
             const d = new Date(a.date).toISOString().split('T')[0];
             if (!alertsMap.has(d)) alertsMap.set(d, []);
             alertsMap.get(d).push(a);
         });
-
-        // 2. Genereer virtuele verkoopsignalen op basis van waardeverdeling daling
-        const sortedCalcs = [...calcs].sort((a, b) => new Date(a.period_end_date) - new Date(b.period_end_date));
-        for (let i = 1; i < sortedCalcs.length; i++) {
-            const current = sortedCalcs[i];
-            const prev = sortedCalcs[i-1];
-
-            if (current.waarde_verdeling < prev.waarde_verdeling) {
-                const d = new Date(current.period_end_date).toISOString().split('T')[0];
-                if (!alertsMap.has(d)) alertsMap.set(d, []);
-                // Voeg virtueel alert toe. Gebruik current_price indien beschikbaar, anders fallback naar priceMap later
-                alertsMap.get(d).push({ 
-                    type_melding: 'Verkoopsignaal', 
-                    prijs_op_moment: current.current_price || 0 
-                }); 
-            }
-        }
 
         const priceData = [];
         const waardeverdelingData = [];
@@ -228,8 +211,8 @@ const AnalysisChartTab = ({ selectedStock }) => {
   }, [selectedStock, fetchAnalysisChartData]);
 
   return (
-    <div className="bg-white p-6 rounded-lg shadow-md">
-        <h3 className="text-xl font-bold mb-4">Grafische Analyse</h3>
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+        <h3 className="text-xl font-bold text-gray-800 mb-6">Grafische Analyse</h3>
         {error && <p className="text-red-500">{error}</p>}
         {loading && !analysisChartData ? (
             <p>Grafiek laden...</p>

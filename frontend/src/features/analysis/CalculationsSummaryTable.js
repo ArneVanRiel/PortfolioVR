@@ -1,3 +1,4 @@
+// c:\Arne\ArneVR\PortfolioVR\frontend\src\features\analysis\CalculationsSummaryTable.js
 import React, { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { useNavigate } from 'react-router-dom';
 import http from '../../http-common';
@@ -191,14 +192,15 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
         if (alertTypeFilter) {
             currentData = currentData.filter(item => {
                 // STRATEGIE VERKOPEN: Als waardeverdeling is gezakt
-                const isSellSignal = item.prevDiffPercentage !== null && item.prevDiffPercentage < 0;
+                // Dit wordt nu afgehandeld door de backend (latest_alert_type), maar we kunnen het hier ook checken voor de zekerheid
+                // of gewoon vertrouwen op de backend.
                 
                 let displayAlertType = item.latest_alert_type;
-                // Verberg oude MACD verkoopsignalen uit de DB (want we gebruiken nu waardeverdeling)
+                // Verberg oude MACD verkoopsignalen
                 if (displayAlertType === 'Verkoopsignaal') displayAlertType = null; 
                 
                 // Als er een daling is, is het een verkoopsignaal
-                if (isSellSignal) displayAlertType = 'Verkoopsignaal';
+                if (item.prevDiffPercentage !== null && item.prevDiffPercentage < 0) displayAlertType = 'Verkoopsignaal';
 
                 return displayAlertType === alertTypeFilter;
             });
@@ -438,10 +440,10 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     const totalVisibleColumns = visibleColumnDefinitions.length + 1; // +1 for actions
 
     return (
-        <div className="bg-white bg-white border border-gray-200 rounded-xl shadow-sm p-3 mb-4">
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 mb-6">
             <div className="overflow-x-auto">
                 <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-lg font-semibold text-gray-800">Overzicht Berekeningen</h3>
+                    <h3 className="text-xl font-bold text-gray-800">Overzicht Berekeningen</h3>
                     <div className="flex items-center">
                         <input
                             id="showHighestEver"
@@ -455,82 +457,82 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                         </label>
                     </div>
                 </div>
-                <div className="my-4 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
+                <div className="mb-6 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
                     <div>
-                        <label htmlFor="date-picker" className="block text-sm font-medium text-gray-700">Selecteer een datum</label>
+                        <label htmlFor="date-picker" className="block text-sm font-semibold text-gray-700 mb-1">Datum</label>
                         <input
                             type="date"
                             id="date-picker"
                             value={selectedDate}
                             onChange={(e) => setSelectedDate(e.target.value)}
-                            className="mt-1 block w-full pl-3 pr-10 py-2 text-base border-gray-300 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md"
+                            className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2"
                         />
                     </div>
                      <div>
-                        <label htmlFor="tickerFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Aandeel:</label>
+                        <label htmlFor="tickerFilter" className="block text-sm font-semibold text-gray-700 mb-1">Aandeel</label>
                         <input
                             type="text"
                             id="tickerFilter"
-                            className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                            className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2"
                             placeholder="Zoek op Ticker of Naam"
                             value={tickerFilter}
                             onChange={handleTickerFilterChange}
                         />
                     </div>
                     <div>
-                        <label htmlFor="scoreFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Score:</label>
-                        <select id="scoreFilter" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="scoreFilter" className="block text-sm font-semibold text-gray-700 mb-1">Score</label>
+                        <select id="scoreFilter" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="5">5</option>
                             <option value="<5">&lt; 5</option>
                         </select>
                     </div>
                     <div>
-                        <label htmlFor="priceToIntrinsicFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Prijs/Intrinsiek:</label>
-                        <select id="priceToIntrinsicFilter" value={priceToIntrinsicFilter} onChange={e => setPriceToIntrinsicFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="priceToIntrinsicFilter" className="block text-sm font-semibold text-gray-700 mb-1">Prijs/Intrinsiek</label>
+                        <select id="priceToIntrinsicFilter" value={priceToIntrinsicFilter} onChange={e => setPriceToIntrinsicFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="lt">Lager dan -25%</option>
                             <option value="gt">Hoger dan -25%</option>
                         </select>
                     </div>
                     <div>
-                        <label htmlFor="signalLineFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Signal Line:</label>
-                        <select id="signalLineFilter" value={signalLineFilter} onChange={e => setSignalLineFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="signalLineFilter" className="block text-sm font-semibold text-gray-700 mb-1">Signal Line</label>
+                        <select id="signalLineFilter" value={signalLineFilter} onChange={e => setSignalLineFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="lt0">Lager dan 0</option>
                             <option value="gt0">Hoger dan 0</option>
                         </select>
                     </div>
                     <div>
-                        <label htmlFor="alertTypeFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Type Melding:</label>
-                        <select id="alertTypeFilter" value={alertTypeFilter} onChange={e => setAlertTypeFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="alertTypeFilter" className="block text-sm font-semibold text-gray-700 mb-1">Type Melding</label>
+                        <select id="alertTypeFilter" value={alertTypeFilter} onChange={e => setAlertTypeFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="Koopsignaal">Koopsignaal</option>
                             <option value="Verkoopsignaal">Verkoopsignaal</option>
                         </select>
                     </div>
                     <div>
-                        <label htmlFor="percentageFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Percentage ({showHighestEver ? 'H' : 'Q'}):</label>
-                        <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                        <label htmlFor="percentageFilter" className="block text-sm font-semibold text-gray-700 mb-1">Percentage ({showHighestEver ? 'H' : 'Q'})</label>
+                        <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                             <option value="">Alles</option>
                             <option value="gt0">Boven 0%</option>
                             <option value="lt0">Onder 0%</option>
                         </select>
                     </div>
                 </div>
-                <table className="min-w-full divide-y divide-gray-200">
+                <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg overflow-hidden">
                     <thead className="bg-gray-50 border-b border-gray-200">
                         <tr>
                             {visibleColumnDefinitions.map(col => (
                                 <th 
                                     key={col.key}
-                                    className={`p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
+                                    className={`px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
                                     onClick={() => col.sortable && handleSort(col.key)}
                                 >
                                     {col.label}{col.sortable ? getSortArrow(col.key) : ''}
                                 </th>
                             ))}
-                            <th className="p-2 text-left text-sm font-semibold text-gray-600 uppercase tracking-wider">Actie</th>
+                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actie</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
@@ -552,9 +554,9 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                     const monthsDiff = (selectDate.getFullYear() - periodDate.getFullYear()) * 12 + (selectDate.getMonth() - periodDate.getMonth());
 
                                     if (monthsDiff >= 5) {
-                                        return 'bg-orange-200';
+                                        return 'bg-orange-50 text-orange-800';
                                     } else if (monthsDiff >= 4) {
-                                        return 'bg-yellow-200';
+                                        return 'bg-yellow-50 text-yellow-800';
                                     }
                                     return '';
                                 };
@@ -571,15 +573,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                     }
                                 }
 
-                                // STRATEGIE VERKOPEN: Als waardeverdeling is gezakt
-                                const isSellSignal = item.prevDiffPercentage !== null && item.prevDiffPercentage < 0;
-                                
-                                let displayAlertType = item.latest_alert_type;
-                                // Verberg oude MACD verkoopsignalen
-                                if (displayAlertType === 'Verkoopsignaal') displayAlertType = null; 
-                                
-                                if (isSellSignal) displayAlertType = 'Verkoopsignaal';
-
+                                const displayAlertType = item.latest_alert_type;
                                 const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
                                     ? Math.max(0, baseAmount * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
                                     : null;
@@ -597,7 +591,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             return (
                                                 <div className="flex flex-col">
                                                     <span className="font-medium">{value?.toFixed(2)}</span>
-                                                    <div className="text-xs flex flex-col">
+                                                    <div className="text-xs flex flex-col mt-0.5">
                                                         {percentageToShow !== null && (
                                                             <span className={`${percentageToShow >= 0 ? 'text-green-600' : 'text-red-600'}`} title={showHighestEver ? "Vs Hoogste Ooit" : "Vs Vorige Kwartaal"}>
                                                                 {label}: {percentageToShow > 0 ? '+' : ''}{percentageToShow.toFixed(2)}%
@@ -610,7 +604,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                         case 'intrinsieke_waarde':
                                             if (col.key === 'current_price') {
                                                 return (
-                                                    <div onMouseEnter={(e) => handleMouseEnterPrice(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className="cursor-pointer underline decoration-dotted decoration-gray-400">
+                                                    <div onMouseEnter={(e) => handleMouseEnterPrice(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className="cursor-pointer underline decoration-dotted decoration-gray-400 hover:text-blue-600">
                                                         {value != null ? `€${Number(value).toFixed(2)}` : 'N/A'}
                                                     </div>
                                                 );
@@ -619,25 +613,25 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                         case 'percentage':
                                             return `${percentage.toFixed(2)}%`;
                                         case 'price_to_intrinsic':
-                                            return value != null ? `${(value * 100).toFixed(2)}%` : 'N/A';
+                                            return value != null ? <span className="font-medium">{(value * 100).toFixed(2)}%</span> : 'N/A';
                                         case 'period_end_date':
-                                            return <span className={highlightClass}>{value ? new Date(value).toLocaleDateString() : 'N/A'}</span>;
+                                            return <span className={`px-2 py-1 rounded-md ${highlightClass}`}>{value ? new Date(value).toLocaleDateString() : 'N/A'}</span>;
                                         case 'current_signal_line':
-                                            const signalLineClass = value != null && value < 0 ? 'text-green-600 font-bold' : '';
+                                            const signalLineClass = value != null && value < 0 ? 'text-green-600 font-semibold' : '';
                                             return (
-                                                <div onMouseEnter={(e) => handleMouseEnterSignal(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className={`cursor-pointer underline decoration-dotted decoration-gray-400 ${signalLineClass}`}>
+                                                <div onMouseEnter={(e) => handleMouseEnterSignal(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className={`cursor-pointer underline decoration-dotted decoration-gray-400 hover:text-blue-600 ${signalLineClass}`}>
                                                     {value != null ? Number(value).toFixed(4) : 'N/A'}
                                                 </div>
                                             );
                                         case 'latest_alert_type':
-                                            const typeClass = displayAlertType === 'Koopsignaal' ? 'text-green-600 font-bold' : displayAlertType === 'Verkoopsignaal' ? 'text-red-600 font-bold' : '';
+                                            const typeClass = displayAlertType === 'Koopsignaal' ? 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-800' : displayAlertType === 'Verkoopsignaal' ? 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800' : '';
                                             return <span className={typeClass}>{displayAlertType || 'N/A'}</span>;
                                         case 'latest_alert_date':
-                                             // Als het een verkoopsignaal is op basis van kwartaalcijfers, is de datum de period_end_date
-                                             return isSellSignal ? (item.period_end_date ? new Date(item.period_end_date).toLocaleDateString() : 'N/A') : (value ? new Date(value).toLocaleDateString() : 'N/A');
+                                             return value ? new Date(value).toLocaleDateString() : 'N/A';
                                         case 'latest_trade_amount':
-                                            if (isSellSignal) {
-                                                return <span className="text-red-600 font-bold">{item.prevDiffPercentage.toFixed(2)}%</span>;
+                                            if (displayAlertType === 'Verkoopsignaal') {
+                                                // Backend geeft percentage als decimaal (bv -0.05), wij tonen %
+                                                return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{(value * 100).toFixed(2)}%</span>;
                                             }
                                             return (value != null && displayAlertType === 'Koopsignaal') ? `€${(value * (percentage / 100) / 10).toFixed(2)}` : 'N/A';
                                         case 'current_recommended_amount':
@@ -647,16 +641,16 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                     }
                                 };
 
-                                const priceToIntrinsicClass = item.price_to_intrinsic != null && item.price_to_intrinsic < -0.25 ? 'bg-green-200' : '';
+                                const priceToIntrinsicClass = item.price_to_intrinsic != null && item.price_to_intrinsic < -0.25 ? 'bg-green-50 text-green-800' : '';
                                 
                                 return (
-                                    <tr key={item.calculation_id}>
+                                    <tr key={item.calculation_id} className="hover:bg-gray-50 transition-colors duration-150">
                                         {visibleColumnDefinitions.map(col => (
-                                            <td key={col.key} className={`p-2 whitespace-nowrap text-sm text-gray-700 ${col.key === 'price_to_intrinsic' ? priceToIntrinsicClass : ''}`}>
+                                            <td key={col.key} className={`px-6 py-4 whitespace-nowrap text-sm text-gray-700 ${col.key === 'price_to_intrinsic' ? priceToIntrinsicClass : ''}`}>
                                                 {renderCell(col)}
                                             </td>
                                         ))}
-                                        <td className="p-2 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
                                             {highlightClass && (
                                                 <button 
                                                     onClick={() => navigate(`/analysis?ticker=${item.ticker_symbol}`)}
@@ -683,10 +677,10 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                         top: popupPosition.y,
                         zIndex: 1000,
                         backgroundColor: 'white',
-                        border: '1px solid #ccc',
+                        border: '1px solid #e5e7eb',
                         borderRadius: '8px',
                         padding: '10px',
-                        boxShadow: '0 4px 6px rgba(0,0,0,0.1)',
+                        boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
                         width: '350px',
                         height: '250px'
                     }}

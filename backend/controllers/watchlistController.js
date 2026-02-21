@@ -1,4 +1,4 @@
-// controllers/watchlistController.js
+// c:\Arne\ArneVR\PortfolioVR\backend\controllers\watchlistController.js
 const { sql, config } = require('../config/database'); // Importeer getRequest is verwijderd
 let fetch;
 
@@ -157,6 +157,9 @@ const getStocksByView = async (req, res) => {
                 ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
             FROM
                 [dbo].[MACDAlerts]
+            WHERE 
+                (type_melding = 'Koopsignaal' AND signal_line_value < 0)
+                OR (type_melding = 'Verkoopsignaal')
         ) AS LATEST_ALERT ON s.aandeel_id = LATEST_ALERT.aandeel_id AND LATEST_ALERT.rn = 1
         LEFT JOIN ( -- NIEUW: LEFT JOIN voor de meest recente fundamental_data
             SELECT

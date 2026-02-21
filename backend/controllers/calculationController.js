@@ -202,6 +202,15 @@ exports.getCalculationsForStock = async (req, res) => {
 
 exports.runCalculationForStock = async (req, res) => {
     const { stockId } = req.params;
+
+    // WORKAROUND: Fix voor route conflict waarbij 'generate-sell-alerts' als stockId wordt gezien
+    if (isNaN(Number(stockId))) {
+        if (stockId === 'generate-sell-alerts') {
+            return generateSellAlertsFromHistory(req, res);
+        }
+        return res.status(400).json({ message: 'Ongeldig aandeel ID.' });
+    }
+
     const { period_end_date } = req.body;
     try {
         // 1. Perform all calculations in memory
@@ -279,12 +288,132 @@ exports.runCalculationForStock = async (req, res) => {
              await request.query(query);
         }
 
+        // --- NIEUW: Genereer Verkoopsignaal op basis van Waardeverdeling ---
+        // Haal de vorige berekening op (chronologisch de vorige)
+        const prevCalcResult = await pool.request()
+            .input('stock_id', sql.Int, stockId)
+            .input('current_date', sql.Date, dataToSave.period_end_date)
+            .query(`SELECT TOP 1 waarde_verdeling FROM stock_calculations WHERE stock_id = @stock_id AND period_end_date < @current_date ORDER BY period_end_date DESC`);
+
+        if (prevCalcResult.recordset.length > 0) {
+            const prevWaarde = prevCalcResult.recordset[0].waarde_verdeling;
+            const currentWaarde = dataToSave.waarde_verdeling;
+
+            // Als de waarde is gedaald, maak een verkoopsignaal aan
+            if (currentWaarde < prevWaarde) {
+                const diffPercentage = (currentWaarde - prevWaarde) / prevWaarde; // Dit is een negatief getal (bv -0.05 voor -5%)
+                
+                // Haal de prijs op voor de datum (of de laatst bekende prijs ervoor)
+                const priceResult = await pool.request()
+                    .input('stock_id_price', sql.Int, stockId)
+                    .input('date_price', sql.Date, dataToSave.period_end_date)
+                    .query(`SELECT TOP 1 closing_price FROM DailyClosingPrices WHERE aandeel_id = @stock_id_price AND date <= @date_price ORDER BY date DESC`);
+                
+                const currentPrice = priceResult.recordset.length > 0 ? priceResult.recordset[0].closing_price : 0;
+
+                // Voeg toe aan MACDAlerts (we hergebruiken deze tabel voor alle alerts)
+                // We gebruiken MERGE om dubbele alerts voor dezelfde datum te voorkomen
+                await pool.request()
+                    .input('aandeel_id', sql.Int, stockId)
+                    .input('date', sql.Date, dataToSave.period_end_date)
+                    .input('type', sql.VarChar, 'Verkoopsignaal')
+                    .input('amount', sql.Decimal(18, 4), diffPercentage)
+                    .input('price', sql.Decimal(18, 2), currentPrice)
+                    .query(`
+                        MERGE INTO MACDAlerts AS target
+                        USING (SELECT @aandeel_id AS aandeel_id, @date AS date) AS source
+                        ON target.aandeel_id = source.aandeel_id AND target.date = source.date AND target.type_melding = 'Verkoopsignaal'
+                        WHEN MATCHED THEN
+                            UPDATE SET trade_amount = @amount, signal_line_value = NULL, prijs_op_moment = @price
+                        WHEN NOT MATCHED THEN
+                            INSERT (aandeel_id, date, type_melding, status, trade_amount, signal_line_value, prijs_op_moment)
+                            VALUES (@aandeel_id, @date, @type, 'Nieuw', @amount, NULL, @price);
+                    `);
+                console.log(`Verkoopsignaal gegenereerd voor stock ${stockId} op ${dataToSave.period_end_date}: ${diffPercentage}`);
+            }
+        }
+
         // 4. Return the FULL calculation result to the frontend
         res.status(201).json({ message: 'Calculation successful. Data saved to existing columns.', data: fullCalculationResult });
 
     } catch (error) {
         console.error('Error running calculation:', error);
         res.status(500).send(`Error running calculation: ${error.message}`);
+    }
+};
+
+// NIEUW: Genereer verkoopsignalen met terugwerkende kracht uit de historie
+const generateSellAlertsFromHistory = async (req, res) => {
+    try {
+        const pool = await sql.connect(dbConfig);
+        
+        // 1. Haal alle berekeningen op, gesorteerd per aandeel en datum
+        const calculationsResult = await pool.request().query(`
+            SELECT stock_id, period_end_date, waarde_verdeling 
+            FROM stock_calculations 
+            ORDER BY stock_id, period_end_date ASC
+        `);
+        
+        const calculations = calculationsResult.recordset;
+        let count = 0;
+
+        // 2. Groepeer per aandeel
+        const stocksMap = {};
+        calculations.forEach(calc => {
+            if (!stocksMap[calc.stock_id]) stocksMap[calc.stock_id] = [];
+            stocksMap[calc.stock_id].push(calc);
+        });
+
+        // 3. Itereer en genereer alerts
+        for (const stockId in stocksMap) {
+            const stockCalcs = stocksMap[stockId];
+            
+            // We beginnen bij i = 1, dus de eerste (oudste) waarde wordt overgeslagen voor vergelijking.
+            // Als er maar 1 record is, wordt de loop niet uitgevoerd (1 < 1 is false).
+            for (let i = 1; i < stockCalcs.length; i++) {
+                const prev = stockCalcs[i-1];
+                const current = stockCalcs[i];
+
+                // Extra check: beide waarden moeten bestaan en prev mag niet 0 zijn (deling door 0)
+                if (prev.waarde_verdeling != null && current.waarde_verdeling != null && prev.waarde_verdeling !== 0) {
+                    if (current.waarde_verdeling < prev.waarde_verdeling) {
+                        const diffPercentage = (current.waarde_verdeling - prev.waarde_verdeling) / prev.waarde_verdeling;
+                        
+                        // Haal de prijs op
+                        const priceResult = await pool.request()
+                            .input('stock_id_price', sql.Int, current.stock_id)
+                            .input('date_price', sql.Date, current.period_end_date)
+                            .query(`SELECT TOP 1 closing_price FROM DailyClosingPrices WHERE aandeel_id = @stock_id_price AND date <= @date_price ORDER BY date DESC`);
+                        
+                        const currentPrice = priceResult.recordset.length > 0 ? priceResult.recordset[0].closing_price : 0;
+
+                        await pool.request()
+                            .input('aandeel_id', sql.Int, current.stock_id)
+                            .input('date', sql.Date, current.period_end_date)
+                            .input('type', sql.VarChar, 'Verkoopsignaal')
+                            .input('amount', sql.Decimal(18, 4), diffPercentage)
+                            .input('price', sql.Decimal(18, 2), currentPrice)
+                            .query(`
+                                MERGE INTO MACDAlerts AS target
+                                USING (SELECT @aandeel_id AS aandeel_id, @date AS date) AS source
+                                ON target.aandeel_id = source.aandeel_id AND target.date = source.date AND target.type_melding = 'Verkoopsignaal'
+                                WHEN MATCHED THEN
+                                    UPDATE SET trade_amount = @amount, signal_line_value = NULL, prijs_op_moment = @price
+                                WHEN NOT MATCHED THEN
+                                    INSERT (aandeel_id, date, type_melding, status, trade_amount, signal_line_value, prijs_op_moment)
+                                    VALUES (@aandeel_id, @date, @type, 'Nieuw', @amount, NULL, @price);
+                            `);
+                        count++;
+                    }
+                }
+            }
+        }
+
+        res.status(200).json({ message: `Succesvol ${count} verkoopsignalen gegenereerd uit historie.` });
+
+    } catch (error) {
+        console.error('Error generating sell alerts from history:', error);
+        res.status(500).send(`Error generating alerts: ${error.message}`);
     }
 };
 
@@ -370,7 +499,26 @@ exports.getMACDAlerts = async (req, res) => {
         const pool = await sql.connect(dbConfig);
         const result = await pool.request()
             .input('stockId', sql.Int, stockId)
-            .query('SELECT date, type_melding, signal_line_value, prijs_op_moment FROM MACDAlerts WHERE aandeel_id = @stockId ORDER BY date ASC');
+            .query(`
+                SELECT 
+                    a.date, a.type_melding, a.signal_line_value, a.prijs_op_moment, a.trade_amount,
+                    (CurrentCalc.waarde_verdeling - PrevCalc.waarde_verdeling) / NULLIF(PrevCalc.waarde_verdeling, 0) as diff_percentage
+                FROM MACDAlerts a
+                OUTER APPLY (
+                    SELECT TOP 1 sc.waarde_verdeling, sc.period_end_date
+                    FROM stock_calculations sc
+                    WHERE sc.stock_id = a.aandeel_id AND sc.period_end_date <= a.date
+                    ORDER BY sc.period_end_date DESC
+                ) as CurrentCalc
+                OUTER APPLY (
+                    SELECT TOP 1 sc_prev.waarde_verdeling
+                    FROM stock_calculations sc_prev
+                    WHERE sc_prev.stock_id = a.aandeel_id AND sc_prev.period_end_date < CurrentCalc.period_end_date
+                    ORDER BY sc_prev.period_end_date DESC
+                ) as PrevCalc
+                WHERE a.aandeel_id = @stockId 
+                ORDER BY a.date ASC
+            `);
         res.status(200).json(result.recordset);
     } catch (error) {
         console.error('Error fetching MACD alerts:', error);
@@ -479,7 +627,9 @@ exports.getSummaryByDate = async (req, res) => {
                     ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
                 FROM
                     MACDAlerts
-                WHERE type_melding = 'Koopsignaal' AND signal_line_value < 0
+                WHERE 
+                    (type_melding = 'Koopsignaal' AND signal_line_value < 0)
+                    OR (type_melding = 'Verkoopsignaal')
             )
             SELECT 
                 s.name,

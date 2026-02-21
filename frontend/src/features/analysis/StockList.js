@@ -80,19 +80,19 @@ const StockList = ({
   }, [stocks, filterText, scoreFilter, sortConfig, allAnalyses, latestCalculationsMap]);
 
   return (
-    <div className="w-1/4 bg-white border-r border-gray-200 p-4 flex flex-col h-full">
+    <div className="w-1/4 bg-white border-r border-gray-200 p-6 flex flex-col h-full">
       <div className="mb-4">
         <h2 className="text-xl font-bold text-gray-800 mb-2">Securities</h2>
         <div className="flex gap-2">
           <input
               type="text"
-              className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+              className="flex-1 rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
               placeholder="Zoek..."
               value={filterText}
               onChange={(e) => setFilterText(e.target.value)}
           />
           <select 
-              className="w-20 rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border"
+              className="w-24 rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm p-2 border"
               value={scoreFilter}
               onChange={(e) => setScoreFilter(e.target.value)}
           >
@@ -103,7 +103,7 @@ const StockList = ({
         </div>
       </div>
       
-      <div className="flex justify-between items-center mb-2 px-2 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b pb-1">
+      <div className="flex justify-between items-center mb-2 px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-100 pb-2">
         <div className="cursor-pointer hover:text-gray-700 flex items-center" onClick={() => handleSort('ticker')}>
             Ticker {getSortArrow('ticker')}
         </div>
@@ -129,7 +129,7 @@ const StockList = ({
               return (
                 <li
                   key={stock.ticker}
-                  className={`p-2 rounded-lg cursor-pointer text-sm transition-colors ${selectedStock && selectedStock.ticker === stock.ticker ? 'bg-blue-100 text-blue-700 font-semibold' : 'hover:bg-gray-100 text-gray-700'}`}
+                  className={`p-3 rounded-lg cursor-pointer text-sm transition-all duration-200 ${selectedStock && selectedStock.ticker === stock.ticker ? 'bg-blue-50 text-blue-700 font-semibold shadow-sm' : 'hover:bg-gray-50 text-gray-700'}`}
                   onClick={() => handleStockChange(stock)}
                 >
                   <div className="flex justify-between items-center">
@@ -137,14 +137,14 @@ const StockList = ({
                         <span className="font-medium">{stock.ticker}</span>
                         <span className="text-xs text-gray-500 truncate" title={stock.name}>{stock.name}</span>
                     </div>
-                    <div className="flex-shrink-0 ml-2 w-6 text-center text-xs font-medium text-gray-600">
+                    <div className="flex-shrink-0 ml-2 w-6 text-center text-xs font-medium text-gray-600 bg-gray-100 rounded-full px-1">
                         {score !== null ? score : '-'}
                     </div>
                     <div className="flex-shrink-0 ml-2">
                         {isAllAnalysesLoading && completeness === null ? (
                             <span className="text-xs text-gray-400">...</span>
                         ) : completeness !== null ? (
-                            <span className={`text-xs font-bold ${completeness === 100 ? 'text-green-600' : 'text-yellow-600'}`}>{completeness.toFixed(0)}%</span>
+                            <span className={`text-xs font-bold px-1.5 py-0.5 rounded-full ${completeness === 100 ? 'bg-green-100 text-green-700' : 'bg-yellow-100 text-yellow-700'}`}>{completeness.toFixed(0)}%</span>
                         ) : (
                             <span className="text-xs text-gray-300">-</span>
                         )}

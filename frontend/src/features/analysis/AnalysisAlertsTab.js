@@ -1,3 +1,4 @@
+// c:\Arne\ArneVR\PortfolioVR\frontend\src\features\analysis\AnalysisAlertsTab.js
 import React, { useState, useEffect, useMemo } from 'react';
 import http from '../../http-common';
 
@@ -9,7 +10,6 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
     // Context data voor berekeningen en filters
     const [stockContext, setStockContext] = useState({
         percentage: 0,
-        diffPercentage: null
     });
 
     // Pagination state
@@ -29,44 +29,9 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
             
             setLoading(true);
             try {
-                // 1. Haal bestaande MACD Alerts op (voornamelijk Koopsignalen nu)
+                // 1. Haal Alerts op (Koop én Verkoop staan nu correct in DB)
                 const alertsResponse = await http.get(`/calculations/${selectedStock.stock_id}/macd-alerts`);
-                const dbAlerts = alertsResponse.data || [];
-
-                // 2. Haal Calculation History op om Verkoopsignalen te genereren
-                const calculationsResponse = await http.get(`/calculations/${selectedStock.stock_id}`);
-                const calculations = calculationsResponse.data || [];
-
-                // Genereer virtuele verkoopsignalen op basis van waardeverdeling daling
-                const sellAlerts = [];
-                // Sorteer calculations op datum oplopend om vergelijking te maken
-                const sortedCalcs = [...calculations].sort((a, b) => new Date(a.period_end_date) - new Date(b.period_end_date));
-
-                for (let i = 1; i < sortedCalcs.length; i++) {
-                    const current = sortedCalcs[i];
-                    const prev = sortedCalcs[i-1];
-
-                    if (current.waarde_verdeling < prev.waarde_verdeling) {
-                        // Bereken daling percentage (negatief getal)
-                        const diffPct = ((current.waarde_verdeling - prev.waarde_verdeling) / prev.waarde_verdeling);
-                        
-                        sellAlerts.push({
-                            alert_id: `virtual-sell-${current.id}`,
-                            date: current.period_end_date,
-                            type_melding: 'Verkoopsignaal',
-                            prijs_op_moment: current.current_price || 0, // Note: might be null in history if not stored
-                            signal_line_value: null,
-                            trade_amount: diffPct, // We gebruiken dit veld voor het percentage
-                            is_percentage: true // Flag om aan te geven dat dit een percentage is
-                        });
-                    }
-                }
-
-                // Filter oude MACD verkoopsignalen uit de DB alerts en voeg nieuwe toe
-                const filteredDbAlerts = dbAlerts.filter(a => a.type_melding !== 'Verkoopsignaal');
-                const combinedAlerts = [...filteredDbAlerts, ...sellAlerts];
-
-                setAlerts(combinedAlerts);
+                setAlerts(alertsResponse.data || []);
 
                 // 2. Haal Calculation Context op (voor percentage weging en Q-diff)
                 const today = new Date().toISOString().split('T')[0];
@@ -93,14 +58,9 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                     if (totalWaardeVerdeling > 0 && stockItem.waarde_verdeling > 0 && stockItem.selectiecriteria === 5) {
                         percentage = (stockItem.waarde_verdeling / totalWaardeVerdeling) * 100;
                     }
-
-                    // Bereken Q-diff percentage
-                    if (stockItem.previous_waarde_verdeling) {
-                        diffPercentage = ((stockItem.waarde_verdeling - stockItem.previous_waarde_verdeling) / stockItem.previous_waarde_verdeling) * 100;
-                    }
                 }
 
-                setStockContext({ percentage, diffPercentage });
+                setStockContext({ percentage });
                 setError('');
             } catch (err) {
                 console.error("Error fetching data:", err);
@@ -126,14 +86,17 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
             // STRATEGIE KOPEN: Verberg Koopsignalen als de signal line >= 0 is
             if (alert.type_melding === 'Koopsignaal' && alert.signal_line_value >= 0) return false;
 
+            // STRATEGIE VERKOPEN: Filter oude signalen (die nog een signal_line_value hebben)
+            if (alert.type_melding === 'Verkoopsignaal' && alert.signal_line_value != null) return false;
+
             // Filter 2: Type Melding
             if (alertTypeFilter && alert.type_melding !== alertTypeFilter) return false;
 
             // Filter 3: Percentage (Q)
             if (percentageFilter === 'gt0') {
-                if (stockContext.diffPercentage === null || stockContext.diffPercentage <= 0) return false;
+                if (alert.diff_percentage === null || alert.diff_percentage === undefined || alert.diff_percentage <= 0) return false;
             } else if (percentageFilter === 'lt0') {
-                if (stockContext.diffPercentage === null || stockContext.diffPercentage >= 0) return false;
+                if (alert.diff_percentage === null || alert.diff_percentage === undefined || alert.diff_percentage >= 0) return false;
             }
 
             return true;
@@ -153,7 +116,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                 } else if (sortConfig.key === 'trade_amount') {
                      // Sorteer op berekend bedrag of percentage
                      const getVal = (item) => {
-                        if (item.is_percentage) return item.trade_amount;
+                        if (item.type_melding === 'Verkoopsignaal') return item.trade_amount;
                         return item.trade_amount != null ? item.trade_amount * (stockContext.percentage / 100) / 10 : 0;
                      };
                      const valA = getVal(a);
@@ -186,21 +149,21 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
     if (error) return <p className="text-red-500">{error}</p>;
 
     return (
-        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-4 mt-6">
-            <h3 className="text-lg font-semibold text-gray-800 mb-4">Meldingen Historiek - {selectedStock.name}</h3>
+        <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 mt-6">
+            <h3 className="text-xl font-bold text-gray-800 mb-6">Meldingen Historiek - {selectedStock.name}</h3>
             
-            <div className="my-4 grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
+            <div className="mb-6 grid grid-cols-1 md:grid-cols-2 gap-4 items-end">
                 <div>
-                    <label htmlFor="alertTypeFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Type Melding:</label>
-                    <select id="alertTypeFilter" value={alertTypeFilter} onChange={e => setAlertTypeFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border">
+                    <label htmlFor="alertTypeFilter" className="block text-sm font-semibold text-gray-700 mb-1">Filter Type Melding:</label>
+                    <select id="alertTypeFilter" value={alertTypeFilter} onChange={e => setAlertTypeFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                         <option value="">Alles</option>
                         <option value="Koopsignaal">Koopsignaal</option>
                         <option value="Verkoopsignaal">Verkoopsignaal</option>
                     </select>
                 </div>
                 <div>
-                    <label htmlFor="percentageFilter" className="block text-sm font-medium text-gray-600 mb-1">Filter Percentage (Q):</label>
-                    <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm p-2 border">
+                    <label htmlFor="percentageFilter" className="block text-sm font-semibold text-gray-700 mb-1">Filter Percentage (Q):</label>
+                    <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
                         <option value="">Alles</option>
                         <option value="gt0">Boven 0%</option>
                         <option value="lt0">Onder 0%</option>
@@ -208,36 +171,36 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                 </div>
             </div>
 
-            <div className="overflow-x-auto">
-                <table className="min-w-full divide-y divide-gray-200">
+            <div className="overflow-x-auto rounded-lg border border-gray-200">
+                <table className="min-w-full divide-y divide-gray-200 bg-white">
                     <thead className="bg-gray-50">
                         <tr>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('date')}
                             >
                                 Datum {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('type_melding')}
                             >
                                 Type {sortConfig.key === 'type_melding' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('prijs_op_moment')}
                             >
                                 Prijs {sortConfig.key === 'prijs_op_moment' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('signal_line_value')}
                             >
                                 Signal Line {sortConfig.key === 'signal_line_value' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('trade_amount')}
                             >
                                 Aanbevolen Bedrag {sortConfig.key === 'trade_amount' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
@@ -249,10 +212,10 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                             paginatedAlerts.map((alert) => {
                                 let displayAmount = 'N/A';
                                 
-                                if (alert.is_percentage) {
+                                if (alert.type_melding === 'Verkoopsignaal') {
                                     // Het is een verkoopsignaal, toon percentage
                                     const pct = alert.trade_amount * 100;
-                                    displayAmount = <span className="text-red-600 font-bold">{pct.toFixed(2)}%</span>;
+                                    displayAmount = <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{pct.toFixed(2)}%</span>;
                                 } else {
                                     // Het is een koopsignaal, toon bedrag
                                     const adjustedAmount = alert.trade_amount != null ? alert.trade_amount * (stockContext.percentage / 100) / 10 : null;
@@ -260,12 +223,12 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                                 }
                                 
                                 return (
-                                    <tr key={alert.alert_id || `${alert.date}-${alert.type_melding}`}>
+                                    <tr key={alert.alert_id || `${alert.date}-${alert.type_melding}`} className="hover:bg-gray-50 transition-colors">
                                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                                             {new Date(alert.date).toLocaleDateString()}
                                         </td>
                                         <td className="px-6 py-4 whitespace-nowrap text-sm">
-                                            <span className={`font-bold ${alert.type_melding === 'Koopsignaal' ? 'text-green-600' : 'text-red-600'}`}>
+                                            <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${alert.type_melding === 'Koopsignaal' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                                                 {alert.type_melding}
                                             </span>
                                         </td>
@@ -298,17 +261,17 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                     <button
                         onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                         disabled={currentPage === 1}
-                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
                     >
                         Vorige
                     </button>
-                    <span className="text-sm text-gray-700">
+                    <span className="text-sm font-medium text-gray-700">
                         Pagina {currentPage} van {totalPages}
                     </span>
                     <button
                         onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
                         disabled={currentPage === totalPages}
-                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50"
+                        className="px-4 py-2 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-lg hover:bg-gray-50 disabled:opacity-50 transition-colors"
                     >
                         Volgende
                     </button>
