@@ -1,6 +1,5 @@
 // c:\Arne\ArneVR\PortfolioVR\backend\controllers\watchlistController.js
 const { sql, config } = require('../config/database'); // Importeer getRequest is verwijderd
-let fetch;
 
 // Functie om de Exponential Moving Average (EMA) voor een serie prijzen te berekenen
 const calculateEMA_Series = (prices, period) => {
@@ -25,17 +24,13 @@ const calculateEMA_Series = (prices, period) => {
     return emaValues;
 };
 
-// Functie om de MACD en Signaal Lijn te berekenen
-const calculateMACD = (closingPrices) => {
+// Functie om de volledige serie MACD en Signaal Lijn te berekenen voor optimalisatie
+const calculateFullMACDSeries = (closingPrices) => {
     const fastLength = 30;
     const slowLength = 90;
     const signalSmoothing = 9;
 
     const pricesOnly = closingPrices.map(p => p.closing_price);
-
-    if (pricesOnly.length < slowLength + signalSmoothing - 1) {
-        return { macdLine: NaN, signalLine: NaN, histogram: NaN, previousMacdLine: NaN, previousPreviousMacdLine: NaN, previousSignalLine: NaN, previousPreviousSignalLine: NaN };
-    }
 
     const fastEMAs = calculateEMA_Series(pricesOnly, fastLength);
     const slowEMAs = calculateEMA_Series(pricesOnly, slowLength);
@@ -49,40 +44,24 @@ const calculateMACD = (closingPrices) => {
         }
     }
 
-    const validMacdLinesForSignal = macdLines.filter(val => !isNaN(val));
-
     let signalLines = [];
-    if (validMacdLinesForSignal.length >= signalSmoothing) {
-        signalLines = calculateEMA_Series(validMacdLinesForSignal, signalSmoothing);
+    const validMacdStartIndex = macdLines.findIndex(val => !isNaN(val));
+    
+    if (validMacdStartIndex !== -1) {
+        const validMacdLines = macdLines.slice(validMacdStartIndex);
+        const validSignalLines = calculateEMA_Series(validMacdLines, signalSmoothing);
+        signalLines = Array(validMacdStartIndex).fill(NaN).concat(validSignalLines);
     } else {
-        signalLines = Array(validMacdLinesForSignal.length).fill(NaN);
+        signalLines = Array(pricesOnly.length).fill(NaN);
     }
 
-    const latestMacdLine = macdLines[macdLines.length - 1];
-    const latestSignalLine = signalLines[signalLines.length - 1];
-    const latestHistogram = latestMacdLine - latestSignalLine;
-
-    let previousMacdLine = NaN;
-    if (macdLines.length > 1) {
-        previousMacdLine = macdLines[macdLines.length - 2];
-    }
-
-    let previousSignalLine = NaN;
-    if (signalLines.length > 1) {
-        previousSignalLine = signalLines[signalLines.length - 2];
-    }
-
-    return {
-        macdLine: latestMacdLine,
-        signalLine: latestSignalLine,
-        histogram: latestHistogram,
-        previousMacdLine: previousMacdLine,
-        previousSignalLine: previousSignalLine
-    };
+    return macdLines.map((macd, index) => ({
+        date: closingPrices[index].date,
+        price: closingPrices[index].closing_price,
+        macdLine: macd,
+        signalLine: signalLines[index]
+    }));
 };
-
-
-
 
 /**
  * Haalt een lijst met aandelen op basis van de 'view' parameter (watchlist of idealePortfolio).
@@ -245,10 +224,11 @@ const getDailyUpdateStatus = async (req, res) => {
         const pool = await sql.connect(config);
         const todayFormatted = new Date().toISOString().split("T")[0];
 
+        // Controleer of de update VANDAAG is gedraaid, niet of er prijzen VAN vandaag zijn.
         const query = `
             SELECT COUNT(*) AS count
             FROM [dbo].[MACDValues]
-            WHERE date = @todayFormatted;
+            WHERE CAST(last_updated_at AS DATE) = @todayFormatted;
         `;
         const result = (await pool.request()
             .input('todayFormatted', sql.Date, todayFormatted)
@@ -346,17 +326,10 @@ const removeStockFromPortfolio = async (req, res) => {
  * @returns {Promise<void>}
  */
 const updateAndProcessStocks = async (req = null, res = null, isStartup = false) => {
-  if (!fetch) {
-      try {
-          const nodeFetchModule = await import('node-fetch');
-          fetch = nodeFetchModule.default;
-      } catch (e) {
-          console.error("Fout bij het dynamisch importeren van 'node-fetch':", e);
-          if (res) return res.status(500).json({ message: "Server configuratiefout: kan 'node-fetch' niet laden." });
-          throw e;
-      }
-  }
+  // Gebruik require voor node-fetch in CommonJS module
+  const fetch = require('node-fetch');
 
+  
   console.log(`[${isStartup ? 'Startup' : 'Manual'}] Starten met het bijwerken en verwerken van aandelen.`);
   
   // Als er een response object is (niet startup), stel headers in voor streaming
@@ -366,23 +339,109 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
   }
 
   try {
-    const stocksQuery = `
-      SELECT s.aandeel_id, s.ticker_symbol, s.name, at.type_name AS asset_type
-      FROM [dbo].[Stocks] s
-      JOIN [dbo].[AssetTypes] at ON s.asset_type_id = at.asset_type_id
-      WHERE s.inWatchlist = 1 OR s.inIdealePortfolio = 1;
-    `;
-    // Gebruik new sql.Request() voor de stocksQuery
-    const stocksToProcess = (await new sql.Request().query(stocksQuery)).recordset;
+    const pool = await sql.connect(config);
 
     const today = new Date();
     const todayFormatted = today.toISOString().split("T")[0];
 
-    const twoYearsAgo = new Date(today);
-    twoYearsAgo.setFullYear(today.getFullYear() - 2);
-    const twoYearsAgoFormatted = twoYearsAgo.toISOString().split("T")[0];
+    // --- 0.1 Update EUR/USD Exchange Rate ---
+    try {
+        const fxUpdateCheckQuery = `SELECT MAX(last_updated_at) as max_updated_at FROM DailyExchangeRates WHERE currency_pair = 'EURUSD'`;
+        const fxUpdateCheckResult = await pool.request().query(fxUpdateCheckQuery);
+        const fxLastUpdated = fxUpdateCheckResult.recordset[0].max_updated_at;
+        
+        let fxNeedsUpdate = true;
+        if (fxLastUpdated) {
+            if (new Date(fxLastUpdated).toISOString().split('T')[0] === todayFormatted) {
+                fxNeedsUpdate = false;
+            }
+        }
 
-    const pool = await sql.connect(config);
+        if (fxNeedsUpdate) {
+            console.log("Ophalen van EUR/USD wisselkoersen via Profit.com...");
+            const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
+            
+            // Bepaal startdatum (laatste in DB of 10 jaar terug)
+            const latestFxQuery = await pool.request().query(`SELECT MAX(date) as max_date FROM DailyExchangeRates WHERE currency_pair = 'EURUSD'`);
+            let fxStartDate = new Date();
+            if (latestFxQuery.recordset[0].max_date) {
+                fxStartDate = new Date(latestFxQuery.recordset[0].max_date);
+                fxStartDate.setDate(fxStartDate.getDate() - 5); // 5 dagen overlap
+            } else {
+                fxStartDate.setFullYear(fxStartDate.getFullYear() - 10);
+            }
+            const fxStartDateFormatted = fxStartDate.toISOString().split("T")[0];
+            const fxEndDateFormatted = new Date().toISOString().split("T")[0];
+
+            const fxUrl = `https://api.profit.com/data-api/market-data/historical/daily/EURUSD?start_date=${fxStartDateFormatted}&end_date=${fxEndDateFormatted}&token=${apiKey}`;
+            
+            const fxResponse = await fetch(fxUrl);
+            if (fxResponse.ok) {
+                const fxData = await fxResponse.json();
+                if (fxData && fxData.length > 0) {
+                    for (const record of fxData) {
+                        const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
+                        const rate = parseFloat(record.c);
+                        await pool.request()
+                            .input('date', sql.Date, recordDateStr)
+                            .input('rate', sql.Decimal(18, 6), rate)
+                            .query(`
+                                MERGE INTO DailyExchangeRates AS target
+                                USING (SELECT 'EURUSD' AS currency_pair, @date AS date, @rate AS rate) AS source
+                                ON target.date = source.date AND target.currency_pair = source.currency_pair
+                                WHEN MATCHED THEN UPDATE SET rate = source.rate, last_updated_at = GETDATE()
+                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.currency_pair, source.date, source.rate, GETDATE());
+                            `);
+                    }
+                    console.log(`EUR/USD wisselkoersen succesvol bijgewerkt via Profit.com (${fxData.length} records).`);
+                    if (res) res.write(JSON.stringify({ type: 'info', message: "EUR/USD wisselkoersen bijgewerkt." }) + '\n');
+                }
+            } else {
+                console.warn(`Profit.com FX API error: ${fxResponse.statusText}`);
+            }
+        } else {
+            console.log("EUR/USD wisselkoersen zijn vandaag al bijgewerkt. API overgeslagen.");
+            if (res) res.write(JSON.stringify({ type: 'info', message: "EUR/USD wisselkoersen waren al actueel." }) + '\n');
+        }
+    } catch (fxErr) {
+        console.error("Fout bij ophalen wisselkoersen:", fxErr);
+    }
+
+    const stocksQuery = `
+      SELECT DISTINCT s.aandeel_id, s.ticker_symbol, s.name, at.type_name AS asset_type
+      FROM [dbo].[Stocks] s
+      JOIN [dbo].[AssetTypes] at ON s.asset_type_id = at.asset_type_id
+      LEFT JOIN (
+          SELECT aandeel_id, SUM(CASE WHEN transaction_type = 'BUY' THEN quantity WHEN transaction_type = 'SELL' THEN -quantity ELSE 0 END) AS total_qty
+          FROM [dbo].[PF_transactions]
+          GROUP BY aandeel_id
+      ) pt ON s.aandeel_id = pt.aandeel_id
+      WHERE s.inWatchlist = 1 OR s.inIdealePortfolio = 1 OR pt.total_qty > 0.00001;
+    `;
+    const stocksToProcess = (await new sql.Request().query(stocksQuery)).recordset;
+    const totalStocks = stocksToProcess.length;
+
+    const tenYearsAgo = new Date(today); // Wijzigd naar 10 jaar voor langere historie
+    tenYearsAgo.setFullYear(today.getFullYear() - 10);
+    const tenYearsAgoFormatted = tenYearsAgo.toISOString().split("T")[0];
+
+    // --- NIEUW: Optimalisatie - Haal de laatst bekende datums op voor alle aandelen ---
+    const latestPricesQuery = `SELECT aandeel_id, MAX(date) as max_date, MAX(last_updated_at) as max_updated_at FROM DailyClosingPrices GROUP BY aandeel_id`;
+    const latestPricesResult = await pool.request().query(latestPricesQuery);
+    const latestDatesMap = {};
+    const latestUpdatedMap = {};
+    latestPricesResult.recordset.forEach(row => {
+        latestDatesMap[row.aandeel_id] = row.max_date;
+        latestUpdatedMap[row.aandeel_id] = row.max_updated_at;
+    });
+
+    const latestMacdQuery = `SELECT aandeel_id, MAX(date) as max_date FROM MACDValues GROUP BY aandeel_id`;
+    const latestMacdResult = await pool.request().query(latestMacdQuery);
+    const latestMacdDatesMap = {};
+    latestMacdResult.recordset.forEach(row => {
+        latestMacdDatesMap[row.aandeel_id] = row.max_date;
+    });
+    // --- EINDE Optimalisatie ---
 
     // 0.5 Haal het totale beschikbare vermogen op voor tradeAmount berekening
     const balanceQuery = `
@@ -398,85 +457,117 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
     const baseTradeAmount = balanceResult.recordset[0].total || 30000; // Fallback naar 30000 als er geen saldo is
 
     // 0. Verwijder oude data (ouder dan 2 jaar) uit de database
-    console.log(`Verwijderen van data ouder dan ${twoYearsAgoFormatted}...`);
+    console.log(`Verwijderen van data ouder dan ${tenYearsAgoFormatted}...`);
     await pool.request().query(`
         DELETE FROM [dbo].[DailyClosingPrices]
-        WHERE date < '${twoYearsAgoFormatted}';
+        WHERE date < '${tenYearsAgoFormatted}';
     `);
-    console.log(`Verwijderde DailyClosingPrices ouder dan ${twoYearsAgoFormatted}.`);
+    console.log(`Verwijderde DailyClosingPrices ouder dan ${tenYearsAgoFormatted}.`);
 
     await pool.request().query(`
         DELETE FROM [dbo].[MACDValues]
-        WHERE date < '${twoYearsAgoFormatted}';
+        WHERE date < '${tenYearsAgoFormatted}';
     `);
-    console.log(`Verwijderde MACDValues ouder dan ${twoYearsAgoFormatted}.`);
+    console.log(`Verwijderde MACDValues ouder dan ${tenYearsAgoFormatted}.`);
 
     await pool.request().query(`
         DELETE FROM [dbo].[MACDAlerts]
-        WHERE date < '${twoYearsAgoFormatted}';
+        WHERE date < '${tenYearsAgoFormatted}';
     `);
-    console.log(`Verwijderde MACDAlerts ouder dan ${twoYearsAgoFormatted}.`);
+    console.log(`Verwijderde MACDAlerts ouder dan ${tenYearsAgoFormatted}.`);
 
 
-    for (const stock of stocksToProcess) {
+    for (const [index, stock] of stocksToProcess.entries()) {
       console.log(`Verwerken van ${stock.ticker_symbol} (${stock.name})...`);
 
       // HIER KOMT LATER LOGICA VOOR VERSCHILLENDE API'S PER ASSET_TYPE
       if (stock.asset_type === 'STOCK' || stock.asset_type === 'ETF') {
-          // 1. Prijsdata ophalen en bijwerken: Haal ALTIJD data op vanaf 250 dagen terug tot vandaag.
-          // MERGE statement zal dubbele records voorkomen.
-          const daysToFetchFromAPI = 250; // Haal altijd minstens deze hoeveelheid dagen op
-          const apiFetchStartDate = new Date(today);
-          apiFetchStartDate.setDate(today.getDate() - daysToFetchFromAPI);
-          const apiFetchStartDateFormatted = apiFetchStartDate.toISOString().split("T")[0];
-
-          const apiFetchEndDate = todayFormatted;
-
-          const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
-          const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
-
-          let apiData = [];
-          try {
-            console.log(`Ophalen van data voor ${stock.ticker_symbol} via API: ${apiUrl}`);
-            const response = await fetch(apiUrl);
-            if (!response.ok) {
-              console.warn(`API error voor ${stock.ticker_symbol} (Status: ${response.status}): ${response.statusText}`);
-            } else {
-                apiData = await response.json();
-                console.log(`API data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
-                
-                // Stuur voortgang naar client
-                if (res) {
-                    const progressMsg = JSON.stringify({ type: 'progress', message: `Data opgehaald voor ${stock.ticker_symbol}` }) + '\n';
-                    res.write(progressMsg);
-                }
-            }
-          } catch (apiError) {
-            console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
+          let needsApiFetch = true;
+          const lastUpdatedAt = latestUpdatedMap[stock.aandeel_id];
+          if (lastUpdatedAt) {
+              if (new Date(lastUpdatedAt).toISOString().split('T')[0] === todayFormatted) {
+                  needsApiFetch = false;
+              }
           }
+          
+          let apiData = [];
+           if (needsApiFetch) {
+              // 1. Prijsdata ophalen en bijwerken: Bepaal dynamisch de startdatum
+              let apiFetchStartDate = new Date(today);
+              const latestDbDate = latestDatesMap[stock.aandeel_id];
+              
+              if (latestDbDate) {
+                  // Als we al data hebben, haal alleen de laatste paar dagen op om te updaten
+                  apiFetchStartDate = new Date(latestDbDate);
+                  apiFetchStartDate.setDate(apiFetchStartDate.getDate() - 5); // 5 dagen overlap
+              } else {
+                  // Geen data? Haal 10 jaar op
+                  apiFetchStartDate.setFullYear(today.getFullYear() - 10);
+              }
+              const apiFetchStartDateFormatted = apiFetchStartDate.toISOString().split("T")[0];
 
-          // 2. Voeg nieuwe / werk bestaande DailyClosingPrices bij
-          if (apiData && apiData.length > 0) {
-            for (const record of apiData) {
-              const recordDate = new Date(record.t * 1000);
-              const formattedRecordDate = recordDate.toISOString().split("T")[0];
+              const apiFetchEndDate = todayFormatted;
 
-              await pool.request()
-                .input("aandeel_id", sql.Int, stock.aandeel_id)
-                .input("closing_price", sql.Decimal(18, 2), record.c)
-                .input("date", sql.Date, formattedRecordDate)
-                .input("last_updated_at", sql.DateTime, new Date())
-                .query(`
-                  MERGE INTO DailyClosingPrices AS target
-                  USING (SELECT @aandeel_id AS aandeel_id, @closing_price AS closing_price, @date AS date) AS source
-                  ON target.date = source.date AND target.aandeel_id = source.aandeel_id
-                  WHEN MATCHED THEN UPDATE SET closing_price = source.closing_price, last_updated_at = @last_updated_at
-                  WHEN NOT MATCHED THEN INSERT (aandeel_id, closing_price, date, last_updated_at) VALUES (source.aandeel_id, source.closing_price, source.date, @last_updated_at);
-                `);
-            }
-            console.log(`DailyClosingPrices bijgewerkt met ${apiData.length} records voor ${stock.ticker_symbol}.`);
+              const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
+              const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+
+              try {
+                console.log(`Ophalen van data voor ${stock.ticker_symbol} via API: ${apiUrl}`);
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                  console.warn(`API error voor ${stock.ticker_symbol} (Status: ${response.status}): ${response.statusText}`);
+                } else {
+                    apiData = await response.json();
+                    console.log(`API data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
+                    
+                    // Stuur voortgang naar client
+                    if (res) {
+                        const progress = ((index + 1) / totalStocks) * 100;
+                        const progressPayload = {
+                            type: 'progress',
+                            message: `Verwerken ${stock.ticker_symbol} (${index + 1}/${totalStocks})`,
+                            progress: progress.toFixed(0)
+                        };
+                        res.write(JSON.stringify(progressPayload) + '\n');
+                    }
+                }
+              } catch (apiError) {
+                console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
+              }
+
+              // 2. Voeg nieuwe / werk bestaande DailyClosingPrices bij
+              if (apiData && apiData.length > 0) {
+                for (const record of apiData) {
+                  const recordDate = new Date(record.t * 1000);
+                  const formattedRecordDate = recordDate.toISOString().split("T")[0];
+
+                  await pool.request()
+                    .input("aandeel_id", sql.Int, stock.aandeel_id)
+                    .input("closing_price", sql.Decimal(18, 2), record.c)
+                    .input("date", sql.Date, formattedRecordDate)
+                    .input("last_updated_at", sql.DateTime, new Date())
+                    .query(`
+                      MERGE INTO DailyClosingPrices AS target
+                      USING (SELECT @aandeel_id AS aandeel_id, @closing_price AS closing_price, @date AS date) AS source
+                      ON target.date = source.date AND target.aandeel_id = source.aandeel_id
+                      WHEN MATCHED THEN UPDATE SET closing_price = source.closing_price, last_updated_at = @last_updated_at
+                      WHEN NOT MATCHED THEN INSERT (aandeel_id, closing_price, date, last_updated_at) VALUES (source.aandeel_id, source.closing_price, source.date, @last_updated_at);
+                    `);
+                }
+                console.log(`DailyClosingPrices bijgewerkt met ${apiData.length} records voor ${stock.ticker_symbol}.`);
+              } else {
+                console.log(`Geen nieuwe prijsdata via API voor ${stock.ticker_symbol} tussen ${apiFetchStartDateFormatted} en ${apiFetchEndDate}.`);
+              }
           } else {
-            console.log(`Geen nieuwe prijsdata via API voor ${stock.ticker_symbol} tussen ${apiFetchStartDateFormatted} en ${apiFetchEndDate}.`);
+              console.log(`Prijsdata voor ${stock.ticker_symbol} is vandaag al bijgewerkt. API call overgeslagen.`);
+              if (res) {
+                  const progress = ((index + 1) / totalStocks) * 100;
+                  res.write(JSON.stringify({
+                      type: 'progress',
+                      message: `Controleren ${stock.ticker_symbol} (${index + 1}/${totalStocks}) - Al actueel`,
+                      progress: progress.toFixed(0)
+                  }) + '\n');
+              }
           }
 
 
@@ -503,101 +594,82 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
             continue;
           }
 
-          const firstValidMacdIndex = (90 + 9 - 1) - 1;
+          // --- NIEUW: Batch MACD Berekening en Optimalisatie ---
+          const fullMacdSeries = calculateFullMACDSeries(historicalPricesForMacd);
+          
+          let latestDbDateForMacd = latestMacdDatesMap[stock.aandeel_id];
+          let cutoffDateStr = '1970-01-01';
+          if (latestDbDateForMacd) {
+              const cutoffDate = new Date(latestDbDateForMacd);
+              cutoffDate.setDate(cutoffDate.getDate() - 3); // 3 days overlap
+              cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+          }
 
-          for (let i = firstValidMacdIndex; i < historicalPricesForMacd.length; i++) {
-            const currentDayPrices = historicalPricesForMacd.slice(0, i + 1);
-            const currentDayDate = historicalPricesForMacd[i].date;
-            const currentPrice = historicalPricesForMacd[i].closing_price;
+          const seriesToProcess = fullMacdSeries.filter(d => new Date(d.date).toISOString().split('T')[0] >= cutoffDateStr);
 
-            const macdResult = calculateMACD(currentDayPrices);
-            const { macdLine, signalLine, previousMacdLine, previousSignalLine } = macdResult;
+          for (let i = 0; i < seriesToProcess.length; i++) {
+              const currentData = seriesToProcess[i];
+              const fullSeriesIndex = fullMacdSeries.findIndex(d => d.date === currentData.date);
+              const previousData = fullSeriesIndex > 0 ? fullMacdSeries[fullSeriesIndex - 1] : { macdLine: NaN, signalLine: NaN };
+              
+              const formattedLoopDate = new Date(currentData.date).toISOString().split("T")[0];
+              const { macdLine, signalLine, price: currentPrice } = currentData;
+              const previousMacdLine = previousData.macdLine;
+              const previousSignalLine = previousData.signalLine;
 
-            const formattedLoopDate = new Date(currentDayDate).toISOString().split("T")[0];
+              let alertType = null;
+              let tradeAmount = null;
 
-            await pool.request()
-                .input('aandeel_id', sql.Int, stock.aandeel_id)
-                .input('date', sql.Date, formattedLoopDate)
-                .input('macdLine', sql.Decimal(18, 4), isNaN(macdLine) ? null : macdLine)
-                .input('signalLine', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine)
-                .input('last_updated_at', sql.DateTime, new Date())
-                .query(`
-                    MERGE INTO [dbo].[MACDValues] AS target
-                    USING (SELECT @aandeel_id AS aandeel_id, @date AS date, @macdLine AS macdLine, @signalLine AS signalLine) AS source
-                    ON target.date = source.date AND target.aandeel_id = source.aandeel_id
-                    WHEN MATCHED THEN UPDATE SET macdLine = source.macdLine, signalLine = source.signalLine, last_updated_at = @last_updated_at
-                    WHEN NOT MATCHED THEN INSERT (aandeel_id, date, macdLine, signalLine, last_updated_at) VALUES (source.aandeel_id, source.date, source.macdLine, source.signalLine, @last_updated_at);
-                `);
+              await pool.request()
+                  .input('aandeel_id', sql.Int, stock.aandeel_id)
+                  .input('date', sql.Date, formattedLoopDate)
+                  .input('macdLine', sql.Decimal(18, 4), isNaN(macdLine) ? null : macdLine)
+                  .input('signalLine', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine)
+                  .input('last_updated_at', sql.DateTime, new Date())
+                  .query(`
+                      MERGE INTO [dbo].[MACDValues] AS target
+                      USING (SELECT @aandeel_id AS aandeel_id, @date AS date, @macdLine AS macdLine, @signalLine AS signalLine) AS source
+                      ON target.date = source.date AND target.aandeel_id = source.aandeel_id
+                      WHEN MATCHED THEN UPDATE SET macdLine = source.macdLine, signalLine = source.signalLine, last_updated_at = @last_updated_at
+                      WHEN NOT MATCHED THEN INSERT (aandeel_id, date, macdLine, signalLine, last_updated_at) VALUES (source.aandeel_id, source.date, source.macdLine, source.signalLine, @last_updated_at);
+                  `);
 
-            if (!isNaN(macdLine) && !isNaN(signalLine) && !isNaN(previousMacdLine) && !isNaN(previousSignalLine)) {
-                let alertType = null;
-                let tradeAmount = null;
+              if (!isNaN(macdLine) && !isNaN(signalLine) && !isNaN(previousMacdLine) && !isNaN(previousSignalLine)) {
+                  if (macdLine > signalLine && previousMacdLine <= previousSignalLine) {
+                      if (signalLine < 0) alertType = 'Koopsignaal';
+                  }
 
-                if (macdLine > signalLine && previousMacdLine <= previousSignalLine) {
-                    // NIEUW: Alleen koopsignaal als signalLine onder 0 is
-                    if (signalLine < 0) {
-                        alertType = 'Koopsignaal';
-                    }
-                }
-                // VERWIJDERD: Verkoopsignaal op basis van MACD is niet meer gewenst.
-                // else if (macdLine < signalLine && previousMacdLine >= previousSignalLine) {
-                //     alertType = 'Verkoopsignaal';
-                // }
+                  if (alertType) {
+                      if (!isNaN(signalLine) && currentPrice > 0) {
+                          tradeAmount = baseTradeAmount * (1 + (-signalLine / currentPrice) * 4);
+                          tradeAmount = Math.max(0, tradeAmount);
+                      } else {
+                          tradeAmount = null;
+                      }
 
-                if (alertType) {
-                    if (!isNaN(signalLine) && currentPrice > 0) {
-                        tradeAmount = baseTradeAmount * (1 + (-signalLine / currentPrice) * 4);
-                        tradeAmount = Math.max(0, tradeAmount);
-                    } else {
-                        tradeAmount = null;
-                    }
+                      const existingAlertQuery = `SELECT alert_id FROM [dbo].[MACDAlerts] WHERE aandeel_id = @aandeel_id AND date = @date AND type_melding = @alert_type;`;
+                      const existingAlert = (await pool.request().input('aandeel_id', sql.Int, stock.aandeel_id).input('date', sql.Date, formattedLoopDate).input('alert_type', sql.VarChar, alertType).query(existingAlertQuery)).recordset;
 
-                    const existingAlertQuery = `
-                        SELECT alert_id FROM [dbo].[MACDAlerts]
-                        WHERE aandeel_id = @aandeel_id
-                        AND date = @date
-                        AND type_melding = @alert_type;
-                    `;
-                    const existingAlert = (await pool.request()
-                        .input('aandeel_id', sql.Int, stock.aandeel_id)
-                        .input('date', sql.Date, formattedLoopDate)
-                        .input('alert_type', sql.VarChar, alertType)
-                        .query(existingAlertQuery)).recordset;
+                      if (existingAlert.length === 0) {
+                          const insertAlertQuery = `INSERT INTO [dbo].[MACDAlerts] (aandeel_id, date, type_melding, status, prijs_op_moment, signal_line_value, trade_amount) VALUES (@aandeel_id, @date, @type_melding, 'Nieuw', @prijs_op_moment, @signal_line_value, @trade_amount);`;
+                          await pool.request().input('aandeel_id', sql.Int, stock.aandeel_id).input('date', sql.Date, formattedLoopDate).input('type_melding', sql.VarChar, alertType).input('prijs_op_moment', sql.Decimal(18, 2), currentPrice).input('signal_line_value', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine).input('trade_amount', sql.Decimal(18, 2), isNaN(tradeAmount) ? null : tradeAmount).query(insertAlertQuery);
+                          console.log(`NIEUWE ${alertType} Alert gegenereerd voor ${stock.ticker_symbol} op ${formattedLoopDate}.`);
+                      }
+                  }
+              }
 
-                    if (existingAlert.length === 0) {
-                        const insertAlertQuery = `
-                            INSERT INTO [dbo].[MACDAlerts] (aandeel_id, date, type_melding, status, prijs_op_moment, signal_line_value, trade_amount)
-                            VALUES (@aandeel_id, @date, @type_melding, 'Nieuw', @prijs_op_moment, @signal_line_value, @trade_amount);
-                        `;
-                        await pool.request()
-                            .input('aandeel_id', sql.Int, stock.aandeel_id)
-                            .input('date', sql.Date, formattedLoopDate)
-                            .input('type_melding', sql.VarChar, alertType)
-                            .input('prijs_op_moment', sql.Decimal(18, 2), currentPrice)
-                            .input('signal_line_value', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine)
-                            .input('trade_amount', sql.Decimal(18, 2), isNaN(tradeAmount) ? null : tradeAmount)
-                            .query(insertAlertQuery);
-                        console.log(`NIEUWE ${alertType} Alert gegenereerd voor ${stock.ticker_symbol} op ${formattedLoopDate} (Prijs: ${currentPrice.toFixed(2)}, Signaal: ${signalLine.toFixed(4)}, Bedrag: ${tradeAmount ? tradeAmount.toFixed(2) : 'N/A'}).`);
-                    } else {
-                        // console.log(`${alertType} Alert voor ${stock.ticker_symbol} op ${formattedLoopDate} bestaat al.`);
-                    }
-                }
-            } else {
-                console.log(`MACD/Signal Line kan niet berekend worden voor crossover check voor ${stock.ticker_symbol} op ${formattedLoopDate} (onvoldoende data of NaN waarden).`);
-            }
-
-            // Stuur de update van dit specifieke aandeel direct naar de client
-            if (res && i === historicalPricesForMacd.length - 1) {
-                const updatePayload = JSON.stringify({
-                    type: 'stock_update',
-                    aandeel_id: stock.aandeel_id,
-                    current_price: currentPrice,
-                    current_signal_line: signalLine,
-                    latest_alert_type: !isNaN(macdLine) && !isNaN(signalLine) && !isNaN(previousMacdLine) && !isNaN(previousSignalLine) && macdLine > signalLine && previousMacdLine <= previousSignalLine && signalLine < 0 ? 'Koopsignaal' : (macdLine < signalLine && previousMacdLine >= previousSignalLine ? 'Verkoopsignaal' : null),
-                    latest_alert_date: formattedLoopDate
-                }) + '\n';
-                res.write(updatePayload);
-            }
+              if (res && i === seriesToProcess.length - 1) {
+                  const updatePayload = JSON.stringify({ type: 'stock_update', aandeel_id: stock.aandeel_id, current_price: currentPrice, current_signal_line: signalLine, latest_alert_type: alertType, latest_alert_date: formattedLoopDate }) + '\n';
+                  res.write(updatePayload);
+              }
+          }
+          
+          if (res && seriesToProcess.length === 0 && fullMacdSeries.length > 0) {
+              const lastData = fullMacdSeries[fullMacdSeries.length - 1];
+              const prevData = fullMacdSeries.length > 1 ? fullMacdSeries[fullMacdSeries.length - 2] : { macdLine: NaN, signalLine: NaN };
+              const alertType = !isNaN(lastData.macdLine) && !isNaN(lastData.signalLine) && !isNaN(prevData.macdLine) && !isNaN(prevData.signalLine) && lastData.macdLine > lastData.signalLine && prevData.macdLine <= prevData.signalLine && lastData.signalLine < 0 ? 'Koopsignaal' : null;
+              const updatePayload = JSON.stringify({ type: 'stock_update', aandeel_id: stock.aandeel_id, current_price: lastData.price, current_signal_line: lastData.signalLine, latest_alert_type: alertType, latest_alert_date: new Date(lastData.date).toISOString().split("T")[0] }) + '\n';
+              res.write(updatePayload);
           }
       } else if (stock.asset_type === 'CRYPTO') {
           console.log(`Ophalen van data voor CRYPTO (${stock.ticker_symbol}) wordt later geïmplementeerd.`);

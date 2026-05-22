@@ -5,6 +5,7 @@ import BrokersTable from "./BrokersTable";
 import StockExchangeTable from "./StockExchangeTable";
 import AddStockForm from "./AddStockForm";
 import AvailableBalance from "../dashboard/AvailableBalance";
+import StocksManagementTable from "./StocksManagementTable";
 
 function Settings() {
     const userID = 1; // Voorbeeld userID (voorlopig op mezelf)
@@ -34,44 +35,67 @@ function Settings() {
     };
 
     return (
-        <>
-            <AvailableBalance/>
-            <p>valuta</p>
-            <br></br>
-            <h3>Instellingen Portfolio VR (enkel beschikbaar voor bevoegden)</h3>
-            <BrokersTable/>
-            <button className="filter-button">
-                Add Broker
-            </button>
-            <StockExchangeTable/>
-            <button className="filter-button">
-                Add Stock Exchange
-            </button>
-            <AddStockForm/>
-            <p>sector en industry toevoegen</p>
-
-            <br />
-            <h3>Geavanceerde Acties</h3>
-            <div style={{ border: "1px solid #ddd", padding: "20px", borderRadius: "8px", marginBottom: "20px", backgroundColor: "#fff" }}>
-                <h4>Verkoopsignalen Genereren</h4>
-                <p style={{ fontSize: "0.9em", color: "#666" }}>
-                    Deze actie loopt door de volledige historie van alle aandelenberekeningen. 
-                    Als de waardeverdeling van een kwartaal lager is dan het voorgaande kwartaal, 
-                    wordt er een 'Verkoopsignaal' aangemaakt in de database met het dalingpercentage.
-                </p>
-                <button 
-                    className="filter-button" 
-                    onClick={handleGenerateSellAlerts} 
-                    disabled={loading}
-                    style={{ backgroundColor: "#f0ad4e", color: "white", border: "none" }}
-                >
-                    {loading ? 'Bezig met genereren...' : 'Genereer Verkoopsignalen uit Historie'}
-                </button>
-                
-                {message && <div style={{ color: "green", marginTop: "10px" }}>{message}</div>}
-                {error && <div style={{ color: "red", marginTop: "10px" }}>{error}</div>}
+        <div className="space-y-8 pb-10">
+            {/* Header */}
+            <div className="flex justify-between items-center">
+                <h1 className="text-3xl font-bold text-gray-800">Instellingen</h1>
+                <span className="text-sm font-medium text-blue-800 bg-blue-100 px-4 py-1.5 rounded-full shadow-sm">Beheerderspaneel (Admin)</span>
             </div>
-        </>
+
+            {/* Financiën Sectie */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <AvailableBalance />
+                </div>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <UserCash userID={userID} />
+                </div>
+            </div>
+
+            {/* Brokers & Beurzen Sectie */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <BrokersTable />
+                </div>
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                    <StockExchangeTable />
+                </div>
+            </div>
+
+            {/* Aandelen Database Beheer */}
+            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+                <div className="flex justify-between items-center mb-4 border-b border-gray-100 pb-4">
+                    <div>
+                        <h3 className="text-lg font-semibold text-gray-800">Aandelen Database</h3>
+                        <p className="text-sm text-gray-500">Beheer alle gekende aandelen, tickers en ISIN codes.</p>
+                    </div>
+                    <AddStockForm />
+                </div>
+                <StocksManagementTable />
+            </div>
+
+            {/* Geavanceerde Acties */}
+            <div className="bg-red-50 p-6 rounded-xl shadow-sm border border-red-200">
+                <h3 className="text-lg font-semibold text-red-800 mb-2">Geavanceerde Acties</h3>
+                <div className="bg-white p-5 rounded-lg border border-red-100 flex flex-col md:flex-row justify-between items-center gap-4">
+                    <div className="flex-1">
+                        <h4 className="font-bold text-gray-800">Verkoopsignalen Genereren (Historie)</h4>
+                        <p className="text-sm text-gray-600 mt-1">
+                            Deze actie loopt door de volledige historie van alle aandelenberekeningen. Als de waardeverdeling van een kwartaal lager is dan het voorgaande kwartaal, wordt er een 'Verkoopsignaal' aangemaakt in de database. Overschrijft bestaande signalen.
+                        </p>
+                    </div>
+                    <button 
+                        onClick={handleGenerateSellAlerts} 
+                        disabled={loading}
+                        className="whitespace-nowrap px-5 py-2.5 bg-red-600 text-white font-medium rounded-lg shadow-sm hover:bg-red-700 disabled:opacity-50 transition-colors focus:ring-4 focus:ring-red-200"
+                    >
+                        {loading ? 'Bezig met genereren...' : 'Genereer Signalen'}
+                    </button>
+                </div>
+                {message && <div className="mt-3 p-3 bg-green-100 text-green-800 rounded text-sm">{message}</div>}
+                {error && <div className="mt-3 p-3 bg-red-200 text-red-900 rounded text-sm">{error}</div>}
+            </div>
+        </div>
     )
 }
 

@@ -1,13 +1,14 @@
 // c:\Arne\ArneVR\PortfolioVR\frontend\src\features\dashboard\Score5DistributionChart.js
-import React, { useState, useEffect } from 'react';
-import { Doughnut } from 'react-chartjs-2';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
+import React, { useState, useEffect, useMemo } from 'react';
+import { Bar } from 'react-chartjs-2';
+import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
 import http from '../../http-common';
 
-ChartJS.register(ArcElement, Tooltip, Legend);
+ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
 const Score5DistributionChart = () => {
-  const [chartData, setChartData] = useState(null);
+  const [portfolioData, setPortfolioData] = useState(null);
+  const [sortBy, setSortBy] = useState('ideal'); // 'ideal' of 'actual'
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
 
@@ -15,56 +16,49 @@ const Score5DistributionChart = () => {
     const fetchData = async () => {
       try {
         const today = new Date().toISOString().split('T')[0];
-        const response = await http.get('/calculations/summary-by-date', {
+        
+        // 1. Haal de ideale portfolio (berekende waardeverdeling) op
+        const calcResponse = await http.get('/calculations/summary-by-date', {
           params: { date: today }
         });
-        
-        const data = response.data;
-        
-        // Filter: alleen aandelen met score 5 en een positieve waardeverdeling
-        const filteredData = data.filter(item => item.selectiecriteria === 5 && item.waarde_verdeling > 0);
-        
-        // Sorteer van hoog naar laag
-        filteredData.sort((a, b) => b.waarde_verdeling - a.waarde_verdeling);
+        const calcData = calcResponse.data;
 
-        const labels = filteredData.map(item => item.ticker_symbol);
-        const values = filteredData.map(item => item.waarde_verdeling);
+        // 2. Haal de huidige portfolio (actuele holdings) op
+        const holdingsResponse = await http.get('/portfolio/holdings?userId=1');
+        const holdingsData = holdingsResponse.data;
         
-        // Modern Kleurenpalet (Tailwind-ish kleuren)
-        const backgroundColors = [
-          '#3B82F6', // Blue 500
-          '#10B981', // Emerald 500
-          '#F59E0B', // Amber 500
-          '#EF4444', // Red 500
-          '#8B5CF6', // Violet 500
-          '#EC4899', // Pink 500
-          '#6366F1', // Indigo 500
-          '#14B8A6', // Teal 500
-          '#F97316', // Orange 500
-          '#06B6D4', // Cyan 500
-          '#0EA5E9', // Sky 500
-          '#64748B'  // Slate 500
-        ];
+        // --- Verwerk Ideale Portfolio ---
+        // Neem alle aandelen met een score van 5 en een positieve waardeverdeling
+        const idealStocks = calcData.filter(item => item.selectiecriteria === 5 && item.waarde_verdeling > 0);
+        const totalIdealWaarde = idealStocks.reduce((sum, item) => sum + item.waarde_verdeling, 0);
+        
+        const idealMap = {};
+        idealStocks.forEach(item => {
+          idealMap[item.ticker_symbol] = totalIdealWaarde > 0 ? (item.waarde_verdeling / totalIdealWaarde) * 100 : 0;
+        });
 
-        const colors = values.map((_, i) => backgroundColors[i % backgroundColors.length]);
+        // --- Verwerk Huidige Portfolio ---
+        const totalActualValue = holdingsData.reduce((sum, item) => sum + item.value, 0);
+        const actualMap = {};
+        const actualValueMap = {};
+        holdingsData.forEach(item => {
+          actualMap[item.ticker] = totalActualValue > 0 ? (item.value / totalActualValue) * 100 : 0;
+          actualValueMap[item.ticker] = item.value || 0;
+        });
 
-        setChartData({
-          labels: labels,
-          datasets: [
-            {
-              data: values,
-              backgroundColor: colors,
-              hoverBackgroundColor: colors,
-              borderWidth: 2,
-              borderColor: '#ffffff',
-              hoverBorderWidth: 0,
-              hoverOffset: 10, // Laat segment uitspringen bij hover
-            },
-          ],
+        // Combineer alle unieke tickers en sorteer alfabetisch
+        const allTickers = Array.from(new Set([...Object.keys(idealMap), ...Object.keys(actualMap)])).sort();
+
+        // Sla de ruwe data op in de state zodat we kunnen sorteren zonder de database opnieuw aan te spreken
+        setPortfolioData({
+          idealMap,
+          actualMap,
+          actualValueMap,
+          allTickers
         });
         setLoading(false);
       } catch (err) {
-        console.error("Fout bij ophalen data voor Score 5 chart", err);
+        console.error("Fout bij ophalen data voor portfolio comparison chart", err);
         setError("Kon data niet laden");
         setLoading(false);
       }
@@ -73,47 +67,93 @@ const Score5DistributionChart = () => {
     fetchData();
   }, []);
 
+  // Bouw de grafiekdata op basis van de gekozen sortering
+  const chartData = useMemo(() => {
+    if (!portfolioData) return null;
+    const { idealMap, actualMap, actualValueMap, allTickers } = portfolioData;
+
+    // Bepaal de volgorde (van groot naar klein)
+    const sortedTickers = [...allTickers].sort((a, b) => {
+      if (sortBy === 'ideal') {
+        return (idealMap[b] || 0) - (idealMap[a] || 0);
+      } else {
+        return (actualMap[b] || 0) - (actualMap[a] || 0);
+      }
+    });
+
+    const idealDataPoints = sortedTickers.map(ticker => idealMap[ticker] || 0);
+    const actualDataPoints = sortedTickers.map(ticker => actualMap[ticker] || 0);
+    const actualAbsolutePoints = sortedTickers.map(ticker => actualValueMap[ticker] || 0);
+
+    // Modern Kleurenpalet (Tailwind-ish kleuren)
+    const backgroundColors = [
+      '#3B82F6', '#10B981', '#F59E0B', '#EF4444', '#8B5CF6', '#EC4899',
+      '#6366F1', '#14B8A6', '#F97316', '#06B6D4', '#0EA5E9', '#64748B'
+    ];
+
+    // Zorg ervoor dat het aandeel dezelfde kleur behoudt, ongeacht de sortering
+    const colors = sortedTickers.map(ticker => {
+      const originalIndex = allTickers.indexOf(ticker);
+      return backgroundColors[originalIndex % backgroundColors.length];
+    });
+
+    return {
+      labels: sortedTickers,
+      datasets: [
+        {
+          label: 'Ideaal (%)',
+          data: idealDataPoints,
+          backgroundColor: colors.map(c => c + '40'), // 25% transparant voor het 'Ideale' profiel
+          borderColor: colors,
+          borderWidth: 2,
+        },
+        {
+          label: 'Huidig (%)',
+          data: actualDataPoints,
+          absoluteValues: actualAbsolutePoints, // Voeg de absolute waarden toe voor de tooltip
+          backgroundColor: colors, // Solid kleur voor je Huidige bezit
+          borderColor: colors,
+          borderWidth: 2,
+        },
+      ],
+    };
+  }, [portfolioData, sortBy]);
+
   const options = {
+    indexAxis: 'y', // Grafiek horizontaal maken
     responsive: true,
     maintainAspectRatio: false,
-    cutout: '75%', // Dunnere ring voor moderne look
-    animation: {
-      animateScale: true,
-      animateRotate: true
+    scales: {
+      x: { // Omdat de grafiek nu horizontaal is, bevinden de percentages zich op de x-as
+        beginAtZero: true,
+        title: {
+          display: true,
+          text: 'Percentage van Portfolio (%)'
+        }
+      },
+      y: {
+        ticks: {
+          autoSkip: false // Zorgt dat alle tickernamen altijd leesbaar en zichtbaar blijven
+        }
+      }
     },
     plugins: {
       legend: {
-        position: 'right',
-        labels: {
-          usePointStyle: true,
-          pointStyle: 'circle',
-          padding: 15,
-          font: {
-            size: 12,
-            family: "'Inter', sans-serif"
-          },
-          color: '#4B5563' // Gray-600
-        }
+        position: 'top',
       },
       tooltip: {
-        backgroundColor: 'rgba(255, 255, 255, 0.9)',
-        titleColor: '#1F2937',
-        bodyColor: '#4B5563',
-        borderColor: '#E5E7EB',
-        borderWidth: 1,
-        padding: 10,
-        boxPadding: 4,
-        usePointStyle: true,
         callbacks: {
           label: function(context) {
-            let label = context.label || '';
-            if (label) {
-              label += ': ';
+            const datasetLabel = context.dataset.label;
+            const percentage = context.raw.toFixed(2);
+            
+            if (datasetLabel === 'Huidig (%)') {
+              const absValue = context.dataset.absoluteValues[context.dataIndex];
+              const formattedValue = new Intl.NumberFormat('nl-BE', { style: 'currency', currency: 'EUR' }).format(absValue);
+              return `${datasetLabel}: ${percentage}% (${formattedValue})`;
             }
-            const value = context.raw;
-            const total = context.chart._metasets[context.datasetIndex].total;
-            const percentage = ((value / total) * 100).toFixed(1) + '%';
-            return `${label}${value.toFixed(2)} (${percentage})`;
+            
+            return `${datasetLabel}: ${percentage}%`;
           }
         }
       }
@@ -138,13 +178,25 @@ const Score5DistributionChart = () => {
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 3.055A9.001 9.001 0 1020.945 13H11V3.055z"></path>
         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20.488 9H15V3.512A9.025 9.025 0 0120.488 9z"></path>
       </svg>
-      Geen aandelen met score 5 gevonden.
+      Geen data gevonden om te vergelijken.
     </div>
   );
 
   return (
-    <div className="relative h-full w-full">
-      <Doughnut data={chartData} options={options} />
+    <div className="flex flex-col h-full w-full">
+      <div className="flex justify-end mb-2 z-10">
+        <select 
+          value={sortBy} 
+          onChange={(e) => setSortBy(e.target.value)}
+          className="text-xs py-1 px-2 border border-gray-300 rounded-md shadow-sm focus:ring-blue-500 focus:border-blue-500 outline-none text-gray-700 bg-white"
+        >
+          <option value="ideal">Sorteer: Ideaal (Hoog → Laag)</option>
+          <option value="actual">Sorteer: Huidig (Hoog → Laag)</option>
+        </select>
+      </div>
+      <div className="relative flex-grow w-full min-h-[300px]">
+        <Bar data={chartData} options={options} />
+      </div>
     </div>
   );
 };

@@ -1,5 +1,5 @@
 // c:\Arne\ArneVR\PortfolioVR\frontend\src\features\analysis\AnalysisChartTab.js
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import http from '../../http-common';
 import {
   Chart as ChartJS,
@@ -12,6 +12,7 @@ import {
   Legend,
 } from 'chart.js';
 import { Line } from 'react-chartjs-2';
+import zoomPlugin from 'chartjs-plugin-zoom';
 
 // Registreer de ChartJS componenten
 ChartJS.register(
@@ -21,13 +22,17 @@ ChartJS.register(
   LineElement,
   Title,
   Tooltip,
-  Legend
+  Legend,
+  zoomPlugin
 );
 
 const AnalysisChartTab = ({ selectedStock }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [analysisChartData, setAnalysisChartData] = useState(null);
+  const [chartDates, setChartDates] = useState([]);
+  const [activeRange, setActiveRange] = useState('All');
+  const chartRef = useRef(null);
 
   const fetchAnalysisChartData = useCallback(async () => {
     if (!selectedStock) return;
@@ -53,6 +58,8 @@ const AnalysisChartTab = ({ selectedStock }) => {
         alerts.forEach(a => allDates.add(new Date(a.date).toISOString().split('T')[0]));
 
         const sortedDates = Array.from(allDates).sort((a, b) => new Date(a) - new Date(b));
+        setChartDates(sortedDates);
+        setActiveRange('All');
         
         const priceMap = new Map(prices.map(p => [new Date(p.date).toISOString().split('T')[0], p.closing_price]));
         const macdMap = new Map(macdHistory.map(m => [new Date(m.date).toISOString().split('T')[0], m]));
@@ -210,46 +217,112 @@ const AnalysisChartTab = ({ selectedStock }) => {
     }
   }, [selectedStock, fetchAnalysisChartData]);
 
+  const applyTimeRange = (range) => {
+    setActiveRange(range);
+
+    // Gebruik setTimeout om React de render te laten voltooien voordat we de chart muteren, 
+    // dit voorkomt dat React-Chartjs-2 de wijziging ongedaan maakt.
+    setTimeout(() => {
+        if (!chartRef.current || !chartDates.length) return;
+        const chart = chartRef.current;
+
+        if (range === 'All') {
+            chart.resetZoom();
+            return;
+        }
+
+        const now = new Date();
+        let cutoff = new Date();
+        if (range === '1W') cutoff.setDate(now.getDate() - 7);
+        else if (range === '1M') cutoff.setMonth(now.getMonth() - 1);
+        else if (range === '3M') cutoff.setMonth(now.getMonth() - 3);
+        else if (range === '6M') cutoff.setMonth(now.getMonth() - 6);
+        else if (range === '1Y') cutoff.setFullYear(now.getFullYear() - 1);
+        else if (range === '5Y') cutoff.setFullYear(now.getFullYear() - 5);
+
+        const cutoffStr = cutoff.toISOString().split('T')[0];
+        let startIndex = chartDates.findIndex(d => d >= cutoffStr);
+        
+        if (startIndex === -1) {
+            startIndex = Math.max(0, chartDates.length - 10);
+        }
+
+        // Gebruik de robuuste zoomScale API van de plugin (zonder animatie met 'none')
+        chart.zoomScale('x', { min: startIndex, max: chartDates.length - 1 }, 'none');
+    }, 50);
+  };
+
+  // Memoizeer de opties zodat React de reference behoudt en de zoom plugin zijn eigen werk kan doen.
+  const chartOptions = useMemo(() => ({
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      stacked: false,
+      plugins: {
+          legend: { position: 'top' },
+          title: { display: true, text: `Prijs, Waardeverdeling & MACD - ${selectedStock?.ticker || ''}` },
+          zoom: {
+              pan: {
+                  enabled: true,
+                  mode: 'x',
+                  onPanComplete: () => setActiveRange('Custom')
+              },
+              zoom: {
+                  wheel: { enabled: true },
+                  pinch: { enabled: true },
+                  mode: 'x',
+                  onZoomComplete: () => setActiveRange('Custom')
+              }
+          }
+      },
+      scales: {
+          x: { ticks: { maxTicksLimit: 20 } },
+          y: {
+              type: 'linear', display: true, position: 'left',
+              title: { display: true, text: 'Prijs (€)' },
+              stack: 'main', stackWeight: 2, beginAtZero: false
+          },
+          y1: {
+              type: 'linear', display: true, position: 'right',
+              grid: { drawOnChartArea: false },
+              title: { display: true, text: 'Waardeverdeling' },
+              stack: 'main', stackWeight: 2
+          },
+          y_macd: {
+              type: 'linear', display: true, position: 'left',
+              title: { display: true, text: 'MACD' },
+              stack: 'main', stackWeight: 1, offset: true,
+              grid: { drawOnChartArea: true }
+          }
+      }
+  }), [selectedStock?.ticker]);
+
   return (
     <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
-        <h3 className="text-xl font-bold text-gray-800 mb-6">Grafische Analyse</h3>
+        <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
+            <h3 className="text-xl font-bold text-gray-800">Grafische Analyse</h3>
+            {analysisChartData && (
+                <div className="flex space-x-1 bg-gray-100 p-1 rounded-lg">
+                    {['1W', '1M', '3M', '6M', '1Y', '5Y', 'All'].map(range => (
+                        <button key={range} onClick={() => applyTimeRange(range)} className={`px-3 py-1.5 text-sm font-medium rounded-md transition-all ${
+                            activeRange === range ? 'bg-white text-gray-800 shadow-sm' : 'text-gray-500 hover:text-gray-700'
+                        }`}>
+                            {range}
+                        </button>
+                    ))}
+                </div>
+            )}
+        </div>
+        
         {error && <p className="text-red-500">{error}</p>}
         {loading && !analysisChartData ? (
             <p>Grafiek laden...</p>
         ) : analysisChartData ? (
             <div style={{ height: '700px', marginBottom: '20px' }}>
                 <Line 
+                    ref={chartRef}
                     data={analysisChartData} 
-                    options={{
-                        responsive: true,
-                        maintainAspectRatio: false,
-                        interaction: { mode: 'index', intersect: false },
-                        stacked: false,
-                        plugins: {
-                            legend: { position: 'top' },
-                            title: { display: true, text: `Prijs, Waardeverdeling & MACD - ${selectedStock.ticker}` },
-                        },
-                        scales: {
-                            x: { ticks: { maxTicksLimit: 20 } },
-                            y: {
-                                type: 'linear', display: true, position: 'left',
-                                title: { display: true, text: 'Prijs (€)' },
-                                stack: 'main', stackWeight: 2, beginAtZero: false
-                            },
-                            y1: {
-                                type: 'linear', display: true, position: 'right',
-                                grid: { drawOnChartArea: false },
-                                title: { display: true, text: 'Waardeverdeling' },
-                                stack: 'main', stackWeight: 2
-                            },
-                            y_macd: {
-                                type: 'linear', display: true, position: 'left',
-                                title: { display: true, text: 'MACD' },
-                                stack: 'main', stackWeight: 1, offset: true,
-                                grid: { drawOnChartArea: true }
-                            }
-                        }
-                    }} 
+                    options={chartOptions} 
                 />
             </div>
         ) : <p>Geen data beschikbaar voor grafiek.</p>}

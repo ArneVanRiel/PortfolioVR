@@ -8,6 +8,7 @@ import AnalysisDataTab from './AnalysisDataTab';
 import AnalysisCalculationsTab from './AnalysisCalculationsTab';
 import AnalysisChartTab from './AnalysisChartTab';
 import AnalysisAlertsTab from './AnalysisAlertsTab'; // NIEUW: Importeer de alerts tab
+import AnalysisCalculationsChart from './AnalysisCalculationsChart'; // NIEUW: Importeer de calculaties grafiek
 import SearchSecFields from './searchSecFields';
 
 const dataPeriods = {
@@ -224,6 +225,7 @@ const Analysis = () => {
               {activeTab === 'Analyse' && (
                 <div className="space-y-6">
                     <AnalysisChartTab selectedStock={selectedStock} />
+                    <AnalysisCalculationsChart selectedStock={selectedStock} />
                     <AnalysisAlertsTab selectedStock={selectedStock} />
                 </div>
               )}

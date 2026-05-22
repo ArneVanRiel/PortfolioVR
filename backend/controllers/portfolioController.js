@@ -1,132 +1,638 @@
 // controllers/portfolioController.js
 const { sql, config } = require('../config/database');
+const xirr = require('xirr');
+const fetch = require('node-fetch');
 
-const calculatePortfolioValues = async (req, res) => {
+const recalculateAndStorePortfolioHistory = async (req, res) => {
   try {
-    const { userId } = req.body;
+    const { userId, fromDate } = req.body;
     if (!userId) {
       return res.status(400).json({ message: 'userId is verplicht.' });
     }
 
-    const endDate = new Date();
-    const startDate = new Date();
-    startDate.setMonth(endDate.getMonth() - 12);
+    // Set headers for streaming response
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    const write = (payload) => res.write(JSON.stringify(payload) + '\n');
 
-    const query = `
-      DECLARE @start_date DATE = @startDate;
-      DECLARE @end_date DATE = @endDate;
-      DECLARE @user_id INT = @userId;
+    // Helper to format cashflow arrays for logging
+    const formatCashflowsForLog = (cashflows) => 
+        JSON.stringify(cashflows.map(c => ({ amount: c.amount, date: new Date(c.date).toISOString().split('T')[0] })));
 
-      DELETE FROM DailyPortfolioValue
-      WHERE user_id = @user_id AND date < @start_date;
+    // Helper to group cashflows by date to prevent 0-day duration issues
+    const groupCashflowsByDate = (cashflows) => {
+        const map = {};
+        for (const cf of cashflows) {
+            const dateStr = (cf.date instanceof Date ? cf.date : new Date(cf.date)).toISOString().split('T')[0];
+            if (!map[dateStr]) map[dateStr] = 0;
+            map[dateStr] += cf.amount;
+        }
+        return Object.keys(map).map(dateStr => {
+            const d = new Date(dateStr);
+            // Voeg zowel 'date' (onze logica) als 'when' (voor de xirr library) toe
+            return { amount: map[dateStr], date: d, when: d };
+        }).filter(cf => Math.abs(cf.amount) > 0.00001);
+    };
 
-      WITH DailyDates AS (
-        SELECT DISTINCT date
-        FROM DailyClosingPrices
-        WHERE date BETWEEN @start_date AND @end_date
-      ),
-      DailyPortfolioValue AS (
-        SELECT
-          d.date,
-          SUM(lt.total_quantity * lcp.closing_price) AS total_value
-        FROM DailyDates d
-        CROSS APPLY (
-          SELECT
-            pt.aandeel_id,
-            pt.total_quantity,
-            ROW_NUMBER() OVER (PARTITION BY pt.aandeel_id ORDER BY pt.purchase_time DESC) AS rn
-          FROM
-            PF_transactions pt
-          WHERE
-            pt.purchase_time <= DATEADD(DAY, 1, d.date) AND pt.user_id = @user_id
-        ) lt
-        CROSS APPLY (
-          SELECT
-            dcp.aandeel_id,
-            dcp.closing_price,
-            ROW_NUMBER() OVER (PARTITION BY dcp.aandeel_id ORDER BY dcp.date DESC) AS rn
-          FROM
-            DailyClosingPrices dcp
-          WHERE
-            dcp.date = d.date
-        ) lcp
-        WHERE
-          lt.aandeel_id = lcp.aandeel_id AND
-          lt.rn = 1 AND
-          lcp.rn = 1
-        GROUP BY d.date
-      )
-      SELECT date, ISNULL(total_value, 0) AS total_value
-      FROM DailyPortfolioValue
-      ORDER BY date
-      OPTION (MAXRECURSION 0);
-    `;
+    // Robuuste XIRR wrapper die meerdere 'guesses' probeert als het algoritme vastloopt
+    const tryCalculateXIRR = (cashflows) => {
+        const guesses = [0.1, -0.1, 0, 0.25, -0.25, 0.5, -0.5, 1.0, -0.9, -0.99];
+        let lastError = null;
+        for (const guess of guesses) {
+            try {
+                const result = xirr(cashflows, { guess });
+                if (isFinite(result)) return result;
+            } catch (e) {
+                lastError = e;
+            }
+        }
+        throw lastError || new Error("Newton-Raphson failed to converge");
+    };
 
     const pool = await sql.connect(config);
-    const request = pool.request();
-    request.input('startDate', sql.Date, startDate);
-    request.input('endDate', sql.Date, endDate);
-    request.input('userId', sql.Int, userId);
+    
+    // Step 1: Fetch all cashflows for XIRR calculation
+    const cashflowRequest = pool.request();
+    cashflowRequest.input('userId', sql.Int, userId);
+    const cashflowResult = await cashflowRequest.query(`
+        SELECT aandeel_id, purchase_time, transaction_type, quantity, price, fees, taxes
+        FROM PF_transactions
+        WHERE user_id = @userId
+        ORDER BY purchase_time ASC
+    `);
+    const allCashflows = cashflowResult.recordset;
 
-    const result = await request.query(query);
-    const dailyValues = result.recordset;
+    // Step 2: Determine start date
+    const firstDateResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .input('fromDate', sql.Date, fromDate ? new Date(fromDate) : null)
+      .query(`
+        DECLARE @actualFirstTx DATE;
+        SELECT @actualFirstTx = MIN(CAST(purchase_time AS DATE)) FROM PF_transactions WHERE user_id = @userId;
 
-    for (const record of dailyValues) {
+        -- Ruim eventuele lege/foutieve datums uit eerdere runs (zoals vanaf 1970) direct op
+        IF @actualFirstTx IS NOT NULL
+            DELETE FROM DailyPortfolioValue WHERE user_id = @userId AND date < @actualFirstTx;
+
+        DECLARE @firstTransactionDate DATE;
+        IF @fromDate IS NOT NULL
+            SET @firstTransactionDate = CAST(@fromDate AS DATE);
+        ELSE BEGIN
+            SELECT @firstTransactionDate = DATEADD(day, -2, MAX(date)) FROM DailyPortfolioValue WHERE user_id = @userId;
+            IF @firstTransactionDate IS NULL
+                SET @firstTransactionDate = @actualFirstTx;
+        END
+
+        -- Voorkom dat de berekening onnodig ver in het verleden start
+        IF @actualFirstTx IS NOT NULL AND (@firstTransactionDate < @actualFirstTx OR @firstTransactionDate IS NULL)
+            SET @firstTransactionDate = @actualFirstTx;
+
+        IF @firstTransactionDate IS NULL SET @firstTransactionDate = GETDATE();
+        SELECT @firstTransactionDate AS first_date;
+      `);
+    const firstDateStr = new Date(firstDateResult.recordset[0].first_date).toISOString().split('T')[0];
+
+    // Step 3: Fetch all daily closing prices to do interpolation in memory
+    const userStockIds = [...new Set(allCashflows.map(t => t.aandeel_id).filter(id => id != null))];
+    let dailyPrices = [];
+    if (userStockIds.length > 0) {
+        const pricesResult = await pool.request().query(`
+            SELECT aandeel_id, CAST(date AS DATE) as date, closing_price
+            FROM DailyClosingPrices
+            WHERE aandeel_id IN (${userStockIds.join(',')})
+        `);
+        dailyPrices = pricesResult.recordset;
+    }
+
+    // Step 4: Build price timeline for each stock for linear interpolation
+    const priceTimeline = {};
+    userStockIds.forEach(id => { priceTimeline[id] = []; });
+
+    dailyPrices.forEach(dp => {
+        const dateStr = new Date(dp.date).toISOString().split('T')[0];
+        priceTimeline[dp.aandeel_id].push({ dateStr, timestamp: new Date(dateStr).getTime(), price: dp.closing_price });
+    });
+
+    allCashflows.forEach(tx => {
+        if (tx.aandeel_id && ['BUY', 'SELL'].includes(tx.transaction_type)) {
+            const dateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+            priceTimeline[tx.aandeel_id].push({ dateStr, timestamp: new Date(dateStr).getTime(), price: tx.price });
+        }
+    });
+
+    // Sort timelines and remove duplicates (latest value for a day wins)
+    for (const id of userStockIds) {
+        const byDate = {};
+        for (const pt of priceTimeline[id]) {
+            byDate[pt.dateStr] = { timestamp: pt.timestamp, price: pt.price };
+        }
+        priceTimeline[id] = Object.values(byDate).sort((a,b) => a.timestamp - b.timestamp);
+    }
+
+    const getInterpolatedPrice = (aandeel_id, timestamp) => {
+        const timeline = priceTimeline[aandeel_id];
+        if (!timeline || timeline.length === 0) return 0;
+        
+        let before = null;
+        let after = null;
+
+        for (let i = 0; i < timeline.length; i++) {
+            if (timeline[i].timestamp === timestamp) return timeline[i].price;
+            if (timeline[i].timestamp < timestamp) before = timeline[i];
+            if (timeline[i].timestamp > timestamp) {
+                after = timeline[i];
+                break;
+            }
+        }
+
+        if (before && after) {
+            const range = after.timestamp - before.timestamp;
+            const progress = timestamp - before.timestamp;
+            return before.price + (after.price - before.price) * (progress / range);
+        } else if (before) {
+            return before.price;
+        } else if (after) {
+            return after.price;
+        }
+        return 0;
+    };
+
+    // Step 5: Calculate daily values iteratively
+    const dailyValues = [];
+    let currentProcessDate = new Date(firstDateStr);
+    const todayIsoStr = new Date().toISOString().split('T')[0]; 
+    const endDateObj = new Date(todayIsoStr);
+
+    const holdings = {};
+    let txIndex = 0;
+
+    // Fast-forward transactions up to currentProcessDate (excluding the day itself)
+    while (txIndex < allCashflows.length) {
+        const tx = allCashflows[txIndex];
+        const txDateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+        if (txDateStr < firstDateStr) {
+            if (tx.aandeel_id) {
+                if (!holdings[tx.aandeel_id]) holdings[tx.aandeel_id] = 0;
+                if (tx.transaction_type === 'BUY') holdings[tx.aandeel_id] += tx.quantity;
+                if (tx.transaction_type === 'SELL') holdings[tx.aandeel_id] -= tx.quantity;
+            }
+            txIndex++;
+        } else {
+            break;
+        }
+    }
+
+    while (currentProcessDate <= endDateObj) {
+        const currentStr = currentProcessDate.toISOString().split('T')[0];
+        const currentTimestamp = currentProcessDate.getTime();
+
+        while (txIndex < allCashflows.length) {
+            const tx = allCashflows[txIndex];
+            const txDateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+            if (txDateStr === currentStr) {
+                if (tx.aandeel_id) {
+                    if (!holdings[tx.aandeel_id]) holdings[tx.aandeel_id] = 0;
+                    if (tx.transaction_type === 'BUY') holdings[tx.aandeel_id] += tx.quantity;
+                    if (tx.transaction_type === 'SELL') holdings[tx.aandeel_id] -= tx.quantity;
+                }
+                txIndex++;
+            } else {
+                break;
+            }
+        }
+
+        let total_value = 0;
+        for (const [aandeel_id, qty] of Object.entries(holdings)) {
+            if (qty > 0.00001) {
+                const price = getInterpolatedPrice(aandeel_id, currentTimestamp);
+                total_value += qty * price;
+            }
+        }
+
+        dailyValues.push({ date: currentStr, total_value });
+        currentProcessDate.setDate(currentProcessDate.getDate() + 1);
+    }
+
+    write({ type: 'info', message: `Start berekening vanaf: ${dailyValues.length > 0 ? dailyValues[0].date : 'Vandaag'}` });
+    write({ type: 'info', message: `Found ${allCashflows.length} total cashflow transactions.` });
+    write({ type: 'info', message: `Found ${dailyValues.length} days with portfolio values to process.` });
+
+    const totalDays = dailyValues.length;
+    if (totalDays === 0) {
+        write({ type: 'complete', message: 'Geen data om te herberekenen (geen transacties of historische waarden gevonden).' });
+        return res.end();
+    }
+
+    // Step 3: Loop through dailyValues, calculate XIRR, and store/update
+    for (const [index, record] of dailyValues.entries()) {
+      const currentDate = new Date(record.date);
+      currentDate.setHours(23, 59, 59, 999); // Einde van de dag voor correcte filtering
+
+      write({ type: 'debug', message: `\n--- Processing Day ${index + 1}/${totalDays}: ${currentDate.toISOString().split('T')[0]} ---` });
+      write({ type: 'debug', message: `Initial Total Value (Assets): ${record.total_value}` });
+
+      // Filter transactions up to the current date once
+      const transactionsUntilDate = allCashflows.filter(t => new Date(t.purchase_time) <= currentDate);
+
+      // --- NEW: Calculate cash balance for the current day ---
+      const cash_balance = transactionsUntilDate.reduce((balance, t) => {
+        switch (t.transaction_type) {
+            case 'DEPOSIT':
+                return balance + t.quantity;
+            case 'WITHDRAWAL':
+                return balance - t.quantity;
+            case 'BUY':
+                return balance - ((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0));
+            case 'SELL':
+                return balance + ((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0));
+            case 'DIVIDEND':
+                return balance + ((t.quantity * t.price) - (t.taxes || 0));
+            default:
+                return balance;
+        }
+      }, 0);
+      const account_total_value = record.total_value + cash_balance;
+
+      write({ type: 'debug', message: `Calculated cash balance: ${cash_balance.toFixed(2)}` });
+      write({ type: 'debug', message: `Final account value (assets + cash): ${account_total_value.toFixed(2)}` });
+
+      // --- Asset XIRR Berekening ---
+      let asset_xirr = 0;
+      try {
+        const rawAssetCashflows = transactionsUntilDate.filter(t => ['BUY', 'SELL', 'DIVIDEND'].includes(t.transaction_type))
+          .map(t => {
+            let amount = 0;
+            if (t.transaction_type === 'BUY') {
+              amount = -((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0));
+            } else if (t.transaction_type === 'SELL') {
+              amount = (t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0);
+            } else if (t.transaction_type === 'DIVIDEND') {
+              amount = (t.quantity * t.price) - (t.taxes || 0);
+            }
+            return { amount, date: new Date(t.purchase_time) };
+          });
+
+        if (rawAssetCashflows.length > 0 || record.total_value > 0) {
+          rawAssetCashflows.push({ amount: record.total_value, date: currentDate });
+          
+          const finalAssetCashflows = groupCashflowsByDate(rawAssetCashflows);
+          write({ type: 'debug', message: `[Asset XIRR] Grouped cashflows for calculation: ${formatCashflowsForLog(finalAssetCashflows)}` });
+
+          if (finalAssetCashflows.length > 1) {
+            const dates = finalAssetCashflows.map(cf => cf.date.getTime());
+            const duration = Math.max(...dates) - Math.min(...dates);
+            
+            if (duration > 0) {
+              const hasPositive = finalAssetCashflows.some(t => t.amount > 0);
+              const hasNegative = finalAssetCashflows.some(t => t.amount < 0);
+    
+              if (hasPositive && hasNegative) {
+                try {
+                    asset_xirr = tryCalculateXIRR(finalAssetCashflows);
+                    write({ type: 'info', message: `[Asset XIRR] Calculated XIRR: ${asset_xirr}` });
+                } catch (err) {
+                    write({ type: 'error', message: `[Asset XIRR] Error during calculation: ${err.message}.` });
+                    asset_xirr = 0;
+                }
+              } else {
+                write({ type: 'warn', message: `[Asset XIRR] Skipped calculation: requires both positive and negative cashflows.` });
+              }
+            } else {
+              write({ type: 'warn', message: `[Asset XIRR] Skipped calculation: duration is 0 days.` });
+            }
+          } else {
+            write({ type: 'warn', message: `[Asset XIRR] Skipped calculation: not enough grouped cashflows.` });
+          }
+        } else {
+            write({ type: 'debug', message: `[Asset XIRR] Skipped calculation: no transactions and zero total value.` });
+        }
+      } catch (e) {
+        asset_xirr = 0;
+        write({ type: 'error', message: `[Asset XIRR] Error during calculation: ${e.message}. This can happen with unusual cash flows or very short time periods.` });
+      }
+
+      // --- Account XIRR Berekening ---
+      let account_xirr = 0;
+      try {
+        const rawAccountCashflows = transactionsUntilDate.filter(t => ['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type))
+          .map(t => {
+            let amount = 0;
+            if (t.transaction_type === 'DEPOSIT') { amount = -t.quantity; }
+            else if (t.transaction_type === 'WITHDRAWAL') { amount = t.quantity; }
+            return { amount, date: new Date(t.purchase_time) };
+          });
+
+        write({ type: 'debug', message: `[Account XIRR] Found ${rawAccountCashflows.length} account-related transactions.` });
+
+        if (rawAccountCashflows.length === 0) {
+            write({ type: 'warn', message: `[Account XIRR] Skipped calculation: No DEPOSIT or WITHDRAWAL transactions found.` });
+        } else if (rawAccountCashflows.length > 0 || account_total_value > 0) {
+            rawAccountCashflows.push({ amount: account_total_value, date: currentDate });
+            
+            const finalAccountCashflows = groupCashflowsByDate(rawAccountCashflows);
+            write({ type: 'debug', message: `[Account XIRR] Grouped cashflows for calculation: ${formatCashflowsForLog(finalAccountCashflows)}` });
+
+            if (finalAccountCashflows.length > 1) {
+                const dates = finalAccountCashflows.map(cf => cf.date.getTime());
+                const duration = Math.max(...dates) - Math.min(...dates);
+                
+                if (duration > 0) {
+                    const hasPositive = finalAccountCashflows.some(t => t.amount > 0);
+                    const hasNegative = finalAccountCashflows.some(t => t.amount < 0);
+        
+                    if (hasPositive && hasNegative) {
+                        try {
+                            account_xirr = tryCalculateXIRR(finalAccountCashflows);
+                            write({ type: 'info', message: `[Account XIRR] Calculated XIRR: ${account_xirr}` });
+                        } catch (err) {
+                            write({ type: 'error', message: `[Account XIRR] Error during calculation: ${err.message}.` });
+                            account_xirr = 0;
+                        }
+                    } else {
+                        write({ type: 'warn', message: `[Account XIRR] Skipped calculation: requires both positive and negative cashflows.` });
+                    }
+                } else {
+                    write({ type: 'warn', message: `[Account XIRR] Skipped calculation: duration is 0 days.` });
+                }
+            } else {
+                write({ type: 'warn', message: `[Account XIRR] Skipped calculation: not enough grouped cashflows.` });
+            }
+        } else {
+            write({ type: 'debug', message: `[Account XIRR] Skipped calculation: no transactions and zero total value.` });
+        }
+      } catch (e) {
+        account_xirr = 0;
+        write({ type: 'error', message: `[Account XIRR] Error during calculation: ${e.message}.` });
+      }
+
       await pool.request()
         .input('user_id', sql.Int, userId)
         .input('date', sql.Date, record.date)
         .input('total_value', sql.Decimal(18, 2), record.total_value)
+        .input('asset_xirr', sql.Decimal(18, 8), isFinite(asset_xirr) ? asset_xirr : 0)
+        .input('account_xirr', sql.Decimal(18, 8), isFinite(account_xirr) ? account_xirr : 0)
         .query(`
           MERGE INTO DailyPortfolioValue AS target
-          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value) AS source
+          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value, @asset_xirr AS asset_xirr, @account_xirr AS account_xirr) AS source
           ON target.date = source.date AND target.user_id = source.user_id
-          WHEN MATCHED THEN UPDATE SET total_value = source.total_value
-          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value) VALUES (source.user_id, source.date, source.total_value);
+          WHEN MATCHED THEN UPDATE SET total_value = source.total_value, asset_xirr = source.asset_xirr, account_xirr = source.account_xirr
+          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value, asset_xirr, account_xirr) VALUES (source.user_id, source.date, source.total_value, source.asset_xirr, source.account_xirr);
         `);
+
+      // Send progress update to the client
+      if ((index + 1) % 10 === 0 || (index + 1) === totalDays) {
+        const progress = ((index + 1) / totalDays) * 100;
+        write({
+            type: 'progress',
+            message: `Herberekenen dag ${index + 1}/${totalDays}...`,
+            progress: progress.toFixed(0)
+        });
+      }
     }
 
-    res.status(200).json({ message: 'Portfolio waarden succesvol bijgewerkt.' });
+    write({ type: 'complete', message: 'Portfolio waarden succesvol herberekend en opgeslagen.' });
+    res.end();
   } catch (error) {
-    console.error('Fout bij het berekenen van portfolio waarden:', error);
-    res.status(500).json({ message: 'Serverfout bij het berekenen van portfolio waarden.' });
+    console.error('Fout bij het herberekenen en opslaan van portfolio historie:', error);
+    if (!res.headersSent) {
+        res.status(500).json({ message: 'Serverfout bij het herberekenen en opslaan van portfolio historie.' });
+    } else {
+        res.end();
+    }
   }
+};
+
+const checkAndRepairPriceData = async (req, res) => {
+    const { userId } = req.body;
+    if (!userId) {
+        return res.status(400).json({ message: 'userId is verplicht.' });
+    }
+
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    const write = (payload) => res.write(JSON.stringify(payload) + '\n');
+
+    try {
+        write({ type: 'info', message: 'Starten: ophalen van aandelen uit transactiehistorie...' });
+        const pool = await sql.connect(config);
+
+        const stocksInPortfolioQuery = `
+            SELECT
+                t.aandeel_id,
+                s.ticker_symbol,
+                MIN(CAST(t.purchase_time AS DATE)) as first_transaction_date,
+                MAX(CAST(t.purchase_time AS DATE)) as last_transaction_date,
+                SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) as total_qty
+            FROM PF_transactions t
+            JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+            WHERE t.user_id = @userId AND t.aandeel_id IS NOT NULL
+            GROUP BY t.aandeel_id, s.ticker_symbol;
+        `;
+        const stocksResult = await pool.request().input('userId', sql.Int, userId).query(stocksInPortfolioQuery);
+        const stocksToProcess = stocksResult.recordset;
+
+        if (stocksToProcess.length === 0) {
+            write({ type: 'complete', message: 'Geen aandelen in transactiehistorie gevonden om te controleren.' });
+            return res.end();
+        }
+
+        write({ type: 'info', message: `Found ${stocksToProcess.length} stocks to check. Starting process...` });
+
+        const today = new Date();
+        const totalStocks = stocksToProcess.length;
+        let repairedCount = 0;
+        let earliestRepairedDate = new Date();
+
+        for (const [index, stock] of stocksToProcess.entries()) {
+            const progress = ((index + 1) / totalStocks) * 100;
+            write({ type: 'progress', progress: progress.toFixed(0), message: `Controleren: ${stock.ticker_symbol} (${index + 1}/${totalStocks})` });
+
+            const firstDate = new Date(stock.first_transaction_date);
+            const targetEndDate = stock.total_qty > 0.00001 ? today : new Date(stock.last_transaction_date);
+
+            const existingPricesResult = await pool.request()
+                .input('aandeel_id', sql.Int, stock.aandeel_id)
+                .input('first_date', sql.Date, firstDate)
+                .input('end_date', sql.Date, targetEndDate)
+                .query('SELECT date FROM DailyClosingPrices WHERE aandeel_id = @aandeel_id AND date >= @first_date AND date <= @end_date');
+            
+            const existingDates = new Set(existingPricesResult.recordset.map(r => new Date(r.date).toISOString().split('T')[0]));
+
+            const requiredDates = [];
+            let currentDate = new Date(firstDate);
+            while (currentDate <= targetEndDate) {
+                const day = currentDate.getDay();
+                if (day > 0 && day < 6) { // 1=Monday, 5=Friday
+                    requiredDates.push(currentDate.toISOString().split('T')[0]);
+                }
+                currentDate.setDate(currentDate.getDate() + 1);
+            }
+
+            const missingDates = requiredDates.filter(d => !existingDates.has(d));
+
+            if (missingDates.length > 0) {
+                repairedCount++;
+                write({ type: 'info', message: `Vond ${missingDates.length} ontbrekende prijsdatums voor ${stock.ticker_symbol}. Ophalen...` });
+
+                const apiFetchStartDate = missingDates[0];
+                const apiFetchEndDate = targetEndDate.toISOString().split('T')[0];
+                
+                const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
+                const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDate}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+
+                const response = await fetch(apiUrl);
+                if (!response.ok) {
+                    write({ type: 'error', message: `API error for ${stock.ticker_symbol}: ${response.statusText}` });
+                    continue;
+                }
+                const apiData = await response.json();
+
+                if (apiData && apiData.length > 0) {
+                    let insertedCount = 0;
+                    for (const record of apiData) {
+                        const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
+                        if (missingDates.includes(recordDateStr)) {
+                            await pool.request()
+                                .input("aandeel_id", sql.Int, stock.aandeel_id).input("closing_price", sql.Decimal(18, 2), record.c).input("date", sql.Date, recordDateStr).input("last_updated_at", sql.DateTime, new Date())
+                                .query(`MERGE INTO DailyClosingPrices AS target USING (SELECT @aandeel_id AS aandeel_id, @closing_price AS closing_price, @date AS date) AS source ON target.date = source.date AND target.aandeel_id = source.aandeel_id WHEN NOT MATCHED THEN INSERT (aandeel_id, closing_price, date, last_updated_at) VALUES (source.aandeel_id, source.closing_price, source.date, @last_updated_at);`);
+                            insertedCount++;
+                            const recDate = new Date(recordDateStr);
+                            if (recDate < earliestRepairedDate) earliestRepairedDate = recDate;
+                        }
+                    }
+                    write({ type: 'info', message: `${insertedCount} prijzen hersteld voor ${stock.ticker_symbol}.` });
+                }
+            }
+        }
+
+        write({ type: 'complete', message: `Prijsdata controle voltooid. Data hersteld voor ${repairedCount} aande(e)l(en). Het is aanbevolen om nu 'Herbereken Historie' uit te voeren.`, earliestRepairedDate: earliestRepairedDate.toISOString().split('T')[0], repairedCount });
+        res.end();
+
+    } catch (error) {
+        console.error('Fout bij het controleren en repareren van prijsdata:', error);
+        if (!res.headersSent) res.status(500).json({ message: 'Serverfout bij het controleren en repareren van prijsdata.' });
+        else res.end();
+    }
+};
+
+const parseDateRange = (period, customStartDate, customEndDate) => {
+    let startDate = new Date();
+    let endDate = new Date();
+    
+    if (period === '1W') {
+      startDate.setDate(startDate.getDate() - 7);
+    } else if (period === '1M') {
+      startDate.setMonth(startDate.getMonth() - 1);
+    } else if (period === 'YTD') {
+      startDate.setMonth(0, 1); // 1 Januari van het huidige jaar
+    } else if (period === '1Y') {
+      startDate.setFullYear(startDate.getFullYear() - 1);
+    } else if (period === 'All') {
+      startDate.setFullYear(1970);
+    } else if (period === 'Custom') {
+      if (customStartDate) startDate = new Date(customStartDate);
+      if (customEndDate) endDate = new Date(customEndDate);
+    } else {
+      const monthsMap = { "3M": 3, "6M": 6, "2Y": 24, "5Y": 60 };
+      if (monthsMap[period]) { startDate.setMonth(startDate.getMonth() - monthsMap[period]); }
+      else if (period !== 'All') { startDate.setFullYear(startDate.getFullYear() - 1); }
+      else { startDate.setFullYear(1970); }
+    }
+
+    startDate.setHours(0, 0, 0, 0); // Begin van de dag
+    endDate.setHours(23, 59, 59, 999); // Einde van de dag
+    return { startDate, endDate };
 };
 
 const getPortfolioValues = async (req, res) => {
   try {
-    const { userId, period } = req.query;
+    const { userId, period, assetTypes, customStartDate, customEndDate, currency } = req.query;
     const currentTime = new Date();
 
-    const monthsMap = {
-      "1M": 1,
-      "3M": 3,
-      "6M": 6,
-      "1Y": 12,
-      "2Y": 24,
-      "5Y": 60,
-    };
+    const pool = await sql.connect(config);
+    const isEur = currency === 'EUR' ? 1 : 0;
 
-    const startDate = new Date();
-    if (period && period !== "All") {
-      startDate.setMonth(currentTime.getMonth() - monthsMap[period]);
+    // Stap 1: Haal alle cashflows voor de gebruiker eenmalig op
+    const cashflowRequest = pool.request();
+    cashflowRequest.input('userId', sql.Int, userId);
+    const cashflowResult = await cashflowRequest.query(`
+        SELECT purchase_time, transaction_type, quantity, price, fees, taxes
+        FROM PF_transactions
+        WHERE user_id = @userId
+        ORDER BY purchase_time ASC
+    `);
+    const allCashflows = cashflowResult.recordset;
+
+
+    const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
+
+    let query = '';
+    if (assetTypes && assetTypes.length > 0 && assetTypes !== 'All') {
+      // If assetTypes filter is active, XIRR values are not applicable for the filtered view
+      // and total_value needs to be calculated on the fly.
+      // Stored XIRR is for the entire portfolio.
+      
+      // Dynamische berekening als er filters actief zijn
+      const types = assetTypes.split(',').map(t => `'${t}'`).join(',');
+      query = `
+        WITH DailyDates AS (
+          SELECT DISTINCT date FROM DailyClosingPrices WHERE date >= @startDate AND date <= @endDate
+        ),
+        DailyFilteredPortfolioValue AS (
+          SELECT d.date, SUM(lt.total_quantity * COALESCE(lcp.closing_price, tp.price, 0)) AS total_value, ISNULL(MAX(er.rate), 1) as exchange_rate
+          FROM DailyDates d
+          CROSS APPLY (
+            SELECT pt.aandeel_id, SUM(CASE WHEN pt.transaction_type = 'BUY' THEN pt.quantity WHEN pt.transaction_type = 'SELL' THEN -pt.quantity ELSE 0 END) AS total_quantity
+            FROM PF_transactions pt
+            JOIN Stocks s ON pt.aandeel_id = s.aandeel_id
+            JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+            WHERE pt.purchase_time <= DATEADD(DAY, 1, d.date) AND pt.user_id = @userId AND at.type_name IN (${types})
+            GROUP BY pt.aandeel_id
+            HAVING SUM(CASE WHEN pt.transaction_type = 'BUY' THEN pt.quantity WHEN pt.transaction_type = 'SELL' THEN -pt.quantity ELSE 0 END) > 0
+          ) lt
+          OUTER APPLY (
+            SELECT TOP 1 closing_price FROM DailyClosingPrices dcp
+            WHERE dcp.aandeel_id = lt.aandeel_id AND dcp.date <= d.date ORDER BY dcp.date DESC
+          ) lcp
+          OUTER APPLY (
+            SELECT TOP 1 price FROM PF_transactions pt2
+            WHERE pt2.aandeel_id = lt.aandeel_id AND pt2.user_id = @userId AND CAST(pt2.purchase_time AS DATE) <= d.date
+            ORDER BY pt2.purchase_time DESC
+          ) tp
+          OUTER APPLY (
+            SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= d.date ORDER BY date DESC
+          ) er
+          GROUP BY d.date
+        )
+        SELECT date, (ISNULL(total_value, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS total_value
+             , 0 AS asset_xirr, 0 AS account_xirr -- Set XIRR to 0 for filtered views
+        FROM DailyFilteredPortfolioValue
+        ORDER BY date ASC
+      `;
     } else {
-      startDate.setFullYear(1970); // Alle data
+      query = `
+        SELECT dpv.date, 
+               (dpv.total_value / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS total_value, 
+               dpv.asset_xirr, dpv.account_xirr
+        FROM DailyPortfolioValue dpv
+        OUTER APPLY (
+            SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= dpv.date ORDER BY date DESC
+        ) er
+        WHERE dpv.user_id = @userId AND dpv.date >= @startDate AND dpv.date <= @endDate
+        ORDER BY dpv.date ASC
+      `;
     }
 
-    const query = `
-      SELECT date, total_value
-      FROM DailyPortfolioValue
-      WHERE user_id = @userId AND date >= @startDate
-      ORDER BY date ASC
-    `;
-
-    const pool = await sql.connect(config);
     const request = pool.request();
     request.input('userId', sql.Int, userId);
     request.input('startDate', sql.Date, startDate);
+    request.input('endDate', sql.Date, endDate);
+    request.input('isEur', sql.Bit, isEur);
 
     const result = await request.query(query);
-    res.status(200).json(result.recordset);
+    const dailyValues = result.recordset;
+
+    res.status(200).json(dailyValues); // Return directly as XIRR is now stored
   } catch (error) {
     console.error("Fout bij het ophalen van portfolio waarden:", error);
     res.status(500).json({ message: "Serverfout bij het ophalen van portfolio waarden." });
@@ -161,8 +667,8 @@ const calculateReturns = async (req, res) => {
         SELECT
           CONVERT(DATE, t.purchase_time) AS transaction_date,
           SUM(CASE
-            WHEN t.transaction_type = 1 THEN t.quantity * t.purchase_price
-            WHEN t.transaction_type = 0 THEN -t.quantity * t.purchase_price
+            WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price
+            WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price
             ELSE 0
           END) AS total_transaction_value
         FROM PF_transactions t
@@ -232,9 +738,280 @@ const getPortfolioReturns = async (req, res) => {
   }
 };
 
+const getCurrentPortfolioHoldings = async (req, res) => {
+  try {
+    // Haal userId uit query param of sessie (hier standaard 1 voor testdoeleinden)
+    const userId = req.query.userId || 1;
+    const { period, customStartDate, customEndDate, currency } = req.query;
+    const { endDate } = parseDateRange(period, customStartDate, customEndDate);
+    const pool = await sql.connect(config);
+    const isEur = currency === 'EUR' ? 1 : 0;
+
+    // Bereken het actuele bezit op basis van alle transacties en de meest recente slotkoers
+    const query = `
+      WITH Holdings AS (
+        SELECT
+          t.aandeel_id,
+          SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS total_quantity,
+          SUM(CASE WHEN t.transaction_type = 'BUY' THEN (t.quantity * t.price) WHEN t.transaction_type = 'SELL' THEN -(t.quantity * t.price) ELSE 0 END) AS total_invested
+        FROM PF_transactions t
+        WHERE t.user_id = @userId
+        AND t.purchase_time <= @endDate
+        GROUP BY t.aandeel_id
+        HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0
+      ),
+      LatestPrices AS (
+        SELECT aandeel_id, closing_price,
+               ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+        FROM DailyClosingPrices
+        WHERE date <= @endDate
+      ),
+      LatestTransactionPrices AS (
+        SELECT aandeel_id, price,
+               ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY purchase_time DESC) as rn
+        FROM PF_transactions
+        WHERE user_id = @userId AND purchase_time <= @endDate
+      )
+      SELECT
+        h.aandeel_id,
+        s.ticker_symbol AS ticker,
+        s.name,
+        at.type_name AS asset_type,
+        h.total_quantity AS quantity,
+        ((h.total_invested / NULLIF(h.total_quantity, 0)) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS average_price,
+        (COALESCE(p.closing_price, ltp.price, 0) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS price,
+        ((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS value,
+        (((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) - h.total_invested) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS gainLoss,
+        (h.total_invested / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS total_invested
+      FROM Holdings h
+      JOIN Stocks s ON h.aandeel_id = s.aandeel_id
+      LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+      LEFT JOIN LatestPrices p ON h.aandeel_id = p.aandeel_id AND p.rn = 1
+      LEFT JOIN LatestTransactionPrices ltp ON h.aandeel_id = ltp.aandeel_id AND ltp.rn = 1
+      OUTER APPLY (
+        SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= @endDate ORDER BY date DESC
+      ) er;
+      `;
+    const result = await pool.request()
+        .input('userId', sql.Int, userId)
+        .input('endDate', sql.DateTime, endDate)
+        .input('isEur', sql.Bit, isEur)
+        .query(query);
+    res.status(200).json(result.recordset);
+  } catch (error) {
+    console.error('Fout bij het ophalen van actuele holdings:', error);
+    res.status(500).json({ message: 'Serverfout bij ophalen van actuele holdings.' });
+  }
+};
+
+const getTransactions = async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    const { period, customStartDate, customEndDate } = req.query;
+    const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
+    const pool = await sql.connect(config);
+    const result = await pool.request()
+      .input('userId', sql.Int, userId)
+      .input('startDate', sql.DateTime, startDate)
+      .input('endDate', sql.DateTime, endDate)
+      .query(`
+        SELECT t.*, s.ticker_symbol, s.name as stock_name, at.type_name as asset_type
+        FROM PF_transactions t
+        LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+        LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+        WHERE t.user_id = @userId
+        AND t.purchase_time >= @startDate AND t.purchase_time <= @endDate
+        ORDER BY t.purchase_time DESC
+      `);
+    res.status(200).json(result.recordset);
+  } catch (error) {
+    console.error('Fout bij het ophalen van transacties:', error);
+    res.status(500).json({ message: 'Serverfout bij ophalen van transacties.' });
+  }
+};
+
+const addTransaction = async (req, res) => {
+  try {
+    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1 } = req.body;
+    const pool = await sql.connect(config);
+    
+    // Check of transactie al bestaat (Duplicaat check op Tijd, Aandeel, Prijs en Aantal)
+    const duplicateCheck = await pool.request()
+      .input('user_id', sql.Int, user_id)
+      .input('aandeel_id', sql.Int, aandeel_id)
+      .input('transaction_type', sql.VarChar, transaction_type)
+      .input('quantity', sql.Decimal(18, 5), quantity)
+      .input('price', sql.Decimal(18, 4), price)
+      .input('purchase_time', sql.DateTime, purchase_time)
+      .query(`
+        SELECT 1 FROM PF_transactions
+        WHERE user_id = @user_id AND aandeel_id = @aandeel_id
+        AND transaction_type = @transaction_type 
+        AND ABS(quantity - @quantity) < 0.0001
+        AND ABS(price - @price) <= 0.015 
+        AND CAST(purchase_time AS DATE) = CAST(@purchase_time AS DATE)
+      `);
+
+    if (duplicateCheck.recordset.length > 0) {
+        return res.status(409).json({ message: 'Deze transactie bestaat al in de database (duplicaat).' });
+    }
+
+    await pool.request()
+      .input('user_id', sql.Int, user_id)
+      .input('aandeel_id', sql.Int, aandeel_id)
+      .input('broker_id', sql.Int, broker_id)
+      .input('transaction_type', sql.VarChar, transaction_type)
+      .input('quantity', sql.Decimal(18, 5), quantity)
+      .input('currency', sql.VarChar, currency)
+      .input('price', sql.Decimal(18, 4), price)
+      .input('purchase_time', sql.DateTime, purchase_time)
+      .input('fees', sql.Decimal(18, 4), fees)
+      .input('taxes', sql.Decimal(18, 4), taxes)
+      .input('exchange_rate', sql.Decimal(18, 6), exchange_rate)
+      .query(`
+        INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate)
+        VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate)
+      `);
+    res.status(201).json({ message: 'Transactie succesvol toegevoegd' });
+  } catch (error) {
+    console.error('Fout bij toevoegen transactie:', error);
+    res.status(500).json({ message: 'Serverfout bij toevoegen transactie' });
+  }
+};
+
+const updateTransaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1 } = req.body;
+    const pool = await sql.connect(config);
+    
+    // Check of de bewerking resulteert in een duplicaat (maar negeer de huidige transactie-id)
+    const duplicateCheck = await pool.request()
+      .input('id', sql.Int, id).input('user_id', sql.Int, user_id).input('aandeel_id', sql.Int, aandeel_id).input('transaction_type', sql.VarChar, transaction_type)
+      .input('quantity', sql.Decimal(18, 5), quantity).input('price', sql.Decimal(18, 4), price).input('purchase_time', sql.DateTime, purchase_time)
+      .query(`
+        SELECT 1 FROM PF_transactions
+        WHERE id != @id AND user_id = @user_id AND aandeel_id = @aandeel_id
+        AND transaction_type = @transaction_type 
+        AND ABS(quantity - @quantity) < 0.0001
+        AND ABS(price - @price) <= 0.015 
+        AND CAST(purchase_time AS DATE) = CAST(@purchase_time AS DATE)
+      `);
+
+    if (duplicateCheck.recordset.length > 0) {
+        return res.status(409).json({ message: 'Deze bewerkte transactie resulteert in een duplicaat in de database.' });
+    }
+
+    const result = await pool.request()
+      .input('id', sql.Int, id).input('user_id', sql.Int, user_id).input('aandeel_id', sql.Int, aandeel_id).input('broker_id', sql.Int, broker_id)
+      .input('transaction_type', sql.VarChar, transaction_type).input('quantity', sql.Decimal(18, 5), quantity).input('currency', sql.VarChar, currency)
+      .input('price', sql.Decimal(18, 4), price).input('purchase_time', sql.DateTime, purchase_time).input('fees', sql.Decimal(18, 4), fees)
+      .input('taxes', sql.Decimal(18, 4), taxes).input('exchange_rate', sql.Decimal(18, 6), exchange_rate)
+      .query(`
+        UPDATE PF_transactions 
+        SET user_id = @user_id, aandeel_id = @aandeel_id, broker_id = @broker_id, transaction_type = @transaction_type, 
+            quantity = @quantity, currency = @currency, price = @price, purchase_time = @purchase_time, 
+            fees = @fees, taxes = @taxes, exchange_rate = @exchange_rate
+        WHERE id = @id
+      `);
+    
+    if (result.rowsAffected[0] > 0) res.status(200).json({ message: 'Transactie succesvol bijgewerkt' });
+    else res.status(404).json({ message: 'Transactie niet gevonden.' });
+  } catch (error) {
+    console.error('Fout bij bewerken transactie:', error);
+    res.status(500).json({ message: 'Serverfout bij bewerken transactie' });
+  }
+};
+
+const addMultipleTransactions = async (req, res) => {
+  try {
+    const { transactions } = req.body;
+    if (!transactions || !Array.isArray(transactions)) {
+        return res.status(400).json({ message: 'Geen geldige transacties meegegeven.' });
+    }
+
+    const pool = await sql.connect(config);
+    let added = 0; let duplicates = 0; let errors = 0;
+
+    for (const t of transactions) {
+      try {
+          let aandeel_id = t.aandeel_id;
+
+          // Zoek het aandeel_id op basis van ISIN (DeGiro) of Ticker (eToro/Template)
+          if (!aandeel_id) {
+              let stockResult;
+              if (t.isin) {
+                  stockResult = await pool.request().input('isin', sql.VarChar, t.isin).query(`SELECT aandeel_id FROM Stocks WHERE isin = @isin`);
+              }
+              if ((!stockResult || stockResult.recordset.length === 0) && t.ticker) {
+                  stockResult = await pool.request().input('ticker', sql.NVarChar, t.ticker).query(`SELECT aandeel_id FROM Stocks WHERE ticker_symbol = @ticker`);
+              }
+              
+              if (stockResult.recordset.length > 0) aandeel_id = stockResult.recordset[0].aandeel_id;
+              else { errors++; continue; } // Aandeel niet in DB
+          }
+          if (!aandeel_id) { errors++; continue; }
+
+          // Duplicaat check
+          const duplicateCheck = await pool.request()
+            .input('user_id', sql.Int, t.user_id || 1).input('aandeel_id', sql.Int, aandeel_id).input('transaction_type', sql.VarChar, t.transaction_type)
+            .input('quantity', sql.Decimal(18, 5), t.quantity).input('price', sql.Decimal(18, 4), t.price).input('purchase_time', sql.DateTime, t.purchase_time)
+            .query(`SELECT 1 FROM PF_transactions WHERE user_id = @user_id AND aandeel_id = @aandeel_id AND transaction_type = @transaction_type AND ABS(quantity - @quantity) < 0.0001 AND ABS(price - @price) <= 0.015 AND CAST(purchase_time AS DATE) = CAST(@purchase_time AS DATE)`);
+
+          if (duplicateCheck.recordset.length > 0) { duplicates++; continue; }
+
+          // Invoegen
+          await pool.request()
+            .input('user_id', sql.Int, t.user_id || 1).input('aandeel_id', sql.Int, aandeel_id).input('broker_id', sql.Int, t.broker_id || 1)
+            .input('transaction_type', sql.VarChar, t.transaction_type).input('quantity', sql.Decimal(18, 5), t.quantity).input('currency', sql.VarChar, t.currency || 'USD')
+            .input('price', sql.Decimal(18, 4), t.price).input('purchase_time', sql.DateTime, t.purchase_time)
+            .input('fees', sql.Decimal(18, 4), t.fees || 0).input('taxes', sql.Decimal(18, 4), t.taxes || 0).input('exchange_rate', sql.Decimal(18, 6), t.exchange_rate || 1)
+            .query(`
+              INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate)
+              VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate)
+            `);
+          added++;
+      } catch (rowError) {
+          console.error('Fout bij verwerken specifieke rij:', rowError);
+          errors++;
+      }
+    }
+    res.status(200).json({ message: `Import voltooid! Toegevoegd: ${added}, Duplicaten overgeslagen: ${duplicates}, Fouten/Onbekende tickers: ${errors}.` });
+  } catch (error) {
+    console.error('Fout bij importeren van meerdere transacties:', error);
+    res.status(500).json({ message: 'Serverfout bij bulk import.' });
+  }
+};
+
+const deleteTransaction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const pool = await sql.connect(config);
+    const result = await pool.request()
+      .input('id', sql.Int, id)
+      .query('DELETE FROM PF_transactions WHERE id = @id');
+
+    if (result.rowsAffected[0] > 0) {
+      res.status(200).json({ message: 'Transactie succesvol verwijderd.' });
+    } else {
+      res.status(404).json({ message: 'Transactie niet gevonden.' });
+    }
+  } catch (error) {
+    console.error('Fout bij verwijderen transactie:', error);
+    res.status(500).json({ message: 'Serverfout bij verwijderen transactie.' });
+  }
+};
+
 module.exports = {
-  calculatePortfolioValues,
+  recalculateAndStorePortfolioHistory,
   getPortfolioValues,
+  checkAndRepairPriceData,
   calculateReturns,
   getPortfolioReturns,
+  getCurrentPortfolioHoldings,
+  getTransactions,
+  addTransaction,
+  updateTransaction,
+  addMultipleTransactions,
+  deleteTransaction
 };

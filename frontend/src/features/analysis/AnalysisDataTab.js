@@ -36,6 +36,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
   // Manual Input States
   const [manualPeriodEndDate, setManualPeriodEndDate] = useState('');
   const [manualPeriodStartDate, setManualPeriodStartDate] = useState('');
+  const [manualReportDate, setManualReportDate] = useState('');
   const [manualFY, setManualFY] = useState('');
   const [manualFPId, setManualFPId] = useState('');
   const [manualFormId, setManualFormId] = useState('');
@@ -152,9 +153,10 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
     setNearbyDateSuggestion(null);
     setCanEditMetaData(true);
     setManualPeriodStartDate('');
+    setManualReportDate('');
     try {
       const response = await http.get(`/fundamental-data/check-date-data/${selectedStock.stock_id}/${date}`);
-      const { foundDate, dataForDate, nearbyDate, fy, fp_id, form_id, suggestedPeriodStartDate, period_start_date: existingPeriodStartDate, message } = response.data;
+      const { foundDate, dataForDate, nearbyDate, fy, fp_id, form_id, suggestedPeriodStartDate, period_start_date: existingPeriodStartDate, report_date: existingReportDate, message } = response.data;
       if (foundDate) {
         setManualPeriodEndDate(foundDate);
         setIsDateConfirmed(true);
@@ -162,6 +164,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
         setManualFPId(fp_id || '');
         setManualFormId(form_id || '');
         setManualPeriodStartDate(existingPeriodStartDate || '');
+        setManualReportDate(existingReportDate || '');
         setCanEditMetaData(true);
         const newManualDataValues = Object.keys(dataPeriods).reduce((acc, key) => {
           const foundDataItem = dataForDate.find(item => item.data_type === key);
@@ -179,6 +182,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
         setManualFormId('');
         setManualDataValues(Object.keys(dataPeriods).reduce((acc, key) => ({ ...acc, [key]: '' }), {}));
         setManualPeriodStartDate(suggestedPeriodStartDate || '');
+        setManualReportDate('');
       }
     } catch (err) {
       setError(`Error checking date: ${err.message}`);
@@ -189,7 +193,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
 
   const handleAddManualData = async () => {
     // Validation logic...
-    if (!manualPeriodEndDate || !manualPeriodStartDate || manualFY === '' || manualFPId === '' || !isDateConfirmed) {
+    if (!manualPeriodEndDate || !manualPeriodStartDate || !manualReportDate || manualFY === '' || manualFPId === '' || !isDateConfirmed) {
         setError('Please fill in all required fields and confirm the date.');
         return;
     }
@@ -207,6 +211,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
       stock_id: parseInt(selectedStock.stock_id),
       period_end_date: manualPeriodEndDate,
       period_start_date: manualPeriodStartDate,
+      report_date: manualReportDate,
       fy: parseInt(manualFY),
       fp_id: parseInt(manualFPId),
       form_id: manualFormId ? parseInt(manualFormId) : null,
@@ -221,6 +226,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
       // Reset form
       setManualPeriodEndDate('');
       setManualPeriodStartDate('');
+      setManualReportDate('');
       setManualFY('');
       setManualFPId('');
       setManualFormId('');
@@ -359,6 +365,10 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
       }
   };
 
+  const handleManualValueChange = (key, value) => {
+    setManualDataValues(prev => ({ ...prev, [key]: value }));
+  };
+
   const getFiscalYearOptions = () => {
       if (!manualPeriodEndDate) return [];
       const y = new Date(manualPeriodEndDate).getFullYear();
@@ -377,6 +387,8 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
         setManualPeriodEndDate={setManualPeriodEndDate}
         manualPeriodStartDate={manualPeriodStartDate}
         setManualPeriodStartDate={setManualPeriodStartDate}
+        manualReportDate={manualReportDate}
+        setManualReportDate={setManualReportDate}
         manualFY={manualFY}
         setManualFY={setManualFY}
         manualFPId={manualFPId}
@@ -384,6 +396,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
         manualFormId={manualFormId}
         setManualFormId={setManualFormId}
         manualDataValues={manualDataValues}
+        handleManualValueChange={handleManualValueChange}
         isDateConfirmed={isDateConfirmed}
         setIsDateConfirmed={setIsDateConfirmed}
         nearbyDateSuggestion={nearbyDateSuggestion}

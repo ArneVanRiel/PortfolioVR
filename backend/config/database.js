@@ -9,6 +9,13 @@ const config = {
   options: {
     encrypt: true,
   },
+  connectionTimeout: 30000, // Verhoog naar 30 seconden voor Azure SQL wake-up
+  requestTimeout: 30000,
+  pool: {
+    max: 10,
+    min: 0,
+    idleTimeoutMillis: 30000
+  }
 };
 
 const connectToDatabase = async () => {

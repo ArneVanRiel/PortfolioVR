@@ -10,6 +10,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
     // Context data voor berekeningen en filters
     const [stockContext, setStockContext] = useState({
         percentage: 0,
+        weight_factor: 1,
     });
 
     // Pagination state
@@ -35,10 +36,13 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
 
                 // 2. Haal Calculation Context op (voor percentage weging en Q-diff)
                 const today = new Date().toISOString().split('T')[0];
-                const contextResponse = await http.get('/calculations/summary-by-date', {
-                    params: { date: today }
-                });
+                const [contextResponse, holdingsResponse] = await Promise.all([
+                    http.get('/calculations/summary-by-date', { params: { date: today } }),
+                    http.get('/portfolio/holdings?userId=1')
+                ]);
                 const summaryData = contextResponse.data;
+                const holdings = holdingsResponse.data;
+                const totalActualValue = holdings.reduce((sum, h) => sum + (h.value || 0), 0);
 
                 // Bereken totaal voor weging
                 const totalWaardeVerdeling = summaryData
@@ -51,6 +55,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                 const stockItem = summaryData.find(item => item.stock_id === stockId);
                 
                 let percentage = 0;
+                let weight_factor = 1;
                 let diffPercentage = null;
 
                 if (stockItem) {
@@ -58,9 +63,14 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                     if (totalWaardeVerdeling > 0 && stockItem.waarde_verdeling > 0 && stockItem.selectiecriteria === 5) {
                         percentage = (stockItem.waarde_verdeling / totalWaardeVerdeling) * 100;
                     }
+                    
+                    const ideal_invested = (percentage / 100) * totalActualValue;
+                    const holding = holdings.find(h => h.ticker === stockItem.ticker_symbol);
+                    const actual_invested = holding ? (holding.value || 0) : 0;
+                    weight_factor = actual_invested === 0 ? 2 : Math.min(2, ideal_invested / actual_invested);
                 }
 
-                setStockContext({ percentage });
+                setStockContext({ percentage, weight_factor });
                 setError('');
             } catch (err) {
                 console.error("Error fetching data:", err);
@@ -117,7 +127,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                      // Sorteer op berekend bedrag of percentage
                      const getVal = (item) => {
                         if (item.type_melding === 'Verkoopsignaal') return item.trade_amount;
-                        return item.trade_amount != null ? item.trade_amount * (stockContext.percentage / 100) / 10 : 0;
+                        return item.trade_amount != null ? item.trade_amount * (stockContext.percentage / 100) / 10 * stockContext.weight_factor : 0;
                      };
                      const valA = getVal(a);
                      const valB = getVal(b);
@@ -136,7 +146,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
             });
         }
         return sorted;
-    }, [filteredAlerts, sortConfig, stockContext.percentage]);
+    }, [filteredAlerts, sortConfig, stockContext]);
 
     const paginatedAlerts = useMemo(() => {
         const startIndex = (currentPage - 1) * itemsPerPage;
@@ -176,31 +186,31 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                     <thead className="bg-gray-50">
                         <tr>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('date')}
                             >
                                 Datum {sortConfig.key === 'date' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('type_melding')}
                             >
                                 Type {sortConfig.key === 'type_melding' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('prijs_op_moment')}
                             >
                                 Prijs {sortConfig.key === 'prijs_op_moment' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('signal_line_value')}
                             >
                                 Signal Line {sortConfig.key === 'signal_line_value' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
                             </th>
                             <th 
-                                className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
+                                className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider cursor-pointer hover:bg-gray-100"
                                 onClick={() => handleSort('trade_amount')}
                             >
                                 Aanbevolen Bedrag {sortConfig.key === 'trade_amount' && (sortConfig.direction === 'asc' ? '▲' : '▼')}
@@ -218,27 +228,27 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                                     displayAmount = <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{pct.toFixed(2)}%</span>;
                                 } else {
                                     // Het is een koopsignaal, toon bedrag
-                                    const adjustedAmount = alert.trade_amount != null ? alert.trade_amount * (stockContext.percentage / 100) / 10 : null;
+                                    const adjustedAmount = alert.trade_amount != null ? alert.trade_amount * (stockContext.percentage / 100) / 10 * stockContext.weight_factor : null;
                                     displayAmount = adjustedAmount != null ? `€${Number(adjustedAmount).toFixed(2)}` : 'N/A';
                                 }
                                 
                                 return (
                                     <tr key={alert.alert_id || `${alert.date}-${alert.type_melding}`} className="hover:bg-gray-50 transition-colors">
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-900">
                                             {new Date(alert.date).toLocaleDateString()}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm">
+                                        <td className="px-3 py-2 whitespace-nowrap text-xs">
                                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${alert.type_melding === 'Koopsignaal' ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
                                                 {alert.type_melding}
                                             </span>
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">
                                             €{Number(alert.prijs_op_moment).toFixed(2)}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">
                                             {Number(alert.signal_line_value).toFixed(4)}
                                         </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">
+                                        <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">
                                             {displayAmount}
                                         </td>
                                     </tr>

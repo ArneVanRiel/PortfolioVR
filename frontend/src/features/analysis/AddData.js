@@ -25,6 +25,8 @@ const AddData = ({
     setManualPeriodEndDate,
     manualPeriodStartDate,
     setManualPeriodStartDate,
+    manualReportDate,
+    setManualReportDate,
     manualFY,
     setManualFY,
     manualFPId,
@@ -181,7 +183,7 @@ const AddData = ({
 
                 {isDateConfirmed && ( // Only show these fields if date is confirmed
                     <>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4">
                             <div>
                                 <label htmlFor="manualPeriodStartDate" className="block text-sm font-medium text-gray-700">Periode Start Datum (JJJJ-MM-DD):</label>
                                 <input
@@ -190,6 +192,17 @@ const AddData = ({
                                 className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
                                 value={manualPeriodStartDate}
                                 onChange={(e) => setManualPeriodStartDate(e.target.value)}
+                                disabled={!canEditMetaData}
+                                />
+                            </div>
+                            <div>
+                                <label htmlFor="manualReportDate" className="block text-sm font-medium text-gray-700">Rapportage Datum (Filed):</label>
+                                <input
+                                type="date"
+                                id="manualReportDate"
+                                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                                value={manualReportDate}
+                                onChange={(e) => setManualReportDate(e.target.value)}
                                 disabled={!canEditMetaData}
                                 />
                             </div>

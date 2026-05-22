@@ -23,10 +23,33 @@ const StatCard = ({ title, value, trend, trendUp }) => (
   </div>
 );
 
-const ChartCard = ({ title, children }) => (
-  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-full">
-    <h3 className="text-lg font-semibold text-gray-800 mb-4">{title}</h3>
-    <div className="h-72">{children}</div>
+const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
+  <div 
+    className={`bg-white rounded-xl shadow-sm border border-gray-100 transition-all duration-300 flex flex-col ${
+      isExpanded ? 'fixed inset-4 z-50 h-auto shadow-2xl' : 'h-full p-6'
+    }`}
+  >
+    <div className={`flex justify-between items-center mb-4 ${isExpanded ? 'p-6 border-b border-gray-100' : ''}`}>
+      <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
+      <button 
+          onClick={onToggleExpand} 
+          className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-blue-600"
+          title={isExpanded ? "Minimaliseren" : "Maximaliseren"}
+      >
+          {isExpanded ? (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
+              </svg>
+          ) : (
+              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+              </svg>
+          )}
+      </button>
+    </div>
+    <div className={`flex-grow overflow-auto ${isExpanded ? 'p-6' : 'h-72'}`}>
+      {children}
+    </div>
   </div>
 );
 
@@ -38,6 +61,12 @@ const Dashboard = () => {
   const [showExportModal, setShowExportModal] = useState(false);
   const [exportDate, setExportDate] = useState(new Date().toISOString().split('T')[0]);
   const [isUpdatingData, setIsUpdatingData] = useState(false);
+  const [updateProgress, setUpdateProgress] = useState(0);
+  const [expandedCard, setExpandedCard] = useState(null);
+
+  const toggleExpand = (cardId) => {
+    setExpandedCard(expandedCard === cardId ? null : cardId);
+  };
 
   const handleAddStock = () => {
     if (watchlistTableRef.current) {
@@ -50,27 +79,36 @@ const Dashboard = () => {
 
   const fetchReportData = async () => {
     try {
-      const response = await http.get('/calculations/summary-by-date', {
-        params: { date: exportDate }
-      });
-      return response.data;
+      const [response, holdingsResponse] = await Promise.all([
+        http.get('/calculations/summary-by-date', { params: { date: exportDate } }),
+        http.get('/portfolio/holdings?userId=1')
+      ]);
+      return { summaryData: response.data, holdingsData: holdingsResponse.data };
     } catch (error) {
       console.error("Fout bij ophalen rapport data", error);
       throw error;
     }
   };
 
-  const processReportData = (data) => {
-    if (!data || data.length === 0) return [];
+  const processReportData = (dataObj) => {
+    if (!dataObj || !dataObj.summaryData || dataObj.summaryData.length === 0) return [];
 
-    const totalWaardeVerdeling = data
+    const { summaryData, holdingsData } = dataObj;
+    const totalActualValue = holdingsData.reduce((sum, item) => sum + (item.value || 0), 0);
+
+    const totalWaardeVerdeling = summaryData
       .filter(item => item.waarde_verdeling > 0)
       .reduce((sum, item) => sum + item.waarde_verdeling, 0);
 
-    return data.map(item => {
+    return summaryData.map(item => {
       const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0
         ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
         : 0;
+
+      const ideal_invested = (percentage / 100) * totalActualValue;
+      const holding = holdingsData.find(h => h.ticker === item.ticker_symbol);
+      const actual_invested = holding ? (holding.value || 0) : 0;
+      const weight_factor = actual_invested === 0 ? 2 : Math.min(2, ideal_invested / actual_invested);
 
       let koopmargefactor = 1;
       if (item.current_price && item.intrinsieke_waarde && item.intrinsieke_waarde > 0) {
@@ -83,11 +121,11 @@ const Dashboard = () => {
       }
 
       const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
-        ? Math.max(0, 30000 * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
+        ? Math.max(0, 30000 * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10) * weight_factor
         : 0;
 
       const latestTradeAmountProcessed = item.latest_trade_amount != null 
-        ? (item.latest_trade_amount * (percentage / 100) / 10) 
+        ? (item.latest_trade_amount * (percentage / 100) / 10 * weight_factor) 
         : null;
 
       const priceToIntrinsic = (item.current_price && item.intrinsieke_waarde > 0)
@@ -178,6 +216,7 @@ const Dashboard = () => {
   // NIEUW: Functie om data te updaten met streaming response
   const handleUpdateData = async () => {
     setIsUpdatingData(true);
+    setUpdateProgress(0);
     const toastId = toast.loading('Verbinden met server...');
 
     try {
@@ -206,8 +245,8 @@ const Dashboard = () => {
             const data = JSON.parse(line);
             
             if (data.type === 'progress') {
-               // Optioneel: update toast bericht, maar kan te snel gaan
-               // toast.loading(data.message, { id: toastId });
+               setUpdateProgress(data.progress);
+               toast.loading(`${data.message} - ${data.progress}%`, { id: toastId });
             } else if (data.type === 'stock_update') {
                // Update de tabel direct via de ref
                if (watchlistTableRef.current) {
@@ -231,6 +270,7 @@ const Dashboard = () => {
       toast.error(`Fout bij bijwerken: ${err.message}`, { id: toastId });
     } finally {
       setIsUpdatingData(false);
+      setUpdateProgress(0);
       // Optioneel: doe nog een volledige refresh aan het einde om zeker te zijn
       if (watchlistTableRef.current) {
         watchlistTableRef.current.refreshData();
@@ -262,7 +302,7 @@ const Dashboard = () => {
             disabled={isUpdatingData}
             className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            {isUpdatingData ? 'Bezig met bijwerken...' : 'Update Prijzen & Meldingen'}
+            {isUpdatingData ? `Bezig... (${updateProgress}%)` : 'Update Prijzen & Meldingen'}
           </button>
           <button 
             onClick={handleOpenExportModal}
@@ -282,21 +322,39 @@ const Dashboard = () => {
       </div>
 
       {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <ChartCard title="Portfolio Performance">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <ChartCard 
+          title="Portfolio Performance"
+          isExpanded={expandedCard === 'performance'}
+          onToggleExpand={() => toggleExpand('performance')}
+        >
           {/* Placeholder for Line Chart */}
           <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg">
             <p className="text-gray-500">Portfolio Performance Chart</p>
           </div>
         </ChartCard>
-        <ChartCard title="Waardeverdeling (Score 5)">
-          {/* Donut Chart voor aandelen met score 5 */}
+        
+        <ChartCard 
+          title="Ideale vs Huidige Portfolio (%)"
+          isExpanded={expandedCard === 'distribution'}
+          onToggleExpand={() => toggleExpand('distribution')}
+        >
           <Score5DistributionChart />
+        </ChartCard>
+
+        <ChartCard 
+          title="Meldingen"
+          isExpanded={expandedCard === 'alerts'}
+          onToggleExpand={() => toggleExpand('alerts')}
+        >
+          <AlertsSummaryTable 
+            ref={alertsTableRef} 
+            isCompact={expandedCard !== 'alerts'}
+          />
         </ChartCard>
       </div>
 
       {/* Calculations Summary Table */}
-      <AlertsSummaryTable ref={alertsTableRef} />
       <CalculationsSummaryTable ref={calculationsTableRef} />
 
       {/* Recent Activity Table */}

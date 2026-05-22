@@ -23,6 +23,8 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     const [error, setError] = useState('');
     const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
     const [baseAmount, setBaseAmount] = useState(30000); // Default fallback
+    const [holdingsData, setHoldingsData] = useState([]);
+    const [totalActualValue, setTotalActualValue] = useState(0);
 
     // --- State for sorting and filtering ---
     const [sortConfig, setSortConfig] = useState({ key: 'waarde_verdeling', direction: 'desc' });
@@ -46,7 +48,8 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
         { key: 'selectiecriteria', label: 'Score', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'current_price', label: 'Laatste Prijs', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'waarde_verdeling', label: 'Waardeverdeling', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'percentage', label: 'Percentage', sortable: false, defaultVisible: true, type: 'number' },
+        { key: 'percentage', label: 'Percentage', sortable: true, defaultVisible: true, type: 'number' },
+        { key: 'ideal_invested', label: 'Ideaal Geïnvesteerd', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'intrinsieke_waarde', label: 'Intrinsieke Waarde', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'price_to_intrinsic', label: 'Koopmarge', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'period_end_date', label: 'Period End Date', sortable: true, defaultVisible: true, type: 'date' },
@@ -83,10 +86,17 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     const fetchSummary = useCallback(async () => {
         try {
             setLoading(true);
-            const response = await http.get('/calculations/summary-by-date', {
-                params: { date: selectedDate }
-            });
-            setSummaryData(response.data);
+            const [summaryResponse, holdingsResponse] = await Promise.all([
+                http.get('/calculations/summary-by-date', {
+                    params: { date: selectedDate }
+                }),
+                http.get('/portfolio/holdings?userId=1')
+            ]);
+            setSummaryData(summaryResponse.data);
+            
+            const holdings = holdingsResponse.data;
+            setHoldingsData(holdings);
+            setTotalActualValue(holdings.reduce((sum, item) => sum + (item.value || 0), 0));
             setError('');
         } catch (err) {
             setError('Kon de samenvatting van de berekeningen niet laden.');
@@ -159,7 +169,20 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
             if (item.previous_waarde_verdeling) {
                 prevDiffPercentage = ((item.waarde_verdeling - item.previous_waarde_verdeling) / item.previous_waarde_verdeling) * 100;
             }
-            return { ...item, price_to_intrinsic: priceToIntrinsic, diffPercentage, prevDiffPercentage };
+
+            const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
+                ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
+                : 0;
+
+            const holding = holdingsData.find(h => h.ticker === item.ticker_symbol);
+            const actual_invested = holding ? (holding.value || 0) : 0;
+            const actual_percentage = totalActualValue > 0 ? (actual_invested / totalActualValue) * 100 : 0;
+            const ideal_invested = (percentage / 100) * totalActualValue;
+
+            // Nieuwe Weging: ALS(Huidig=0; 2; ALS(Ideaal/Huidig>2; 2; Ideaal/Huidig))
+            const weight_factor = actual_invested === 0 ? 2 : Math.min(2, ideal_invested / actual_invested);
+
+            return { ...item, price_to_intrinsic: priceToIntrinsic, diffPercentage, prevDiffPercentage, percentage, actual_percentage, ideal_invested, actual_invested, weight_factor };
         });
 
         if (tickerFilter) {
@@ -243,7 +266,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
             });
         }
         return currentData;
-    }, [summaryData, tickerFilter, scoreFilter, priceToIntrinsicFilter, signalLineFilter, alertTypeFilter, percentageFilter, showHighestEver, sortConfig, ALL_COLUMNS]);
+    }, [summaryData, holdingsData, totalActualValue, totalWaardeVerdeling, tickerFilter, scoreFilter, priceToIntrinsicFilter, signalLineFilter, alertTypeFilter, percentageFilter, showHighestEver, sortConfig, ALL_COLUMNS]);
 
     const handleMouseEnterPrice = async (e, stockId) => {
         const rect = e.target.getBoundingClientRect();
@@ -526,13 +549,13 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                             {visibleColumnDefinitions.map(col => (
                                 <th 
                                     key={col.key}
-                                    className={`px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
+                                    className={`px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider ${col.sortable ? 'cursor-pointer hover:bg-gray-100' : ''}`}
                                     onClick={() => col.sortable && handleSort(col.key)}
                                 >
                                     {col.label}{col.sortable ? getSortArrow(col.key) : ''}
                                 </th>
                             ))}
-                            <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actie</th>
+                            <th className="px-2 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actie</th>
                         </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
@@ -544,9 +567,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                             </tr>
                         ) : (
                             filteredAndSortedData.map((item) => {
-                                const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
-                                    ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
-                                    : 0;
+                                const percentage = item.percentage;
 
                                 const getHighlightClass = (periodEndDate, selectedDate) => {
                                     const periodDate = new Date(periodEndDate);
@@ -575,7 +596,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
 
                                 const displayAlertType = item.latest_alert_type;
                                 const currentRecommendedAmount = (typeof item.current_signal_line === 'number' && item.current_price > 0)
-                                    ? Math.max(0, baseAmount * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10)
+                                    ? Math.max(0, baseAmount * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10) * item.weight_factor
                                     : null;
 
                                 const renderCell = (col) => {
@@ -611,7 +632,19 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             }
                                             return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
                                         case 'percentage':
-                                            return `${percentage.toFixed(2)}%`;
+                                            return (
+                                                <div className="flex flex-col">
+                                                    <span className="font-medium">{item.percentage.toFixed(2)}% <span className="text-gray-400 font-normal text-[10px]">(Ideaal)</span></span>
+                                                    <span className="text-xs text-gray-500 mt-0.5">{item.actual_percentage.toFixed(2)}% <span className="text-gray-400 font-normal text-[10px]">(Huidig)</span></span>
+                                                </div>
+                                            );
+                                        case 'ideal_invested':
+                                            return value != null ? (
+                                                <div className="flex flex-col">
+                                                    <span className="font-medium">€{value.toFixed(2)} <span className="text-gray-400 font-normal text-[10px]">(Ideaal)</span></span>
+                                                    <span className="text-xs text-gray-500 mt-0.5">€{item.actual_invested.toFixed(2)} <span className="text-gray-400 font-normal text-[10px]">(Huidig)</span></span>
+                                                </div>
+                                            ) : 'N/A';
                                         case 'price_to_intrinsic':
                                             return value != null ? <span className="font-medium">{(value * 100).toFixed(2)}%</span> : 'N/A';
                                         case 'period_end_date':
@@ -633,7 +666,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                                 // Backend geeft percentage als decimaal (bv -0.05), wij tonen %
                                                 return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{(value * 100).toFixed(2)}%</span>;
                                             }
-                                            return (value != null && displayAlertType === 'Koopsignaal') ? `€${(value * (percentage / 100) / 10).toFixed(2)}` : 'N/A';
+                                            return (value != null && displayAlertType === 'Koopsignaal') ? `€${(value * (percentage / 100) / 10 * item.weight_factor).toFixed(2)}` : 'N/A';
                                         case 'current_recommended_amount':
                                              return currentRecommendedAmount != null ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A';
                                         default:
@@ -646,11 +679,11 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                 return (
                                     <tr key={item.calculation_id} className="hover:bg-gray-50 transition-colors duration-150">
                                         {visibleColumnDefinitions.map(col => (
-                                            <td key={col.key} className={`px-6 py-4 whitespace-nowrap text-sm text-gray-700 ${col.key === 'price_to_intrinsic' ? priceToIntrinsicClass : ''}`}>
+                                            <td key={col.key} className={`px-2 py-2 whitespace-nowrap text-xs text-gray-700 ${col.key === 'price_to_intrinsic' ? priceToIntrinsicClass : ''}`}>
                                                 {renderCell(col)}
                                             </td>
                                         ))}
-                                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                                        <td className="px-2 py-2 whitespace-nowrap text-right text-xs font-medium space-x-2">
                                             {highlightClass && (
                                                 <button 
                                                     onClick={() => navigate(`/analysis?ticker=${item.ticker_symbol}`)}

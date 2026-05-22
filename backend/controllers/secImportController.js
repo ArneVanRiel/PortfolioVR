@@ -143,6 +143,7 @@ const processFinancialData = (financialData, ticker, write = () => {}) => {
                             fy: entry.fy,
                             fp: entry.fp,
                             form: entry.form,
+                            report_date: entry.filed,
                             ticker: ticker
                         });
                         datesCovered.add(targetDate); // Markeer datum als gevonden
@@ -199,6 +200,7 @@ const processFinancialData = (financialData, ticker, write = () => {}) => {
                         fy: entry.fy,
                         fp: entry.fp,
                         form: entry.form,
+                        report_date: entry.filed,
                         ticker: ticker
                     });
                     datesCovered.add(entry.end); // Markeer datum als gevonden
@@ -321,12 +323,27 @@ const importSecData = async (req, res) => {
                 .input('stock_id', sql.Int, stockId)
                 .input('period_end_date', sql.Date, row.period_end_date)
                 .input('data_type', sql.NVarChar, row.metric)
-                .query("SELECT value FROM fundamental_data WHERE stock_id = @stock_id AND period_end_date = @period_end_date AND data_type = @data_type");
+                .query("SELECT value, report_date FROM fundamental_data WHERE stock_id = @stock_id AND period_end_date = @period_end_date AND data_type = @data_type");
 
             if (existingResult.recordset.length > 0) {
                 const existingValue = existingResult.recordset[0].value;
+                const existingReportDate = existingResult.recordset[0].report_date;
+                
+                let shouldUpdate = false;
+
                 // Gebruik parseFloat voor vergelijking om typeproblemen te voorkomen
                 if (parseFloat(existingValue) !== parseFloat(row.value)) {
+                    shouldUpdate = true;
+                } else if (row.report_date) {
+                    if (!existingReportDate) {
+                        shouldUpdate = true;
+                    } else {
+                        const existingDateStr = existingReportDate.toISOString().split('T')[0];
+                        if (existingDateStr !== row.report_date) shouldUpdate = true;
+                    }
+                }
+
+                if (shouldUpdate) {
                     const updateReq = new sql.Request();
                     await updateReq
                         .input('period_start_date', sql.Date, row.period_start_date)
@@ -335,10 +352,11 @@ const importSecData = async (req, res) => {
                         .input('fy', sql.Int, row.fy)
                         .input('fp_id', sql.Int, fpId)
                         .input('form_id', sql.Int, formId)
+                        .input('report_date', sql.Date, row.report_date)
                         .input('stock_id', sql.Int, stockId)
                         .input('period_end_date', sql.Date, row.period_end_date)
                         .input('data_type', sql.NVarChar, row.metric)
-                        .query("UPDATE fundamental_data SET period_start_date = @period_start_date, value = @value, how_added = @how_added, fy = @fy, fp_id = @fp_id, form_id = @form_id, updated_at = SYSDATETIME() WHERE stock_id = @stock_id AND period_end_date = @period_end_date AND data_type = @data_type");
+                        .query("UPDATE fundamental_data SET period_start_date = @period_start_date, value = @value, how_added = @how_added, fy = @fy, fp_id = @fp_id, form_id = @form_id, report_date = @report_date, updated_at = SYSDATETIME() WHERE stock_id = @stock_id AND period_end_date = @period_end_date AND data_type = @data_type");
                     write(`🔄 Updated: ${row.ticker} ${row.period_end_date.split('T')[0]} ${row.metric}`);
                 } else {
                     write(`✅ No update needed: ${row.ticker} ${row.period_end_date.split('T')[0]} ${row.metric}`);
@@ -351,11 +369,12 @@ const importSecData = async (req, res) => {
                     .input('fy', sql.Int, row.fy)
                     .input('fp_id', sql.Int, fpId)
                     .input('form_id', sql.Int, formId)
+                    .input('report_date', sql.Date, row.report_date)
                     .input('stock_id', sql.Int, stockId)
                     .input('data_type', sql.NVarChar, row.metric)
                     .input('value', sql.Decimal(20, 4), row.value)
                     .input('how_added', sql.NVarChar, row.how_added)
-                    .query("INSERT INTO fundamental_data (period_start_date, period_end_date, fy, fp_id, form_id, stock_id, data_type, value, how_added, created_at, updated_at) VALUES (@period_start_date, @period_end_date, @fy, @fp_id, @form_id, @stock_id, @data_type, @value, @how_added, SYSDATETIME(), SYSDATETIME())");
+                    .query("INSERT INTO fundamental_data (period_start_date, period_end_date, fy, fp_id, form_id, report_date, stock_id, data_type, value, how_added, created_at, updated_at) VALUES (@period_start_date, @period_end_date, @fy, @fp_id, @form_id, @report_date, @stock_id, @data_type, @value, @how_added, SYSDATETIME(), SYSDATETIME())");
                 write(`✅ Inserted: ${row.ticker} ${row.period_end_date.split('T')[0]} ${row.metric}`);
             }
         }

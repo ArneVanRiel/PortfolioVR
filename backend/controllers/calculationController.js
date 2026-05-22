@@ -88,6 +88,7 @@ async function performCalculations(stockId, periodEndDate = null) {
     if (!latestData) throw new Error('Could not determine latest data point for calculation.');
 
     const fcfGrowthRates = [];
+    const fcfGrowthRatesDetails = [];
     const shift_yr = 4; // For quarterly data
 
     // Loop through the past 10 years (40 quarters) to gather historical growth rates
@@ -109,20 +110,57 @@ async function performCalculations(stockId, periodEndDate = null) {
                     // Cap de groei: negeer waarden > 100% of < -90% om het gemiddelde niet te verpesten
                     if (isFinite(growthRate) && growthRate < 1.0 && growthRate > -0.9) {
                         fcfGrowthRates.push(growthRate);
+                        fcfGrowthRatesDetails.push({
+                            start_date: quarterlyData[prevQuarterIndex].period_end_date,
+                            end_date: quarterlyData[currentQuarterIndex].period_end_date,
+                            years: years,
+                            start_fcf: prevFcf,
+                            end_fcf: currentFcf,
+                            growth_rate: growthRate
+                        });
                     }
                 }
             }
         }
     }
 
-    let gem_groeipercentage_FCF = calculateMean(fcfGrowthRates);
-    // Veiligheidslimiet: Cap de gemiddelde groei op max 50% voor de DCF berekening
-    if (gem_groeipercentage_FCF > 0.5) gem_groeipercentage_FCF = 0.5;
+    // --- NIEUWE EMA BEREKENING (Side-by-side test) ---
+    let sumWeights = 0;
+    let sumWeightedGrowth = 0;
+    const emaPeriodes = 40;
+    const alpha = 2 / (emaPeriodes + 1);
+
+    fcfGrowthRatesDetails.forEach(item => {
+        const index = quarterlyData.findIndex(q => q.period_end_date === item.end_date);
+        const leeftijdInKwartalen = (quarterlyData.length - 1) - index;
+        const weight = Math.pow(1 - alpha, leeftijdInKwartalen);
+        
+        sumWeights += weight;
+        sumWeightedGrowth += item.growth_rate * weight;
+    });
+
+    let gem_groeipercentage_FCF_nieuw = sumWeights > 0 ? sumWeightedGrowth / sumWeights : 0;
+    if (gem_groeipercentage_FCF_nieuw > 0.5) gem_groeipercentage_FCF_nieuw = 0.5;
+
+    let gem_groeipercentage_FCF_oud = calculateMean(fcfGrowthRates);
+    if (gem_groeipercentage_FCF_oud > 0.5) gem_groeipercentage_FCF_oud = 0.5;
+    
+    // Behoud voorlopig de oude waarde voor de rest van de applicatie
+    let gem_groeipercentage_FCF = gem_groeipercentage_FCF_oud;
 
     const standaard_deviatie_FCF = calculateStdDev(fcfGrowthRates);
     const waardefactor_FCF = standaard_deviatie_FCF ? gem_groeipercentage_FCF / (standaard_deviatie_FCF * standaard_deviatie_FCF) : 0;
 
-    const roe10YWindow = getRollingWindow(quarterlyData, quarterlyData.length - 1, 40).map(r => r.roe_ttm);
+    console.table({
+        "Stock ID": stockId,
+        "FCF Groei (Oud SMA)": gem_groeipercentage_FCF_oud,
+        "FCF Groei (Nieuw EMA)": gem_groeipercentage_FCF_nieuw,
+        "Verschil": gem_groeipercentage_FCF_nieuw - gem_groeipercentage_FCF_oud
+    });
+
+    const roeWindowData = getRollingWindow(quarterlyData, quarterlyData.length - 1, 40);
+    const roe10YWindow = roeWindowData.map(r => r.roe_ttm);
+    const roeHistoryDetails = roeWindowData.map(r => ({ date: r.period_end_date, roe: r.roe_ttm }));
     const gemiddelde_stijging_ROE_10_Y = calculateMean(roe10YWindow);
     const standaard_deviatie_ROE = calculateStdDev(roe10YWindow);
     const waardefactor_ROE = gemiddelde_stijging_ROE_10_Y - standaard_deviatie_ROE;
@@ -133,9 +171,12 @@ async function performCalculations(stockId, periodEndDate = null) {
 
     const discountRate = 0.15, terminalGrowthRate = 0.02;
     let dcfSum = 0;
+    const dcfSteps = [];
     for (let i = 1; i <= 10; i++) {
         const futureFcf = latestData.fcf_yearly_ttm * Math.pow(1 + gem_groeipercentage_FCF, i);
-        dcfSum += futureFcf / Math.pow(1 + discountRate, i);
+        const discounted = futureFcf / Math.pow(1 + discountRate, i);
+        dcfSum += discounted;
+        dcfSteps.push({ year: i, futureFcf, discounted });
     }
     const terminalValue = (latestData.fcf_yearly_ttm * Math.pow(1 + gem_groeipercentage_FCF, 10) * (1 + terminalGrowthRate)) / (discountRate - terminalGrowthRate);
     const discountedTerminalValue = terminalValue / Math.pow(1 + discountRate, 10);
@@ -184,7 +225,20 @@ async function performCalculations(stockId, periodEndDate = null) {
         selectiecriteria,
         criteria, // Voeg het criteria object toe aan de return (voor frontend gebruik direct na berekening)
         waarde_verdeling,
-        koopmarge: null
+        koopmarge: null,
+
+        // Detailed breakdown for frontend inspection
+        calculation_details: {
+            fcf_growth_rates: fcfGrowthRates,
+            fcf_growth_rates_details: fcfGrowthRatesDetails,
+            roe_history: roe10YWindow,
+            roe_history_details: roeHistoryDetails,
+            ltd_history: ltdEquity4QWindow,
+            dcf_steps: dcfSteps,
+            terminal_params: {
+                terminalGrowthRate, discountRate, terminalValue, discountedTerminalValue
+            }
+        }
     };
 }
 
@@ -197,6 +251,24 @@ exports.getCalculationsForStock = async (req, res) => {
     } catch (error) {
         console.error('Error fetching calculations:', error);
         res.status(500).send('Error fetching calculations.');
+    }
+};
+
+exports.getCalculationDetails = async (req, res) => {
+    const { stockId } = req.params;
+    const { period_end_date } = req.query;
+
+    if (!period_end_date) {
+        return res.status(400).json({ message: 'Period end date is required.' });
+    }
+
+    try {
+        // Run calculation in memory (does not save to DB) to get the details
+        const result = await performCalculations(stockId, new Date(period_end_date));
+        res.status(200).json(result);
+    } catch (error) {
+        console.error('Error fetching calculation details:', error);
+        res.status(500).send(`Error fetching calculation details: ${error.message}`);
     }
 };
 
@@ -303,10 +375,31 @@ exports.runCalculationForStock = async (req, res) => {
             if (currentWaarde < prevWaarde) {
                 const diffPercentage = (currentWaarde - prevWaarde) / prevWaarde; // Dit is een negatief getal (bv -0.05 voor -5%)
                 
+                // Bepaal de datum voor het signaal: bij voorkeur report_date (publicatiedatum), anders period_end_date
+                let alertDate = dataToSave.period_end_date;
+
+                const reportDateResult = await pool.request()
+                    .input('stock_id_rd', sql.Int, stockId)
+                    .input('period_end_date_rd', sql.Date, dataToSave.period_end_date)
+                    .query(`SELECT TOP 1 report_date FROM fundamental_data WHERE stock_id = @stock_id_rd AND period_end_date = @period_end_date_rd AND report_date IS NOT NULL ORDER BY report_date DESC`);
+                
+                if (reportDateResult.recordset.length > 0) {
+                    alertDate = reportDateResult.recordset[0].report_date;
+                }
+
+                // Als we een report_date gebruiken die verschilt van de period_end_date,
+                // verwijder dan een eventueel bestaand signaal op de period_end_date om dubbels te voorkomen.
+                if (alertDate.getTime() !== new Date(dataToSave.period_end_date).getTime()) {
+                    await pool.request()
+                        .input('aandeel_id_del', sql.Int, stockId)
+                        .input('date_del', sql.Date, dataToSave.period_end_date)
+                        .query(`DELETE FROM MACDAlerts WHERE aandeel_id = @aandeel_id_del AND date = @date_del AND type_melding = 'Verkoopsignaal'`);
+                }
+
                 // Haal de prijs op voor de datum (of de laatst bekende prijs ervoor)
                 const priceResult = await pool.request()
                     .input('stock_id_price', sql.Int, stockId)
-                    .input('date_price', sql.Date, dataToSave.period_end_date)
+                    .input('date_price', sql.Date, alertDate)
                     .query(`SELECT TOP 1 closing_price FROM DailyClosingPrices WHERE aandeel_id = @stock_id_price AND date <= @date_price ORDER BY date DESC`);
                 
                 const currentPrice = priceResult.recordset.length > 0 ? priceResult.recordset[0].closing_price : 0;
@@ -315,7 +408,7 @@ exports.runCalculationForStock = async (req, res) => {
                 // We gebruiken MERGE om dubbele alerts voor dezelfde datum te voorkomen
                 await pool.request()
                     .input('aandeel_id', sql.Int, stockId)
-                    .input('date', sql.Date, dataToSave.period_end_date)
+                    .input('date', sql.Date, alertDate)
                     .input('type', sql.VarChar, 'Verkoopsignaal')
                     .input('amount', sql.Decimal(18, 4), diffPercentage)
                     .input('price', sql.Decimal(18, 2), currentPrice)
@@ -329,7 +422,7 @@ exports.runCalculationForStock = async (req, res) => {
                             INSERT (aandeel_id, date, type_melding, status, trade_amount, signal_line_value, prijs_op_moment)
                             VALUES (@aandeel_id, @date, @type, 'Nieuw', @amount, NULL, @price);
                     `);
-                console.log(`Verkoopsignaal gegenereerd voor stock ${stockId} op ${dataToSave.period_end_date}: ${diffPercentage}`);
+                console.log(`Verkoopsignaal gegenereerd voor stock ${stockId} op ${alertDate}: ${diffPercentage}`);
             }
         }
 
@@ -379,17 +472,38 @@ const generateSellAlertsFromHistory = async (req, res) => {
                     if (current.waarde_verdeling < prev.waarde_verdeling) {
                         const diffPercentage = (current.waarde_verdeling - prev.waarde_verdeling) / prev.waarde_verdeling;
                         
+                        // Bepaal de datum voor het signaal: bij voorkeur report_date (publicatiedatum), anders period_end_date
+                        let alertDate = current.period_end_date;
+
+                        const reportDateResult = await pool.request()
+                            .input('stock_id_rd', sql.Int, current.stock_id)
+                            .input('period_end_date_rd', sql.Date, current.period_end_date)
+                            .query(`SELECT TOP 1 report_date FROM fundamental_data WHERE stock_id = @stock_id_rd AND period_end_date = @period_end_date_rd AND report_date IS NOT NULL ORDER BY report_date DESC`);
+                        
+                        if (reportDateResult.recordset.length > 0) {
+                            alertDate = reportDateResult.recordset[0].report_date;
+                        }
+
+                        // Als we een report_date gebruiken die verschilt van de period_end_date,
+                        // verwijder dan een eventueel bestaand signaal op de period_end_date om dubbels te voorkomen.
+                        if (alertDate.getTime() !== new Date(current.period_end_date).getTime()) {
+                            await pool.request()
+                                .input('aandeel_id_del', sql.Int, current.stock_id)
+                                .input('date_del', sql.Date, current.period_end_date)
+                                .query(`DELETE FROM MACDAlerts WHERE aandeel_id = @aandeel_id_del AND date = @date_del AND type_melding = 'Verkoopsignaal'`);
+                        }
+
                         // Haal de prijs op
                         const priceResult = await pool.request()
                             .input('stock_id_price', sql.Int, current.stock_id)
-                            .input('date_price', sql.Date, current.period_end_date)
+                            .input('date_price', sql.Date, alertDate)
                             .query(`SELECT TOP 1 closing_price FROM DailyClosingPrices WHERE aandeel_id = @stock_id_price AND date <= @date_price ORDER BY date DESC`);
                         
                         const currentPrice = priceResult.recordset.length > 0 ? priceResult.recordset[0].closing_price : 0;
 
                         await pool.request()
                             .input('aandeel_id', sql.Int, current.stock_id)
-                            .input('date', sql.Date, current.period_end_date)
+                            .input('date', sql.Date, alertDate)
                             .input('type', sql.VarChar, 'Verkoopsignaal')
                             .input('amount', sql.Decimal(18, 4), diffPercentage)
                             .input('price', sql.Decimal(18, 2), currentPrice)

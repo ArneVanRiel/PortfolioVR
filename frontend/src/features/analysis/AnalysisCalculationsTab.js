@@ -114,6 +114,22 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
     }
   };
 
+  const handleDetailsClick = async (calc) => {
+    // Toon eerst de basisdata die we al hebben
+    setSelectedCalculationDetail(calc);
+    
+    try {
+        // Haal de volledige details op (herberekening op server)
+        const response = await http.get(`/calculations/${selectedStock.stock_id}/details`, {
+            params: { period_end_date: calc.period_end_date }
+        });
+        setSelectedCalculationDetail(response.data);
+    } catch (err) {
+        console.error("Error fetching calculation details:", err);
+        // We laten de basisdata staan, maar loggen de fout
+    }
+  };
+
   return (
     <div>
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 mb-8">
@@ -170,23 +186,23 @@ const AnalysisCalculationsTab = ({ selectedStock, onCalculationsUpdate }) => {
             <table className="min-w-full divide-y divide-gray-200 bg-white">
               <thead className="bg-gray-50">
                 <tr>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Period End</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Criteria</th>
-                  <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Period End</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Intrinsic Value</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Waardeverdeling</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Criteria</th>
+                  <th className="px-3 py-2 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Actions</th>
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
                 {existingCalculations.map((calc) => (
                   <tr key={calc.id} className="hover:bg-gray-50 transition-colors">
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{new Date(calc.period_end_date).toLocaleDateString()}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{calc.intrinsieke_waarde?.toFixed(2) || 'N/A'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{calc.waarde_verdeling?.toFixed(4) || 'N/A'}</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{calc.selectiecriteria} / 5</td>
-                    <td className="px-6 py-4 whitespace-nowrap text-sm space-x-2">
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">{new Date(calc.period_end_date).toLocaleDateString()}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">{calc.intrinsieke_waarde?.toFixed(2) || 'N/A'}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">{calc.waarde_verdeling?.toFixed(4) || 'N/A'}</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs text-gray-700">{calc.selectiecriteria} / 5</td>
+                    <td className="px-3 py-2 whitespace-nowrap text-xs space-x-2">
                       <button onClick={() => handleRunCalculation(calc.period_end_date)} className="text-blue-600 hover:text-blue-800 font-medium">Herberekenen</button>
-                      <button onClick={() => setSelectedCalculationDetail(calc)} className="text-emerald-600 hover:text-emerald-800 font-medium">Details</button>
+                      <button onClick={() => handleDetailsClick(calc)} className="text-emerald-600 hover:text-emerald-800 font-medium">Details</button>
                       <button onClick={() => handleDeleteCalculationClick(calc)} className="text-red-600 hover:text-red-800 font-medium">Verwijderen</button>
                     </td>
                   </tr>

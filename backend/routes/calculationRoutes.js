@@ -11,6 +11,9 @@ router.get('/summary-by-date', calculationController.getSummaryByDate);
 // Route to get existing calculations for a specific stock
 router.get('/:stockId', calculationController.getCalculationsForStock);
 
+// Route to get detailed calculation steps (re-runs calculation in memory)
+router.get('/:stockId/details', calculationController.getCalculationDetails);
+
 // Route to trigger a calculation for a specific stock
 router.post('/:stockId', calculationController.runCalculationForStock);
 

@@ -7,7 +7,7 @@ import pyodbc
 import json
 
 #INPUTS
-ticker = 'ACN'
+ticker = 'MSFT'
 server = 'portfoliovr-server.database.windows.net'
 database = 'portfoliovr-database'	
 username = 'portfoliovr-server-admin'

@@ -100,7 +100,7 @@ const calculateMACD = (closingPrices) => {
 
 // Function to add/update manual fundamental data
 const addManualFundamentalData = async (req, res) => {
-    const { stock_id, period_end_date, period_start_date, fy, fp_id, form_id, how_added, data } = req.body;
+    const { stock_id, period_end_date, period_start_date, report_date, fy, fp_id, form_id, how_added, data } = req.body;
 
     if (!stock_id || !period_end_date || !period_start_date || !fy || !fp_id || !data || !Array.isArray(data)) {
         return res.status(400).json({ message: 'Missing or invalid data for manual entry.' });
@@ -125,8 +125,9 @@ const addManualFundamentalData = async (req, res) => {
                 await updateRequest.input('id', sql.Int, existingData.recordset[0].id)
                     .input('value', sql.Decimal(18, 4), value)
                     .input('period_start_date', sql.Date, period_start_date)
+                    .input('report_date', sql.Date, report_date)
                     .input('how_added', sql.NVarChar(100), how_added) // Add how_added to the update
-                    .query`UPDATE fundamental_data SET value = @value, updated_at = GETDATE(), period_start_date = @period_start_date, how_added = ISNULL(@how_added, how_added) WHERE id = @id`;
+                    .query`UPDATE fundamental_data SET value = @value, updated_at = GETDATE(), period_start_date = @period_start_date, report_date = @report_date, how_added = ISNULL(@how_added, how_added) WHERE id = @id`;
             } else {
                 const insertRequest = new sql.Request(transaction);
                 await insertRequest.input('stock_id', sql.Int, stock_id)
@@ -135,11 +136,12 @@ const addManualFundamentalData = async (req, res) => {
                     .input('fy', sql.Int, fy)
                     .input('fp_id', sql.Int, fp_id)
                     .input('form_id', sql.Int, form_id)
+                    .input('report_date', sql.Date, report_date)
                     .input('data_type', sql.NVarChar(100), data_type)
                     .input('value', sql.Decimal(18, 4), value)
                     .input('how_added', sql.NVarChar(100), how_added)
-                    .query`INSERT INTO fundamental_data (stock_id, period_end_date, period_start_date, fy, fp_id, form_id, data_type, value, how_added)
-                           VALUES (@stock_id, @period_end_date, @period_start_date, @fy, @fp_id, @form_id, @data_type, @value, @how_added)`;
+                    .query`INSERT INTO fundamental_data (stock_id, period_end_date, period_start_date, report_date, fy, fp_id, form_id, data_type, value, how_added)
+                           VALUES (@stock_id, @period_end_date, @period_start_date, @report_date, @fy, @fp_id, @form_id, @data_type, @value, @how_added)`;
             }
         }
 
@@ -486,7 +488,7 @@ const checkDateAndFetchData = async (req, res) => {
         const exactMatchRequest = new sql.Request();
         let exactMatchResult = await exactMatchRequest.input('stock_id', sql.Int, stockId)
             .input('period_end_date', sql.Date, inputEndDate)
-            .query`SELECT id, period_start_date, period_end_date, fy, fp_id, form_id, data_type, value
+            .query`SELECT id, period_start_date, period_end_date, report_date, fy, fp_id, form_id, data_type, value
                    FROM fundamental_data
                    WHERE stock_id = @stock_id AND period_end_date = @period_end_date`;
 
@@ -496,7 +498,8 @@ const checkDateAndFetchData = async (req, res) => {
                 fy: dataForDate[0].fy,
                 fp_id: dataForDate[0].fp_id,
                 form_id: dataForDate[0].form_id,
-                period_start_date: dataForDate[0].period_start_date ? dataForDate[0].period_start_date.toISOString().split('T')[0] : null
+                period_start_date: dataForDate[0].period_start_date ? dataForDate[0].period_start_date.toISOString().split('T')[0] : null,
+                report_date: dataForDate[0].report_date ? dataForDate[0].report_date.toISOString().split('T')[0] : null
             };
             return res.status(200).json({
                 foundDate: inputEndDate.toISOString().split('T')[0],
@@ -518,7 +521,7 @@ const checkDateAndFetchData = async (req, res) => {
             .input('input_end_date_for_diff', sql.Date, inputEndDate)
             .input('min_end_date', sql.Date, minEndDate)
             .input('max_end_date', sql.Date, maxEndDate)
-            .query`SELECT TOP 1 period_start_date, period_end_date, fy, fp_id, form_id
+            .query`SELECT TOP 1 period_start_date, period_end_date, report_date, fy, fp_id, form_id
                    FROM fundamental_data
                    WHERE stock_id = @stock_id AND period_end_date IS NOT NULL
                    AND period_end_date BETWEEN @min_end_date AND @max_end_date
@@ -532,7 +535,7 @@ const checkDateAndFetchData = async (req, res) => {
             const nearbyDataRequest = new sql.Request();
             const nearbyDataResult = await nearbyDataRequest.input('stock_id', sql.Int, stockId)
                 .input('period_end_date', sql.Date, nearbyActualEndDate)
-                .query`SELECT period_start_date, period_end_date, fy, fp_id, form_id, data_type, value
+                .query`SELECT period_start_date, period_end_date, report_date, fy, fp_id, form_id, data_type, value
                        FROM fundamental_data
                        WHERE stock_id = @stock_id AND period_end_date = @period_end_date`;
 
@@ -541,7 +544,8 @@ const checkDateAndFetchData = async (req, res) => {
                 fy: nearbyRecord.fy,
                 fp_id: nearbyRecord.fp_id,
                 form_id: nearbyRecord.form_id,
-                period_start_date: nearbyRecord.period_start_date ? nearbyRecord.period_start_date.toISOString().split('T')[0] : null
+                period_start_date: nearbyRecord.period_start_date ? nearbyRecord.period_start_date.toISOString().split('T')[0] : null,
+                report_date: nearbyRecord.report_date ? nearbyRecord.report_date.toISOString().split('T')[0] : null
             };
 
             return res.status(200).json({

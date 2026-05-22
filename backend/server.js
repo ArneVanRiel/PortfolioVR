@@ -11,6 +11,10 @@ const secImportRoutes = require('./routes/secImportRoutes');
 const calculationRoutes = require('./routes/calculationRoutes');
 const alertsRoutes = require('./routes/alertsRoutes');
 const secFieldRoutes = require('./routes/secFieldRoutes');
+const portfolioRoutes = require('./routes/portfolioRoutes');
+const brokerRoutes = require('./routes/brokerRoutes');
+const stockExchangeRoutes = require('./routes/stockExchangeRoutes');
+const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 app.use(express.json());
@@ -32,6 +36,10 @@ app.use('/api/sec', secImportRoutes);
 app.use('/api/calculations', calculationRoutes);
 app.use('/api/alerts', alertsRoutes);
 app.use('/api/sec-fields', secFieldRoutes);
+app.use('/api/portfolio', portfolioRoutes); // NIEUW: Koppel de portfolio routes
+app.use('/api/brokers', brokerRoutes);
+app.use('/api/stockexchange', stockExchangeRoutes);
+app.use('/api/auth', authRoutes);
 
 
 // Algemene foutafhandeling

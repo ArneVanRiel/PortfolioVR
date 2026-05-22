@@ -1,234 +1,278 @@
-// Login.js
 import React, { useState, useEffect } from 'react';
-import axios from 'axios'; // Voor API-verzoeken
-import { useNavigate  } from 'react-router-dom'; // Importeer Redirect
+import axios from 'axios';
+import { useNavigate } from 'react-router-dom';
 
 const LoginPageTest = () => {
+    const [mode, setMode] = useState('login'); // 'login' of 'register'
+    const [step, setStep] = useState(1); // 1 = inloggegevens, 2 = OTP
     const [username, setUsername] = useState('');
-    const [password, setPassword] = useState(''); 
     const [email, setEmail] = useState('');
-    const [confirmPassword, setConfirmPassword] = useState(''); 
-    const [token, setToken] = useState('');
-    const isLoggedIn = localStorage.getItem('token');
-    const navigate = useNavigate(); // Maak een instantie van useNavigate
-    const [activeTab, setActiveTab] = useState('Login');
-    const [countries, setCountries] = useState([]);
-    const [selectedCountry, setSelectedCountry] = useState('be');
+    const [password, setPassword] = useState(''); 
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [otp, setOtp] = useState('');
+    const [rememberMe, setRememberMe] = useState(true);
+    
+    const [loading, setLoading] = useState(false);
     const [alert, setAlert] = useState(null);
+    
+    const navigate = useNavigate();
 
-    useEffect(() => {
-        const fetchCountries = async () => {
-            const result = await axios('https://flagcdn.com/en/codes.json');
-            setCountries(result.data);
-        };
-
-        fetchCountries();
-    }, []);
-
-
-  const handleLogin = async () => {
-    try {
-      const response = await axios.post(`${process.env.REACT_APP_BACKEND_URL}/login`, { username, password });
-      const { token, userID, role } = response.data;
-
-      // Sla token en gebruikersnaam op in localStorage
-      localStorage.setItem('token', token);
-      localStorage.setItem('userID', userID);
-      localStorage.setItem('role', role);
-
-      setToken(token);
-      // Navigeer naar de 'upcoming-races' route na succesvol inloggen
-      navigate('/upcoming-races');
-    } catch (error) {
-      setAlert({ type: 'info', message: 'Gebruikersnaam of wachtwoord komt niet overeen' });
-
-    }
-  };
-
-  const handleRegister = async () => {
-        // Controleer of alle velden zijn ingevuld
-        if (!username || !password || !email || !confirmPassword || !selectedCountry) {
-          setAlert({ type: 'info', message: 'Vul alle velden in!' });
-          return;
-      }
-    // Controleer of het wachtwoord en het bevestigde wachtwoord overeenkomen
-    if (password !== confirmPassword) {
-        setAlert({ type: 'info', message: 'Wachtwoorden komen niet overeen' });
-        return;
-      }
-      // Wachtwoord validatie
-      if (password.length < 8) {
-        setAlert({ type: 'info', message: 'Het wachtwoord moet minimaal 8 tekens lang zijn' });
-        return;
-      }
-
-      if (!/[a-z]/.test(password) || !/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
-          setAlert({ type: 'info', message: 'Het wachtwoord moet minstens één kleine letter, één hoofdletter en één cijfer bevatten' });
-          return;
-      }
-
-    try {
-        const response = await axios.post(`${process.env.REACT_APP_BACKEND_URL}/api/register`, { username, password, email, selectedCountry });
-
-        // Na succesvolle registratie, log de gebruiker in
-        if (response.status === 201) {
-            setActiveTab('Login');
-        }
-    } catch (error) {
-        alert('Fout bij registratie (frontend):', error);
-        setAlert({ type: 'info', message: 'Fout bij registratie' });
-
-    }
-};
-
-    // Verwijder de alert na 3 seconden
+    // Verwijder de alert automatisch na 4 seconden
     useEffect(() => {
         if (alert) {
-        const timer = setTimeout(() => {
-            setAlert(null);
-        }, 1000);
-        return () => clearTimeout(timer);
+            const timer = setTimeout(() => setAlert(null), 4000);
+            return () => clearTimeout(timer);
         }
     }, [alert]);
 
-//EMAILBEVESTIGING
-/*
-const nodemailer = require('nodemailer');
-
-async function sendConfirmationEmail(userEmail, token) {
-    // Maak een Nodemailer transporter object
-    let transporter = nodemailer.createTransport({
-        service: 'hotmail', // Gebruik Hotmail als de e-mail service
-        auth: {
-            user: 'arne.van.riel@hotmail.be', // Jouw Hotmail adres
-            pass: 'jouw-wachtwoord' // Jouw Hotmail wachtwoord
+    // STAP 1: Controleer gegevens en stuur e-mail
+    const handleLoginStep1 = async (e) => {
+        e.preventDefault();
+        if (!username || !password) {
+            setAlert({ type: 'error', message: 'Vul gebruikersnaam en wachtwoord in.' });
+            return;
         }
-    });
-
-    // De URL waar de gebruiker naartoe wordt gestuurd na het klikken op de bevestigingslink
-    const url = `http://jouw-website.com/confirm-email?token=${token}`;
-
-    // De e-mail opties
-    let mailOptions = {
-        from: 'arne.van.riel@hotmail.be', // Het e-mailadres dat de e-mail verstuurt
-        to: userEmail, // Het e-mailadres van de ontvanger
-        subject: 'Bevestig je e-mailadres', // Het onderwerp van de e-mail
-        text: `Bevestig je e-mailadres door op de volgende link te klikken: ${url}`, // De tekst van de e-mail
-        html: `<p>Bevestig je e-mailadres door op de volgende link te klikken: <a href="${url}">${url}</a></p>` // De HTML van de e-mail
+        setLoading(true);
+        try {
+            // Zorg dat deze poort overeenkomt met de backend-poort, 5000 is standaard in jouw project
+            const response = await axios.post('http://localhost:5000/api/auth/login-step1', { username, password });
+            setAlert({ type: 'success', message: response.data.message });
+            setStep(2);
+        } catch (error) {
+            setAlert({ type: 'error', message: error.response?.data?.message || 'Fout bij inloggen.' });
+        } finally {
+            setLoading(false);
+        }
     };
 
-    // Verstuur de e-mail
-    let info = await transporter.sendMail(mailOptions);
-
-    console.log('Message sent: %s', info.messageId);
-}
-
-*/
-
-
-  const handleLogout = () => {
-        // Verwijder token en gebruikersnaam uit localStorage
-        localStorage.removeItem('token');
-        localStorage.removeItem('username');
-        localStorage.removeItem('userID');
-  };
-
-  const handleKeyDown = (event) => {
-    if (event.key === 'Enter') {
-      handleLogin();
-    }
-  }
-
-  return (
-    <div>
-      {isLoggedIn ? (
-        <div>
-          <p>{username} is ingelogd!</p>
-          <button onClick={handleLogout}>Uitloggen</button>
-        </div>
-      ) : (
-        <>
-        {alert && 
-        <div className='overlay '>
-            <div align='center' className={`alert ${alert.type}`}>
-                {alert.message}
-                <div onClick={() => setAlert(null)}>&times;</div>
-            </div>
-        </div>
+    // STAP 2: Verifieer OTP code en log in
+    const handleLoginStep2 = async (e) => {
+        e.preventDefault();
+        if (!otp) {
+            setAlert({ type: 'error', message: 'Vul de verificatiecode in.' });
+            return;
         }
-        <div className='modal-content'>
-            <div className="content-block-modal modal-zoom">
-                <div className="toolbar">
-                    <div className='row' style={{display: 'flex', flexDirection: 'row'}}>
-                        <a className={`toolbar-btn ${activeTab === 'Login' ? 'active' : ''}`} onClick={() => setActiveTab('Login')}>Login</a>
-                        <a className={`toolbar-btn ${activeTab === 'Registreren' ? 'active' : ''}`} onClick={() => setActiveTab('Registreren')}>Registreren</a>
-                    </div>
+        setLoading(true);
+        try {
+            const response = await axios.post('http://localhost:5000/api/auth/login-step2', { username, otp, rememberMe });
+            const { token, userID, role } = response.data;
+
+            // Bewaar in de localStorage voor de Protected Routes in App.js
+            localStorage.setItem('token', token);
+            localStorage.setItem('userID', userID);
+            localStorage.setItem('role', role);
+            localStorage.setItem('username', username);
+
+            // Navigeer succesvol naar dashboard
+            navigate('/dashboard');
+        } catch (error) {
+            setAlert({ type: 'error', message: error.response?.data?.message || 'Onjuiste verificatiecode.' });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    // STAP: Registreren
+    const handleRegister = async (e) => {
+        e.preventDefault();
+        if (!username || !email || !password || !confirmPassword) {
+            setAlert({ type: 'error', message: 'Vul alle velden in.' });
+            return;
+        }
+        if (password !== confirmPassword) {
+            setAlert({ type: 'error', message: 'Wachtwoorden komen niet overeen.' });
+            return;
+        }
+        if (password.length < 8) {
+            setAlert({ type: 'error', message: 'Het wachtwoord moet minimaal 8 tekens lang zijn.' });
+            return;
+        }
+
+        setLoading(true);
+        try {
+            const response = await axios.post('http://localhost:5000/api/auth/register', { username, email, password });
+            setAlert({ type: 'success', message: response.data.message });
+            
+            // Switch automatisch terug naar inloggen na 2 seconden
+            setTimeout(() => {
+                setMode('login');
+                setPassword('');
+                setConfirmPassword('');
+            }, 2000);
+        } catch (error) {
+            setAlert({ type: 'error', message: error.response?.data?.message || 'Fout bij registratie.' });
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    return (
+        <div className="flex h-screen w-full items-center justify-center bg-gray-50/50 -mt-16">
+            <div className="w-full max-w-md bg-white rounded-xl shadow-lg p-8 border border-gray-100 relative">
+                
+                <div className="text-center mb-8">
+                    <h2 className="text-3xl font-bold text-gray-800">
+                        Portfolio<span className="text-blue-500">VR</span>
+                    </h2>
+                    <p className="text-gray-500 mt-2">
+                        {mode === 'register' ? 'Maak een nieuw account aan' 
+                            : step === 1 ? 'Log in op je account' : 'Voer je verificatiecode in'}
+                    </p>
                 </div>
-                {activeTab === 'Login' && (
-                    <>
-                      <br></br>
-                      <label>Gebruikersnaam</label>
-                      <input type="text" placeholder="Gebruikersnaam" onChange={(e) => setUsername(e.target.value)} onKeyDown={handleKeyDown} />
-                      <br></br>
-                      <label>Wachtwoord</label>
-                      <input type="password" placeholder="Wachtwoord" onChange={(e) => setPassword(e.target.value)} onKeyDown={handleKeyDown} />
-                      <button className='btn btn-sm' onClick={handleLogin}>Inloggen</button>
-                    </>
+
+                {alert && (
+                    <div className={`mb-6 p-3 rounded-lg text-sm border font-medium ${alert.type === 'error' ? 'bg-red-50 text-red-700 border-red-200' : 'bg-green-50 text-green-700 border-green-200'}`}>
+                        {alert.message}
+                    </div>
                 )}
-                {/*activeTab === 'Registreren' && (
-                    <>
-                    <br></br>
-                    <div className="row">
-                    <label>Gebruikersnaam</label>
-                    <label>(deze naam wordt zichtbaar in de algemene rangschikking)</label>
-                    </div>
-                    <br></br>
-                    <div className="row">
-                          <input type="text" placeholder="Gebruikersnaam" onChange={(e) => setUsername(e.target.value)}/>
-                    </div>
-                    <br></br>
-                    <div className="row">
-                        <label>Land</label>
-                        <select value={selectedCountry} onChange={(e) => setSelectedCountry(e.target.value)} required>
-                            {Object.entries(countries).map(([code, country]) => (
-                                <option key={code} value={code}>
-                                    {country} <img src={`https://flagcdn.com/w20/${code.toLowerCase()}.png`} alt={country} />
-                                </option>
-                            ))}
-                        </select>
-                    </div>
-                    <br></br>
-                    <div className="row">
-                         <label>email</label>
-                    </div>
-                    <div className="row">
-                         <input type="email" placeholder="email@email.be" onChange={(e) => setEmail(e.target.value)}/>
-                    </div>
-                    <br></br>
-                    <div className="row">
-                          <label>Wachtwoord</label>
-                    </div>
-                    <div className="row">
-                         <input type="password" placeholder="Wachtwoord" onChange={(e) => setPassword(e.target.value)} />
-                    </div>
-                    <br></br>
-                    <div className="row">
-                          <label>Bevestig wachtwoord</label>
-                    </div>
-                    <div className="row">
-                          <input type="password" placeholder="Wachtwoord" onChange={(e) => setConfirmPassword(e.target.value)}/>
-                    </div>
-                    <div className="row">
-                          <button className='btn btn-sm' onClick={handleRegister}>Registreren</button>
-                    </div>
-                    </>
-                )*/}
+
+                {mode === 'login' && step === 1 && (
+                    <form onSubmit={handleLoginStep1} className="space-y-5">
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Gebruikersnaam</label>
+                            <input 
+                                type="text" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                placeholder="Jouw gebruikersnaam"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Wachtwoord</label>
+                            <input 
+                                type="password" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="••••••••"
+                            />
+                        </div>
+                        <div className="flex items-center">
+                            <input 
+                                type="checkbox" 
+                                id="rememberMe"
+                                className="w-4 h-4 text-blue-500 border-gray-300 rounded focus:ring-blue-500 cursor-pointer"
+                                checked={rememberMe}
+                                onChange={(e) => setRememberMe(e.target.checked)}
+                            />
+                            <label htmlFor="rememberMe" className="ml-2 text-sm text-gray-600 cursor-pointer">
+                                Blijf 30 dagen ingelogd
+                            </label>
+                        </div>
+                        <button 
+                            type="submit" 
+                            disabled={loading}
+                            className="w-full bg-blue-600 text-white font-semibold py-2.5 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50"
+                        >
+                            {loading ? 'Bezig...' : 'Inloggen'}
+                        </button>
+                        <div className="text-center mt-4">
+                            <p className="text-sm text-gray-600">Nog geen account?{' '}
+                                <button type="button" onClick={() => { setMode('register'); setAlert(null); }} className="text-blue-500 font-medium hover:text-blue-700">
+                                    Maak er één aan
+                                </button>
+                            </p>
+                        </div>
+                    </form>
+                )}
+
+                {mode === 'login' && step === 2 && (
+                    <form onSubmit={handleLoginStep2} className="space-y-5">
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Verificatiecode (OTP)</label>
+                            <input 
+                                type="text" 
+                                className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all text-center tracking-[1em] text-xl font-mono"
+                                value={otp}
+                                onChange={(e) => setOtp(e.target.value)}
+                                placeholder="123456"
+                                maxLength="6"
+                            />
+                            <p className="text-xs text-gray-500 mt-3 text-center">
+                                We hebben een code gestuurd naar je e-mailadres. Deze is 10 minuten geldig.
+                            </p>
+                        </div>
+                        <button 
+                            type="submit" 
+                            disabled={loading}
+                            className="w-full bg-blue-600 text-white font-semibold py-2.5 rounded-lg hover:bg-blue-700 shadow-sm transition-colors disabled:opacity-50"
+                        >
+                            {loading ? 'Bezig met verifiëren...' : 'Bevestigen & Inloggen'}
+                        </button>
+                        <div className="text-center mt-4">
+                            <button 
+                                type="button" 
+                                onClick={() => setStep(1)}
+                                className="text-sm text-blue-500 font-medium hover:text-blue-700"
+                            >
+                                Terug naar inloggen
+                            </button>
+                        </div>
+                    </form>
+                )}
+
+                {mode === 'register' && (
+                    <form onSubmit={handleRegister} className="space-y-4">
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Gebruikersnaam</label>
+                            <input 
+                                type="text" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                value={username}
+                                onChange={(e) => setUsername(e.target.value)}
+                                placeholder="Kies een gebruikersnaam"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">E-mailadres</label>
+                            <input 
+                                type="email" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                placeholder="jouw@email.be"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Wachtwoord</label>
+                            <input 
+                                type="password" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                value={password}
+                                onChange={(e) => setPassword(e.target.value)}
+                                placeholder="••••••••"
+                            />
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-gray-700 mb-1">Bevestig Wachtwoord</label>
+                            <input 
+                                type="password" 
+                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                                value={confirmPassword}
+                                onChange={(e) => setConfirmPassword(e.target.value)}
+                                placeholder="••••••••"
+                            />
+                        </div>
+                        <button 
+                            type="submit" 
+                            disabled={loading}
+                            className="w-full bg-blue-600 text-white font-semibold py-2.5 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 mt-2"
+                        >
+                            {loading ? 'Bezig...' : 'Registreren'}
+                        </button>
+                        <div className="text-center mt-4">
+                            <p className="text-sm text-gray-600">Al een account?{' '}
+                                <button type="button" onClick={() => { setMode('login'); setAlert(null); }} className="text-blue-500 font-medium hover:text-blue-700">
+                                    Log in
+                                </button>
+                            </p>
+                        </div>
+                    </form>
+                )}
             </div>
         </div>
-        </>
-      )}
-    </div>
-  );
+    );
 };
 
 export default LoginPageTest;

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { createPortal } from 'react-dom';
 import http from '../../http-common';
 import Modal from '../../components/ui/modal'; // Zorg dat je een Modal component hebt of gebruik bootstrap classes
 
@@ -84,15 +85,17 @@ const HeaderBalanceDisplay = () => {
   };
 
   return (
-    <div onDoubleClick={handleDoubleClick} className="cursor-pointer select-none" title="Dubbelklik om aan te passen">
-      <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Beschikbaar</span>
-      <p className="text-lg font-bold text-green-600">
-        €{balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-      </p>
+    <>
+      <div onDoubleClick={handleDoubleClick} className="cursor-pointer select-none" title="Dubbelklik om aan te passen">
+        <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Beschikbaar</span>
+        <p className="text-lg font-bold text-green-600">
+          €{balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </p>
+      </div>
 
       {/* Modal voor aanpassen */}
-      {showUpdateModal && (
-        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-50 flex items-center justify-center">
+      {showUpdateModal && createPortal(
+        <div className="fixed inset-0 bg-gray-600 bg-opacity-50 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center">
           <div className="bg-white p-5 rounded-lg shadow-xl w-96">
             <h3 className="text-lg font-bold mb-4">Pas Beschikbaar Vermogen Aan</h3>
             {error && <p className="text-red-500 text-sm mb-2">{error}</p>}
@@ -115,9 +118,10 @@ const HeaderBalanceDisplay = () => {
               <button onClick={handleSubmitUpdate} disabled={loading} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50">Opslaan</button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
-    </div>
+    </>
   );
 };
 
