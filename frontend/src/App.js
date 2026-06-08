@@ -89,11 +89,18 @@ function App() {
     navigate('/login');
   };
 
+  // Nieuwe functie om incognito te togglen en een signaal uit te zenden naar de hele app
+  const toggleIncognito = () => {
+    const newValue = !isIncognito;
+    setIsIncognito(newValue);
+    if (!isDemo) {
+      localStorage.setItem('incognito', String(newValue));
+    }
+    window.dispatchEvent(new Event('privacyToggle'));
+  };
+
   // Incognito modus CSS klasse toepassen op de body
   useEffect(() => {
-    if (!isDemo) {
-      localStorage.setItem('incognito', isIncognito);
-    }
     if (isIncognito || isDemo) {
       document.body.classList.add('incognito-active');
     } else {
@@ -109,11 +116,10 @@ function App() {
       {/* Globale CSS voor de incognito modus */}
       <style>{`
         .incognito-active .privacy-blur {
-          filter: blur(15px);
           opacity: 0.6;
           pointer-events: none;
           user-select: none;
-          transition: filter 0.3s ease, opacity 0.3s ease;
+          transition: opacity 0.3s ease;
         }
         .incognito-active .incognito-hide {
           display: none !important;
@@ -155,7 +161,7 @@ function App() {
               {/* Incognito Knop */}
               {!isDemo && (
                 <button
-                  onClick={() => setIsIncognito(!isIncognito)}
+                  onClick={toggleIncognito}
                   className={`p-2 rounded-full transition-colors duration-200 ${
                     isIncognito ? 'bg-blue-100 text-blue-600 shadow-inner' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                   }`}

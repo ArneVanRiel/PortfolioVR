@@ -5,6 +5,7 @@ import TransactionForm from './TransactionForm';
 import TaxesTab from './TaxesTab';
 import { useNavigate } from 'react-router-dom';
 import { Doughnut, Line, Bar } from 'react-chartjs-2';
+import { useIncognito } from '../../hooks/useIncognito';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -118,6 +119,7 @@ const PortfolioManager = () => {
   const [divTimeframe, setDivTimeframe] = useState('1Y');
   const [divStart, setDivStart] = useState('');
   const [divEnd, setDivEnd] = useState('');
+  const isIncognito = useIncognito();
 
   const calculateDatesForPeriod = (period) => {
     let startDate = new Date();
@@ -648,8 +650,11 @@ const PortfolioManager = () => {
   }, [filteredTransactions, history]);
 
 
-  const formatCurrency = (val) => new Intl.NumberFormat(displayCurrency === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: displayCurrency }).format(val || 0);
-  const formatPercentage = (val) => `${(val > 0 ? '+' : '')}${(val || 0).toFixed(2)}%`;
+  const formatCurrency = (val) => {
+    if (isIncognito) return displayCurrency === 'EUR' ? '€ ••••••' : '$ ••••••';
+    return new Intl.NumberFormat(displayCurrency === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: displayCurrency }).format(val || 0);
+  };
+  const formatPercentage = (val) => isIncognito ? '••• %' : `${(val > 0 ? '+' : '')}${(val || 0).toFixed(2)}%`;
 
   // --- Helpers voor Custom Excel Imports ---
   const parseNumber = (val) => {
@@ -981,6 +986,7 @@ const PortfolioManager = () => {
         cornerRadius: 8,
         callbacks: {
           label: (context) => {
+            if (isIncognito) return ' ••••••';
             const value = context.raw;
             return ` ${formatCurrency(value)}`;
           }
@@ -1098,6 +1104,7 @@ const PortfolioManager = () => {
         callbacks: { 
           title: (items) => { return items[0].label; },
           label: (context) => {
+            if (isIncognito) return '••••••';
             if (context.dataset.label === 'Transactions') {
                const h = history[context.dataIndex];
                const tDateStr = new Date(h.date).toLocaleDateString('nl-BE');
@@ -1125,7 +1132,7 @@ const PortfolioManager = () => {
     },
     scales: { 
       x: { grid: { display: false }, border: { display: false }, ticks: { maxTicksLimit: 8, font: { family: 'Inter, sans-serif' }, color: '#9CA3AF' } }, 
-      y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (value) => chartView === 'value' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(value) : `${value}%` } } 
+      y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (value) => isIncognito ? '•••' : (chartView === 'value' ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(value) : `${value}%`) } } 
     },
     interaction: { mode: 'nearest', axis: 'x', intersect: false },
     hover: { mode: 'nearest', intersect: true }
@@ -1266,11 +1273,11 @@ const PortfolioManager = () => {
       interaction: { mode: 'index', intersect: false },
       plugins: {
           legend: { display: false },
-          tooltip: { callbacks: { label: (ctx) => `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}` } }
+          tooltip: { callbacks: { label: (ctx) => isIncognito ? '••••••' : `${ctx.dataset.label}: ${formatCurrency(ctx.raw)}` } }
       },
       scales: {
           x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { family: 'Inter, sans-serif' }, color: '#9CA3AF' }, border: { display: false } },
-          y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (val) => new Intl.NumberFormat('en-US', { style: 'currency', currency: displayCurrency, maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(val) } }
+          y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (val) => isIncognito ? '•••' : new Intl.NumberFormat('en-US', { style: 'currency', currency: displayCurrency, maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(val) } }
       }
   }), [displayCurrency]);
 

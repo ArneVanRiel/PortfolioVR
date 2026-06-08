@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import http from '../../http-common';
 import { useDebounce } from 'use-debounce';
+import { useIncognito } from '../../hooks/useIncognito';
 
 const Pagination = ({ currentPage, totalPages, onPageChange }) => {
     const handlePrevious = () => {
@@ -61,6 +62,8 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     // --- State for hover popup ---
     const [hoveredAlert, setHoveredAlert] = useState(null);
     const [popupPosition, setPopupPosition] = useState({ x: 0, y: 0 });
+
+    const isIncognito = useIncognito();
 
     const ALL_COLUMNS = useMemo(() => [
         { key: 'name', label: 'Aandeel', sortable: true, type: 'string' },
@@ -410,23 +413,23 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                     <h4 className="font-bold text-gray-800 mb-2 border-b pb-1">Berekening Aanbevolen Bedrag</h4>
                     
                     {hoveredAlert.type_melding === 'Koopsignaal' && (
-                        <div className="mb-3 pb-2 border-b border-gray-100 privacy-blur">
+                        <div className="mb-3 pb-2 border-b border-gray-100">
                             <h5 className="font-semibold text-gray-700 text-xs mb-1">1. Basis Bedrag (Backend)</h5>
                             <div className="text-xs text-gray-600 space-y-1">
                                 <div className="flex justify-between">
                                     <span>Signaal Lijn:</span>
-                                    <span className="font-mono">{Number(hoveredAlert.signal_line_value).toFixed(4)}</span>
+                                    <span className="font-mono privacy-blur">{isIncognito ? '••••••' : Number(hoveredAlert.signal_line_value).toFixed(4)}</span>
                                 </div>
                                 <div className="flex justify-between">
                                     <span>Prijs:</span>
-                                    <span className="font-mono">€{Number(hoveredAlert.prijs_op_moment).toFixed(2)}</span>
+                                    <span className="font-mono privacy-blur">{isIncognito ? '€ ••••••' : `€${Number(hoveredAlert.prijs_op_moment).toFixed(2)}`}</span>
                                 </div>
                                 <div className="mt-1 text-[10px] text-gray-400 italic">
                                     Formule: Saldo * (1 + (-Signal / Prijs) * 4)
                                 </div>
                                 <div className="flex justify-between font-semibold text-gray-700 mt-1">
                                     <span>Basis Resultaat:</span>
-                                    <span className="font-mono">€{Number(hoveredAlert.trade_amount).toFixed(2)}</span>
+                                    <span className="font-mono privacy-blur">{isIncognito ? '€ ••••••' : `€${Number(hoveredAlert.trade_amount).toFixed(2)}`}</span>
                                 </div>
                             </div>
                         </div>
@@ -436,23 +439,23 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                         <h5 className="font-semibold text-gray-700 text-xs mb-1">
                             {hoveredAlert.type_melding === 'Koopsignaal' ? '2. Weging & Eindresultaat' : 'Berekening'}
                         </h5>
-                        <div className="text-xs text-gray-600 space-y-1 privacy-blur">
+                        <div className="text-xs text-gray-600 space-y-1">
                             <div className="flex justify-between">
                                 <span>Basis Bedrag:</span>
-                                <span className="font-mono">€{Number(hoveredAlert.trade_amount).toFixed(2)}</span>
+                                <span className="font-mono privacy-blur">{isIncognito ? '€ ••••••' : `€${Number(hoveredAlert.trade_amount).toFixed(2)}`}</span>
                             </div>
                             <div className="flex justify-between">
                                 <span>Weging (Score 5):</span>
-                                <span className="font-mono">{(calculationData[hoveredAlert.aandeel_id]?.percentage || 0).toFixed(2)}%</span>
+                                <span className="font-mono privacy-blur">{isIncognito ? '••••••' : `${(calculationData[hoveredAlert.aandeel_id]?.percentage || 0).toFixed(2)}%`}</span>
                             </div>
                             <div className="flex justify-between">
                                 <span>Extra Weging (Ideaal/Huidig):</span>
-                                <span className="font-mono">x{(calculationData[hoveredAlert.aandeel_id]?.weight_factor || 1).toFixed(2)}</span>
+                                <span className="font-mono privacy-blur">{isIncognito ? '••••••' : `x${(calculationData[hoveredAlert.aandeel_id]?.weight_factor || 1).toFixed(2)}`}</span>
                             </div>
                             <div className="flex justify-between border-t pt-1 mt-1 font-semibold text-gray-800">
                                 <span>Eindresultaat:</span>
-                                <span className="font-mono">
-                                    €{Number(hoveredAlert.trade_amount * ((calculationData[hoveredAlert.aandeel_id]?.percentage || 0) / 100) / 10 * (calculationData[hoveredAlert.aandeel_id]?.weight_factor || 1)).toFixed(2)}
+                                <span className="font-mono privacy-blur">
+                                    {isIncognito ? '€ ••••••' : `€${Number(hoveredAlert.trade_amount * ((calculationData[hoveredAlert.aandeel_id]?.percentage || 0) / 100) / 10 * (calculationData[hoveredAlert.aandeel_id]?.weight_factor || 1)).toFixed(2)}`}
                                 </span>
                             </div>
                             <div className="mt-2 text-[10px] text-gray-400 italic">

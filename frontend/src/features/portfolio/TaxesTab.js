@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import axios from 'axios';
+import { useIncognito } from '../../hooks/useIncognito';
 
 const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
     const [updating, setUpdating] = useState(false);
@@ -8,7 +9,8 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
     const [hidePaid, setHidePaid] = useState(false);
     
     // Helpertje voor valuta
-    const formatCur = (val) => new Intl.NumberFormat(displayCurrency === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: displayCurrency }).format(val || 0);
+    const isIncognito = useIncognito();
+    const formatCur = (val) => isIncognito ? '€ ••••••' : new Intl.NumberFormat(displayCurrency === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: displayCurrency }).format(val || 0);
 
     const { taxData, monthlyTob, yearlyDivsArray } = useMemo(() => {
         let manualTob = 0;   // TOB die je zelf nog moet betalen (eToro)
@@ -213,7 +215,7 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
                         <div className="mt-4 bg-white bg-opacity-60 rounded-lg p-3 border border-blue-100">
                             <h5 className="font-bold text-blue-900 text-sm mb-2">Actie voor je belastingaangifte (Vak VII):</h5>
                             {currentYearDivs <= 833 ? (
-                                <ul className="text-xs text-blue-800 space-y-1.5 list-disc pl-4 privacy-blur">
+                                <ul className="text-xs text-blue-800 space-y-1.5 list-disc pl-4">
                                     <li>Omdat eToro en DeGiro buitenlandse brokers zijn, houden zij standaard <strong>géén Belgische 30% Roerende Voorheffing</strong> in.</li>
                                     <li>Je totale netto dividenden ({formatCur(currentYearDivs)}) blijven onder de belastingvrije limiet van <strong>€833</strong>.</li>
                                     <li>Je hoeft <strong>niets in te vullen</strong> op je belastingbrief voor deze dividenden.</li>
@@ -336,7 +338,7 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
                                             </td>
                                             <td className="px-4 py-3 text-right font-bold text-gray-900 privacy-blur">{formatCur(d.amount)}</td>
                                             <td className={`px-4 py-3 text-right font-bold privacy-blur ${d.amount > 833 ? 'text-red-600' : 'text-green-600'}`}>
-                                                {d.amount > 833 ? formatCur(d.amount - 833) : '€ 0,00'}
+                                                {d.amount > 833 ? formatCur(d.amount - 833) : (isIncognito ? '€ ••••••' : '€ 0,00')}
                                             </td>
                                         </tr>
                                         {expandedDivYears[d.year] && (

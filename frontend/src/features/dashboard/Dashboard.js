@@ -6,16 +6,19 @@ import http from '../../http-common';
 import toast from 'react-hot-toast';
 import Score5DistributionChart from './Score5DistributionChart';
 import IncompleteDataWidget from './IncompleteDataWidget';
+import { useIncognito } from '../../hooks/useIncognito';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 // Placeholder components for stats and charts
-const StatCard = ({ title, value, trend, trendUp }) => (
+const StatCard = ({ title, value, trend, trendUp }) => {
+  const isIncognito = useIncognito();
+  return (
   <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300">
     <div className="flex justify-between items-start">
       <div>
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
-        <h3 className="text-2xl font-bold text-gray-900 mt-2 privacy-blur">{value}</h3>
+        <h3 className="text-2xl font-bold text-gray-900 mt-2 privacy-blur">{isIncognito ? '€ ••••••' : value}</h3>
       </div>
       {trend && (
         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${trendUp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
@@ -24,7 +27,8 @@ const StatCard = ({ title, value, trend, trendUp }) => (
       )}
     </div>
   </div>
-);
+  );
+};
 
 const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
   <div 
@@ -57,6 +61,7 @@ const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
 );
 
 const Dashboard = () => {
+  const isIncognito = useIncognito();
   const [viewType, setViewType] = useState('idealePortfolio');
   const watchlistTableRef = useRef(null);
   const calculationsTableRef = useRef(null);
@@ -388,13 +393,13 @@ const Dashboard = () => {
               <tr className="hover:bg-gray-50 transition-colors">
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">BUY</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">AAPL</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">$5,000</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">{isIncognito ? '••••••' : '$5,000'}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-21</td>
               </tr>
               <tr className="hover:bg-gray-50 transition-colors">
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">SELL</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">GOOGL</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">$3,500</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">{isIncognito ? '••••••' : '$3,500'}</td>
                 <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-20</td>
               </tr>
             </tbody>

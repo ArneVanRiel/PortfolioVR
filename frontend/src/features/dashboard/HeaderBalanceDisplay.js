@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import http from '../../http-common';
 import Modal from '../../components/ui/modal'; // Zorg dat je een Modal component hebt of gebruik bootstrap classes
+import { useIncognito } from '../../hooks/useIncognito';
 
 const HeaderBalanceDisplay = () => {
   const [balance, setBalance] = useState(0);
@@ -10,6 +11,7 @@ const HeaderBalanceDisplay = () => {
   const [currentInputBalances, setCurrentInputBalances] = useState({});
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const isIncognito = useIncognito();
 
   const fetchLatestBalance = useCallback(async () => {
     try {
@@ -89,7 +91,7 @@ const HeaderBalanceDisplay = () => {
       <div onDoubleClick={handleDoubleClick} className="cursor-pointer select-none" title="Dubbelklik om aan te passen">
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Beschikbaar</span>
         <p className="text-lg font-bold text-green-600 privacy-blur">
-          €{balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
         </p>
       </div>
 

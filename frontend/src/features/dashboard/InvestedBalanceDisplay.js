@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
+import { useIncognito } from '../../hooks/useIncognito';
 
 const InvestedBalanceDisplay = () => {
   const [balance, setBalance] = useState(0);
+  const isIncognito = useIncognito();
 
   useEffect(() => {
     // Pas dit endpoint aan naar je eigen API voor geïnvesteerd vermogen
@@ -14,8 +16,8 @@ const InvestedBalanceDisplay = () => {
   return (
     <div className="pl-4">
       <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Geïnvesteerd</span>
-      <p className="text-lg font-bold text-blue-600">
-        €{balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+      <p className="text-lg font-bold text-blue-600 privacy-blur">
+        {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
       </p>
     </div>
   );
