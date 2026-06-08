@@ -1728,7 +1728,7 @@ const PortfolioManager = () => {
                       <td className="px-6 py-4 border-b border-gray-100 text-right">
                         <div className="flex flex-col">
                           <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.value)}</span>
-                          <span className="text-xs font-medium text-gray-500 privacy-blur">{parseFloat(holding.quantity).toFixed(4)} stuks</span>
+                          <span className="text-xs font-medium text-gray-500 privacy-blur">{isIncognito ? '••••••' : parseFloat(holding.quantity).toFixed(4)} stuks</span>
                         </div>
                       </td>
                       <td className="px-6 py-4 border-b border-gray-100 text-right">
@@ -1863,7 +1863,7 @@ const PortfolioManager = () => {
                             </span>
                         )}
                      </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{t.quantity}</td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{isIncognito ? '••••••' : t.quantity}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{formatCurrency(t.price)}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800 text-right privacy-blur">{formatCurrency(t.quantity * t.price)}</td>
                       {!isDemo && (
@@ -1934,7 +1934,7 @@ const PortfolioManager = () => {
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-gray-800">{['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type) ? 'Cash' : t.ticker_symbol}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-700">{t.transaction_type}</td>
                       <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                        {t.quantity} <span className="text-gray-400 mx-1">@</span> <span className="privacy-blur">{formatCurrency(t.price)}</span>
+                        <span className="privacy-blur">{isIncognito ? '••••••' : t.quantity}</span> <span className="text-gray-400 mx-1">@</span> <span className="privacy-blur">{formatCurrency(t.price)}</span>
                         {t._hasVariance && !t._isPossibleSplit && (
                           <span className="ml-2 px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-600" title="Prijs wijkt af van de andere duplicaten in deze groep">
                             Δ {formatCurrency(t._varianceAmount)}

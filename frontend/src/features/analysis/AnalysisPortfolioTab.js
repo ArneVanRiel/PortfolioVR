@@ -13,6 +13,7 @@ import {
   Legend,
 } from 'chart.js';
 import zoomPlugin from 'chartjs-plugin-zoom';
+import { useIncognito } from '../../hooks/useIncognito';
 
 ChartJS.register(
   CategoryScale,
@@ -44,6 +45,8 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
   const [transTypeFilter, setTransTypeFilter] = useState('');
   const [sortConfig, setSortConfig] = useState({ key: 'purchase_time', direction: 'desc' });
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  
+  const isIncognito = useIncognito();
 
   const fetchData = useCallback(async () => {
     if (!selectedStock) return;
@@ -309,7 +312,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
           <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Huidige Positie</p>
-          <p className="text-2xl font-bold text-gray-900 mt-1">{totalQuantity} stuks</p>
+          <p className="text-2xl font-bold text-gray-900 mt-1 privacy-blur">{isIncognito ? '••••••' : totalQuantity} stuks</p>
         </div>
         <div className="bg-white p-4 rounded-xl shadow-sm border border-gray-200">
           <p className="text-xs text-gray-500 font-bold uppercase tracking-wider">Gem. Aankoopprijs</p>
@@ -393,7 +396,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
                         <span className="text-xs text-gray-400 block mt-0.5">{new Date(t.purchase_time).toLocaleTimeString('nl-BE', {hour: '2-digit', minute:'2-digit'})}</span>
                     </td>
                     <td className="px-6 py-4"><span className={`px-2 py-1 text-xs font-bold rounded-md ${t.transaction_type === 'BUY' ? 'bg-green-100 text-green-700' : t.transaction_type === 'SELL' ? 'bg-red-100 text-red-700' : 'bg-gray-100 text-gray-700'}`}>{t.transaction_type}</span></td>
-                    <td className="px-6 py-4 text-sm text-gray-700 text-right">{t.quantity}</td>
+                    <td className="px-6 py-4 text-sm text-gray-700 text-right privacy-blur">{isIncognito ? '••••••' : t.quantity}</td>
                     <td className="px-6 py-4 text-sm text-gray-700 text-right privacy-blur">{formatCurrency(t.price)}</td>
                     <td className="px-6 py-4 text-sm font-semibold text-gray-900 text-right privacy-blur">{formatCurrency(t.quantity * t.price)}</td>
                     <td className="px-6 py-4 text-sm text-right">{result}</td>

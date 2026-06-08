@@ -8,6 +8,9 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
     const [expandedDivYears, setExpandedDivYears] = useState({});
     const [hidePaid, setHidePaid] = useState(false);
     
+    const userRole = localStorage.getItem('role') || 'user';
+    const isDemo = userRole === 'demo';
+
     // Helpertje voor valuta
     const isIncognito = useIncognito();
     const formatCur = (val) => isIncognito ? '€ ••••••' : new Intl.NumberFormat(displayCurrency === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: displayCurrency }).format(val || 0);
@@ -140,6 +143,16 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
     }, [transactions, rawHoldings, displayCurrency]);
 
     const toggleTobPaid = async (monthGroup) => {
+        if (isDemo) return;
+
+        const expectedAmount = monthGroup.amount.toFixed(2);
+        const userInput = window.prompt(`Weet je zeker dat je de status wilt wijzigen?\nBevestig door het exacte TOB bedrag in te typen (${expectedAmount}):`);
+        
+        if (userInput !== expectedAmount && userInput !== expectedAmount.replace('.', ',')) {
+            alert("Incorrect bedrag ingevoerd. Actie geannuleerd.");
+            return;
+        }
+
         setUpdating(true);
         try {
             await http.post('/portfolio/transactions/mark-tob-paid', {
@@ -267,8 +280,9 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
                                             <td className="px-4 py-3 text-center">
                                                 <button 
                                                     onClick={(e) => { e.stopPropagation(); toggleTobPaid(m); }}
-                                                    disabled={updating}
-                                                    className={`px-3 py-1 rounded-full text-xs font-bold transition-colors shadow-sm ${m.allPaid ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
+                                                    disabled={updating || isDemo}
+                                                    className={`px-3 py-1 rounded-full text-xs font-bold transition-colors shadow-sm ${m.allPaid ? 'bg-green-100 text-green-700 hover:bg-green-200' : 'bg-red-100 text-red-700 hover:bg-red-200'} ${isDemo ? 'opacity-50 cursor-not-allowed' : ''}`}
+                                                    title={isDemo ? "Niet toegestaan voor demo accounts" : "Status wijzigen"}
                                                 >
                                                     {m.allPaid ? 'Betaald ✔' : 'Te Betalen'}
                                                 </button>
