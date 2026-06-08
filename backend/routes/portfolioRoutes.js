@@ -15,7 +15,8 @@ const { // Renamed calculatePortfolioValues to recalculateAndStorePortfolioHisto
   deleteTransaction,
   getPortfolioReturnsDynamics,
   forceUpdateExchangeRates,
-  applyStockSplit
+  applyStockSplit,
+  markTobPaid
 } = require('../controllers/portfolioController');
 
 router.post('/recalculateAndStorePortfolioHistory', recalculateAndStorePortfolioHistory); // New route for recalculation
@@ -32,5 +33,6 @@ router.post('/addMultipleTransactions', addMultipleTransactions);
 router.delete('/transactions/:id', deleteTransaction);
 router.post('/force-update-exchange-rates', forceUpdateExchangeRates);
 router.post('/apply-stock-split', applyStockSplit);
+router.post('/transactions/mark-tob-paid', markTobPaid);
 
 module.exports = router;

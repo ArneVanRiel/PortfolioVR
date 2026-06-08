@@ -62,7 +62,7 @@ const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
 
 const Dashboard = () => {
   const isIncognito = useIncognito();
-  const [viewType, setViewType] = useState('idealePortfolio');
+  const [viewType] = useState('idealePortfolio');
   const watchlistTableRef = useRef(null);
   const calculationsTableRef = useRef(null);
   const alertsTableRef = useRef(null);

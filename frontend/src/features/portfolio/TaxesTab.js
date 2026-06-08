@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 import { useIncognito } from '../../hooks/useIncognito';
 
 const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
@@ -142,7 +142,7 @@ const TaxesTab = ({ transactions, rawHoldings, displayCurrency, onUpdate }) => {
     const toggleTobPaid = async (monthGroup) => {
         setUpdating(true);
         try {
-            await axios.post('/api/portfolio/transactions/mark-tob-paid', {
+            await http.post('/portfolio/transactions/mark-tob-paid', {
                 transactionIds: monthGroup.transactionIds,
                 isPaid: !monthGroup.allPaid
             });

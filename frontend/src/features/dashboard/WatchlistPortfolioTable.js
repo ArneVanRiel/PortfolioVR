@@ -10,8 +10,6 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [alerts, setAlerts] = useState([]);
-  const [isUpdatingData, setIsUpdatingData] = useState(false);
-  const [isDailyUpdateDone, setIsDailyUpdateDone] = useState(false);
   const [showAddStockModal, setShowAddStockModal] = useState(false);
   const [availableStocks, setAvailableStocks] = useState([]);
   const [selectedStockToAdd, setSelectedStockToAdd] = useState('');
@@ -142,27 +140,11 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     }
   }, []);
 
-  // Controleer de status van de dagelijkse update
-  const checkDailyUpdateStatus = useCallback(async () => {
-    try {
-      const response = await fetch(`${API_URL}/watchlist/update-status`);
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-      const data = await response.json();
-      setIsDailyUpdateDone(data.isUpdatedToday);
-    } catch (err) {
-      console.error('Fout bij controleren dagelijkse update status:', err.message);
-      setIsDailyUpdateDone(false);
-    }
-  }, []);
-
   useEffect(() => {
     fetchStocksAndAlerts();
-    checkDailyUpdateStatus();
     fetchAvailableStocks();
     fetchAssetTypes();
-  }, [fetchStocksAndAlerts, checkDailyUpdateStatus, fetchAvailableStocks, fetchAssetTypes]);
+  }, [fetchStocksAndAlerts, fetchAvailableStocks, fetchAssetTypes]);
 
   // Effect to close dropdown when clicking outside
   useEffect(() => {
