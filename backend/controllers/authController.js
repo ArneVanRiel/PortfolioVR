@@ -17,7 +17,8 @@ const transporter = nodemailer.createTransport({
         user: process.env.MAIL_USER,
         pass: process.env.MAIL_PASS
     },
-    connectionTimeout: 10000, // Verbreek de poging na 10 seconden als het netwerk blokkeert
+    family: 4, // Forceert IPv4 en voorkomt de ENETUNREACH IPv6 fout!
+    connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 10000
 });
@@ -85,7 +86,9 @@ const loginStep1 = async (req, res) => {
         res.json({ message: 'Verificatiecode is verstuurd naar je e-mailadres.' });
     } catch (mailError) {
         console.error('Email verzenden mislukt:', mailError);
-        res.status(500).json({ message: 'Fout bij verzenden e-mail via Outlook. Bekijk de logs in Render.' });
+        // We geven TOCH een succesmelding aan de frontend zodat het scherm doorgaat naar Stap 2.
+        // Zo kun je lokaal altijd inloggen met de code uit je terminal, zelfs als de mail faalt!
+        res.status(200).json({ message: 'Mail mislukt door netwerk, maar gebruik de code uit de terminal!' });
     }
   } catch (error) {
     console.error('Fout bij inloggen stap 1:', error);
