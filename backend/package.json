@@ -7,6 +7,7 @@
     "express": "^5.1.0",
     "mssql": "^11.0.1",
     "node-fetch": "^2.7.0",
-    "nodemailer": "^8.0.7"
+    "nodemailer": "^8.0.7",
+    "xirr": "^1.1.0"
   }
 }
