@@ -99,6 +99,20 @@ function Settings() {
                 {/* Lijst met bestaande gebruikers */}
                 <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 h-full flex flex-col">
                     <h3 className="text-lg font-semibold text-gray-800 mb-4">Geregistreerde Gebruikers</h3>
+                    
+                    {/* Herinnering Demo Account */}
+                    <div className="mb-5 p-4 bg-blue-50 text-blue-900 rounded-lg text-sm border border-blue-100 shadow-sm">
+                        <p className="font-bold mb-2 flex items-center text-blue-800">
+                            <i className="ph-fill ph-info mr-2 text-lg"></i>
+                            Demo Account Gegevens (Om te delen met anderen)
+                        </p>
+                        <ul className="list-disc list-inside pl-2 space-y-1 text-blue-700">
+                            <li>Gebruikersnaam: <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-blue-200">demo</span></li>
+                            <li>Wachtwoord: <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-blue-200">Demo1234!</span></li>
+                            <li>Verificatiecode (OTP): <span className="font-mono bg-white px-1.5 py-0.5 rounded border border-blue-200">000000</span></li>
+                        </ul>
+                    </div>
+
                     <div className="overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200">
                             <thead className="bg-gray-50">

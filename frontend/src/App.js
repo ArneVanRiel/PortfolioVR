@@ -52,11 +52,15 @@ const SidebarLink = ({ to, iconClass, children, isActive, onClick, isSidebarPinn
 };
 
 function App() {
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
+  const isAdmin = userRole === 'admin';
+
   const [activeTab, setActiveTab] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isSidebarPinned, setIsSidebarPinned] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
-  const [isIncognito, setIsIncognito] = useState(localStorage.getItem('incognito') === 'true');
+  const [isIncognito, setIsIncognito] = useState(isDemo || localStorage.getItem('incognito') === 'true');
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -87,13 +91,15 @@ function App() {
 
   // Incognito modus CSS klasse toepassen op de body
   useEffect(() => {
-    localStorage.setItem('incognito', isIncognito);
-    if (isIncognito) {
+    if (!isDemo) {
+      localStorage.setItem('incognito', isIncognito);
+    }
+    if (isIncognito || isDemo) {
       document.body.classList.add('incognito-active');
     } else {
       document.body.classList.remove('incognito-active');
     }
-  }, [isIncognito]);
+  }, [isIncognito, isDemo]);
 
   const isLoginPage = location.pathname === '/login';
   const user = { name: localStorage.getItem('username') || 'Arne' }; // Ophalen uit auth data
@@ -147,15 +153,17 @@ function App() {
               />
 
               {/* Incognito Knop */}
-              <button
-                onClick={() => setIsIncognito(!isIncognito)}
-                className={`p-2 rounded-full transition-colors duration-200 ${
-                  isIncognito ? 'bg-blue-100 text-blue-600 shadow-inner' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
-                }`}
-                title={isIncognito ? "Privacy modus uitschakelen" : "Privacy modus inschakelen"}
-              >
-                <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-xl`}></i>
-              </button>
+              {!isDemo && (
+                <button
+                  onClick={() => setIsIncognito(!isIncognito)}
+                  className={`p-2 rounded-full transition-colors duration-200 ${
+                    isIncognito ? 'bg-blue-100 text-blue-600 shadow-inner' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                  }`}
+                  title={isIncognito ? "Privacy modus uitschakelen" : "Privacy modus inschakelen"}
+                >
+                  <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-xl`}></i>
+                </button>
+              )}
 
               {/* Beschikbaar en Geïnvesteerd Vermogen Displays */}
               <div className="flex items-center space-x-4 divide-x divide-gray-200">
@@ -222,9 +230,11 @@ function App() {
               <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analysis</SidebarLink>
               <SidebarLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')} isSidebarPinned={isSidebarPinned}>Portfolio</SidebarLink>
               
-              <div className="mt-auto mb-2">
-                <SidebarLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')} isSidebarPinned={isSidebarPinned}>Settings</SidebarLink>
-              </div>
+              {isAdmin && (
+                <div className="mt-auto mb-2">
+                  <SidebarLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')} isSidebarPinned={isSidebarPinned}>Settings</SidebarLink>
+                </div>
+              )}
             </nav>
           </aside>
         )}
@@ -237,7 +247,7 @@ function App() {
               <Route path='/dashboard' element={<ProtectedRoute><Dashboard/></ProtectedRoute>} />
               <Route path='/analysis/*' element={<ProtectedRoute><Analysis /></ProtectedRoute>} />
               <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager/></ProtectedRoute>} />
-              <Route path='/settings' element={<ProtectedRoute><Settings/></ProtectedRoute>} />
+              <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings/> : <Navigate to="/dashboard" replace />}</ProtectedRoute>} />
               <Route path='/profile' element={<ProtectedRoute><Profile/></ProtectedRoute>} />
               {/* Fallback route voor onbekende urls -> verwijst naar dashboard wat dan de token check doet */}
               <Route path='*' element={<Navigate to="/dashboard" replace />} />

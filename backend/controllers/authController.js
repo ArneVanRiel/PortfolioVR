@@ -17,9 +17,9 @@ const transporter = nodemailer.createTransport({
         user: process.env.MAIL_USER,
         pass: process.env.MAIL_PASS
     },
-    tls: {
-        ciphers: 'SSLv3'
-    }
+    connectionTimeout: 10000, // Verbreek de poging na 10 seconden als het netwerk blokkeert
+    greetingTimeout: 10000,
+    socketTimeout: 10000
 });
 
 const loginStep1 = async (req, res) => {
