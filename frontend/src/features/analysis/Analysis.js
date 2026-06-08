@@ -64,10 +64,12 @@ const Analysis = () => {
   const TABS = [
     { id: 'Analyse', label: 'Overzicht & Grafieken', icon: 'ph-chart-line-up' },
     { id: 'portfolio', label: 'Portfolio', icon: 'ph-briefcase' },
-    // Voeg Data Beheer enkel toe als het geen demo account is
-    ...(!isDemo ? [{ id: 'data', label: 'Data Beheer', icon: 'ph-database' }] : []),
-    { id: 'calculations', label: 'Berekeningen', icon: 'ph-calculator' },
-    { id: 'SecFields', label: 'SEC Velden Zoeken', icon: 'ph-magnifying-glass' }
+    // Voeg Data Beheer, Berekeningen en SEC velden zoeken enkel toe als het geen demo account is
+    ...(!isDemo ? [
+      { id: 'data', label: 'Data Beheer', icon: 'ph-database' },
+      { id: 'calculations', label: 'Berekeningen', icon: 'ph-calculator' },
+      { id: 'SecFields', label: 'SEC Velden Zoeken', icon: 'ph-magnifying-glass' }
+    ] : [])
   ];
 
   return (

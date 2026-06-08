@@ -1477,72 +1477,70 @@ const PortfolioManager = () => {
         </div>
 
         {/* Top Actieknoppen */}
-        <div className="flex flex-wrap items-center gap-3">
-          {!isDemo && (
-            <>
-          <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
-          <button onClick={handleDownloadTemplate} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
-            <i className="ph ph-download-simple mr-2 text-lg"></i> Template
-          </button>
-          
-          {/* Upload Transacties Dropdown */}
-          <div className="relative inline-block text-left">
-            <button onClick={() => setUploadDropdownOpen(!uploadDropdownOpen)} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
-              <i className="ph ph-upload-simple mr-2 text-lg"></i> Upload <span className="ml-2 text-[10px] text-gray-400">▼</span>
+        {!isDemo && (
+          <div className="flex flex-wrap items-center gap-3">
+            <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
+            <button onClick={handleDownloadTemplate} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
+              <i className="ph ph-download-simple mr-2 text-lg"></i> Template
             </button>
-            {uploadDropdownOpen && (
-              <div className="origin-top-right absolute right-0 mt-2 w-56 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden">
-                <div className="py-1" role="menu">
-                  <button onClick={() => triggerUpload('template')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">Standaard Excel Template</button>
-                  <div className="border-t border-gray-100"></div>
-                  <button onClick={() => triggerUpload('etoro')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">eToro Afschrift</button>
-                  <button onClick={() => triggerUpload('degiro')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">DeGiro Afschrift</button>
+            
+            {/* Upload Transacties Dropdown */}
+            <div className="relative inline-block text-left">
+              <button onClick={() => setUploadDropdownOpen(!uploadDropdownOpen)} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
+                <i className="ph ph-upload-simple mr-2 text-lg"></i> Upload <span className="ml-2 text-[10px] text-gray-400">▼</span>
+              </button>
+              {uploadDropdownOpen && (
+                <div className="origin-top-right absolute right-0 mt-2 w-56 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden">
+                  <div className="py-1" role="menu">
+                    <button onClick={() => triggerUpload('template')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">Standaard Excel Template</button>
+                    <div className="border-t border-gray-100"></div>
+                    <button onClick={() => triggerUpload('etoro')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">eToro Afschrift</button>
+                    <button onClick={() => triggerUpload('degiro')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">DeGiro Afschrift</button>
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
 
-          <button onClick={() => setIsAddModalOpen(true)} className="text-sm font-bold flex items-center bg-blue-600 text-white px-5 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors">
-            <i className="ph-fill ph-plus-circle mr-2 text-xl"></i> Transactie
-          </button>
-            </>
-          )}
+            <button onClick={() => setIsAddModalOpen(true)} className="text-sm font-bold flex items-center bg-blue-600 text-white px-5 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors">
+              <i className="ph-fill ph-plus-circle mr-2 text-xl"></i> Transactie
+            </button>
 
-          {/* Extra functies als iconen om de header rustig te houden */}
-          <div className="flex bg-white rounded-lg border border-gray-300 shadow-sm p-1 ml-2">
-            <button 
-              onClick={() => handleRecalculateHistory(false)} 
-              disabled={isRecalculating}
-              className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50"
-            title="Snel Herberekenen (Laatste dagen)">
-              <i className={`ph-fill ph-calculator text-xl ${isRecalculating ? 'animate-pulse text-blue-600' : ''}`}></i>
-          </button>
-          <button 
-            onClick={() => handleRecalculateHistory(false, '1970-01-01')} 
-            disabled={isRecalculating || isRepairing}
-            className="p-1.5 text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-md transition-colors disabled:opacity-50"
-            title="Volledige Historie Herberekenen (Vanaf de eerste transactie)">
-            <i className={`ph-fill ph-clock-counter-clockwise text-xl ${isRecalculating ? 'animate-pulse text-purple-600' : ''}`}></i>
-            </button>
-            <button 
-              onClick={handleCheckAndRepairPrices} 
-              disabled={isRepairing || isRecalculating}
-              className="p-1.5 text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-md transition-colors disabled:opacity-50"
-              title="Controleer Prijsdata">
-              <i className={`ph-fill ph-wrench text-xl ${isRepairing ? 'animate-spin text-orange-600' : ''}`}></i>
-            </button>
-            <button 
-              onClick={handleUpdateExchangeRates} 
-              disabled={isRepairing || isRecalculating}
-              className="p-1.5 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors disabled:opacity-50"
-              title="Haal EUR/USD Historie op (10 Jaar)">
-              <i className={`ph-fill ph-currency-dollar text-xl ${isRecalculating ? 'animate-pulse text-green-600' : ''}`}></i>
-            </button>
-            <button onClick={fetchPortfolioData} className="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors" title="Refresh">
-              <i className="ph-fill ph-arrows-clockwise text-xl"></i>
-            </button>
+            {/* Extra functies als iconen om de header rustig te houden */}
+            <div className="flex bg-white rounded-lg border border-gray-300 shadow-sm p-1 ml-2">
+              <button 
+                onClick={() => handleRecalculateHistory(false)} 
+                disabled={isRecalculating}
+                className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50"
+              title="Snel Herberekenen (Laatste dagen)">
+                <i className={`ph-fill ph-calculator text-xl ${isRecalculating ? 'animate-pulse text-blue-600' : ''}`}></i>
+              </button>
+              <button 
+                onClick={() => handleRecalculateHistory(false, '1970-01-01')} 
+                disabled={isRecalculating || isRepairing}
+                className="p-1.5 text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-md transition-colors disabled:opacity-50"
+                title="Volledige Historie Herberekenen (Vanaf de eerste transactie)">
+                <i className={`ph-fill ph-clock-counter-clockwise text-xl ${isRecalculating ? 'animate-pulse text-purple-600' : ''}`}></i>
+              </button>
+              <button 
+                onClick={handleCheckAndRepairPrices} 
+                disabled={isRepairing || isRecalculating}
+                className="p-1.5 text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-md transition-colors disabled:opacity-50"
+                title="Controleer Prijsdata">
+                <i className={`ph-fill ph-wrench text-xl ${isRepairing ? 'animate-spin text-orange-600' : ''}`}></i>
+              </button>
+              <button 
+                onClick={handleUpdateExchangeRates} 
+                disabled={isRepairing || isRecalculating}
+                className="p-1.5 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors disabled:opacity-50"
+                title="Haal EUR/USD Historie op (10 Jaar)">
+                <i className={`ph-fill ph-currency-dollar text-xl ${isRecalculating ? 'animate-pulse text-green-600' : ''}`}></i>
+              </button>
+              <button onClick={fetchPortfolioData} className="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors" title="Refresh">
+                <i className="ph-fill ph-arrows-clockwise text-xl"></i>
+              </button>
+            </div>
           </div>
-        </div>
+        )}
           </div>
 
           {/* Tab Navigatie */}
