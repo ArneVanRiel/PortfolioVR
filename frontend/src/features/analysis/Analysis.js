@@ -1,247 +1,170 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import http from '../../http-common';
 
 // Zorg dat deze bestandsnamen exact kloppen (hoofdlettergevoelig)
-import StockList from './StockList';
 import AnalysisDataTab from './AnalysisDataTab';
 import AnalysisCalculationsTab from './AnalysisCalculationsTab';
 import AnalysisChartTab from './AnalysisChartTab';
-import AnalysisAlertsTab from './AnalysisAlertsTab'; // NIEUW: Importeer de alerts tab
-import AnalysisCalculationsChart from './AnalysisCalculationsChart'; // NIEUW: Importeer de calculaties grafiek
+import AnalysisAlertsTab from './AnalysisAlertsTab';
+import AnalysisCalculationsChart from './AnalysisCalculationsChart';
+import AnalysisPortfolioTab from './AnalysisPortfolioTab';
 import SearchSecFields from './searchSecFields';
-
-const dataPeriods = {
-  StockholdersEquity: 44 * 3,
-  NetCashProvidedByUsedInOperatingActivities: 44 * 3,
-  PurchasesOfPropertyAndEquipment: 44 * 3,
-  LiabilitiesCurrent: 8 * 3,
-  Liabilities: 8 * 3,
-  NetIncomeLoss: 44 * 3,
-  WeightedAverageNumberOfDilutedSharesOutstanding: 8 * 3,
-};
-const MAX_LOOKBACK_MONTHS = Math.max(...Object.values(dataPeriods));
-
-const formatDate = (date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
 
 const Analysis = () => {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const tickerParam = searchParams.get('ticker');
+  
   const [stocks, setStocks] = useState([]);
   const [selectedStock, setSelectedStock] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('data');
-
-  // State for all stocks analysis (used in StockList)
-  const [allAnalyses, setAllAnalyses] = useState({});
-  const [isAllAnalysesLoading, setIsAllAnalysesLoading] = useState(false);
-  const [latestCalculationsMap, setLatestCalculationsMap] = useState({});
-
-  const { stockId: urlStockId, tab: urlTab } = useParams();
+  const [activeTab, setActiveTab] = useState('Analyse'); // Standaard tab
 
   useEffect(() => {
-    if (urlStockId && stocks.length > 0) {
-      const stockToSelect = stocks.find(s => s.stock_id === parseInt(urlStockId));
-      if (stockToSelect) {
-        setSelectedStock(stockToSelect);
+    const fetchStocks = async () => {
+      try {
+        setLoading(true);
+        const response = await http.get(`/stocks`);
+        setStocks(response.data);
+      } catch (err) {
+        setError('Kon aandelen niet laden.');
+        console.error('Error fetching stocks:', err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchStocks();
+  }, []);
+
+  // Selecteer aandeel automatisch op basis van URL parameter (bijv: ?ticker=AAPL)
+  useEffect(() => {
+    if (stocks.length > 0 && tickerParam) {
+      const stock = stocks.find(s => s.ticker === tickerParam || s.ticker_symbol === tickerParam);
+      if (stock) {
+        setSelectedStock(stock);
       }
     }
-    if (urlTab) {
-      setActiveTab(urlTab);
-    }
-  }, [urlStockId, urlTab, stocks]);
-
-  const fetchStocks = useCallback(async () => {
-    try {
-      setLoading(true);
-      setError('');
-      const response = await http.get(`/stocks`);
-      setStocks(response.data);
-    } catch (err) {
-      setError('Could not load stocks.');
-      console.error('Error fetching stocks:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  const fetchLatestCalculations = useCallback(async () => {
-    try {
-      const response = await http.get('/calculations/latest-summary');
-      const map = {};
-      response.data.forEach(calc => {
-        map[calc.stock_id] = calc;
-      });
-      setLatestCalculationsMap(map);
-    } catch (err) {
-      console.error('Error fetching latest calculations:', err);
-    }
-  }, []);
-
-  const fetchAllStocksAnalysis = useCallback(async (stocksToAnalyze) => {
-    if (stocksToAnalyze.length === 0) return;
-    setIsAllAnalysesLoading(true);
-    try {
-      const analysisPromises = stocksToAnalyze.map(stock =>
-        http.post(`/fundamental-data/single-stock-analysis/${stock.stock_id}`, {
-          dataPeriods: dataPeriods,
-          selectedDate: formatDate(new Date()),
-          maxLookbackMonths: MAX_LOOKBACK_MONTHS
-        }).then(response => ({
-          stock_id: stock.stock_id,
-          data: response.data
-        })).catch(error => ({
-          stock_id: stock.stock_id,
-          error: true
-        }))
-      );
-      const results = await Promise.all(analysisPromises);
-      const newAnalyses = results.reduce((acc, result) => {
-        if (!result.error) {
-          acc[result.stock_id] = result.data;
-        }
-        return acc;
-      }, {});
-      setAllAnalyses(newAnalyses);
-    } catch (err) {
-      console.error('An unexpected error occurred during fetchAllStocksAnalysis:', err);
-    } finally {
-      setIsAllAnalysesLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetchStocks();
-    fetchLatestCalculations();
-  }, [fetchStocks, fetchLatestCalculations]);
-
-  useEffect(() => {
-    if (stocks.length > 0) {
-      fetchAllStocksAnalysis(stocks);
-    }
-  }, [stocks, fetchAllStocksAnalysis]);
+  }, [stocks, tickerParam]);
 
   const handleStockChange = (stock) => {
     setSelectedStock(stock);
+    if (stock) {
+      // Update the URL zodat de historie werkt en je de link kan kopiëren
+      navigate(`/analysis?ticker=${stock.ticker || stock.ticker_symbol}`);
+    } else {
+      navigate(`/analysis`);
+    }
   };
 
-  const handleDataUpdate = () => {
-      if (selectedStock) {
-          http.post(`/fundamental-data/single-stock-analysis/${selectedStock.stock_id}`, {
-            dataPeriods: dataPeriods,
-            selectedDate: formatDate(new Date()),
-            maxLookbackMonths: MAX_LOOKBACK_MONTHS
-          }).then(response => {
-              setAllAnalyses(prev => ({...prev, [selectedStock.stock_id]: response.data}));
-          });
-      }
-  };
-
-  const handleCalculationsUpdate = () => {
-      fetchLatestCalculations();
-  };
+  const TABS = [
+    { id: 'Analyse', label: 'Overzicht & Grafieken', icon: 'ph-chart-line-up' },
+    { id: 'portfolio', label: 'Portfolio', icon: 'ph-briefcase' },
+    { id: 'data', label: 'Data Beheer', icon: 'ph-database' },
+    { id: 'calculations', label: 'Berekeningen', icon: 'ph-calculator' },
+    { id: 'SecFields', label: 'SEC Velden Zoeken', icon: 'ph-magnifying-glass' }
+  ];
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] overflow-hidden bg-gray-50/50">
-      <StockList
-        stocks={stocks}
-        selectedStock={selectedStock}
-        handleStockChange={handleStockChange}
-        allAnalyses={allAnalyses}
-        isAllAnalysesLoading={isAllAnalysesLoading}
-        loading={loading}
-        latestCalculationsMap={latestCalculationsMap}
-      />
+    <div className="space-y-8 font-sans text-gray-900 bg-gray-50/50 min-h-screen pb-10">
+      {/* Top Card: Hero Header + Tabs (Snowball Stijl) */}
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="p-6 pb-0">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 mb-6">
+            <div>
+              <h1 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Aandeel Analyse</h1>
+              <div className="flex items-center gap-4">
+                <span className="text-4xl lg:text-5xl font-extrabold text-gray-900 tracking-tighter">
+                  {selectedStock ? (selectedStock.ticker || selectedStock.ticker_symbol) : 'Selecteer Aandeel'}
+                </span>
+                {selectedStock && (
+                  <span className="text-xl font-bold text-gray-400 tracking-tight">
+                    {selectedStock.name}
+                  </span>
+                )}
+              </div>
+            </div>
 
-      <div className="flex-1 p-8 space-y-6 overflow-y-auto">
-        <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-gray-800">
-            {selectedStock ? `${selectedStock.name} (${selectedStock.ticker})` : 'Analysis'}
-          </h1>
+            {/* Zoek/Selecteer Dropdown */}
+            <div className="w-full md:w-80">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                Zoek een aandeel
+              </label>
+              <div className="relative">
+                <i className="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-lg"></i>
+                <select
+                  className="w-full pl-10 pr-4 py-2.5 bg-gray-50 border border-gray-200 rounded-lg text-sm font-bold text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition-all appearance-none cursor-pointer shadow-sm"
+                  value={selectedStock?.stock_id || selectedStock?.aandeel_id || ''}
+                  onChange={(e) => {
+                    const stockId = parseInt(e.target.value);
+                    const stock = stocks.find(s => s.stock_id === stockId || s.aandeel_id === stockId);
+                    handleStockChange(stock);
+                  }}
+                >
+                  <option value="">-- Typ of selecteer een aandeel --</option>
+                  {stocks.sort((a,b) => (a.ticker || a.ticker_symbol).localeCompare(b.ticker || b.ticker_symbol)).map(s => (
+                    <option key={s.stock_id || s.aandeel_id} value={s.stock_id || s.aandeel_id}>
+                      {s.ticker || s.ticker_symbol} - {s.name}
+                    </option>
+                  ))}
+                </select>
+                <i className="ph-fill ph-caret-down absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"></i>
+              </div>
+            </div>
+          </div>
+
+          {/* Tab Navigatie */}
+          <nav className="flex space-x-6 overflow-x-auto hide-scrollbar" aria-label="Tabs">
+            {TABS.map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setActiveTab(tab.id)}
+                className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+                  activeTab === tab.id 
+                    ? 'border-blue-600 text-blue-600' 
+                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <i className={`ph-fill ${tab.icon} text-lg`}></i>
+                {tab.label}
+              </button>
+            ))}
+          </nav>
         </div>
-        {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative" role="alert">{error}</div>}
+      </div>
 
+      {error && <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg mx-6 shadow-sm" role="alert">{error}</div>}
+
+      {/* Tab Content */}
+      <div className="px-6">
         {selectedStock ? (
-          <>
-            <div className="bg-white p-1 rounded-xl shadow-sm border border-gray-200 inline-flex">
-              <nav className="flex space-x-1" aria-label="Tabs">
-                <button
-                  onClick={() => setActiveTab('data')}
-                  className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'data'
-                      ? 'bg-blue-50 text-blue-700 shadow-sm'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  Data Toevoegen
-                </button>
-                <button
-                  onClick={() => setActiveTab('calculations')}
-                  className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'calculations'
-                      ? 'bg-blue-50 text-blue-700 shadow-sm'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  Berekeningen
-                </button>
-                <button
-                  onClick={() => setActiveTab('Analyse')}
-                  className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'Analyse'
-                      ? 'bg-blue-50 text-blue-700 shadow-sm'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  Analyse
-                </button>
-                <button
-                  onClick={() => setActiveTab('SecFields')}
-                  className={`whitespace-nowrap px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${activeTab === 'SecFields'
-                      ? 'bg-blue-50 text-blue-700 shadow-sm'
-                      : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-                    }`}
-                >
-                  Zoek Sec velden
-                </button>
-              </nav>
-            </div>
-
-            <div className="mt-6">
-              {activeTab === 'data' && (
-                <AnalysisDataTab 
-                    selectedStock={selectedStock} 
-                    onDataUpdate={handleDataUpdate} 
-                />
-              )}
-              {activeTab === 'calculations' && (
-                <AnalysisCalculationsTab 
-                    selectedStock={selectedStock} 
-                    onCalculationsUpdate={handleCalculationsUpdate}
-                />
-              )}
-              {activeTab === 'Analyse' && (
-                <div className="space-y-6">
-                    <AnalysisChartTab selectedStock={selectedStock} />
-                    <AnalysisCalculationsChart selectedStock={selectedStock} />
-                    <AnalysisAlertsTab selectedStock={selectedStock} />
-                </div>
-              )}
-              {activeTab === 'SecFields' && (
-                <div className="mt-6">
-                  <SearchSecFields />
-                </div>
-              )}
-            </div>
-          </>
+          <div className="animate-fade-in">
+            {activeTab === 'data' && (
+              <AnalysisDataTab selectedStock={selectedStock} />
+            )}
+            {activeTab === 'calculations' && (
+              <AnalysisCalculationsTab selectedStock={selectedStock} />
+            )}
+            {activeTab === 'Analyse' && (
+              <div className="space-y-6">
+                  <AnalysisChartTab selectedStock={selectedStock} />
+                  <AnalysisCalculationsChart selectedStock={selectedStock} />
+                  <AnalysisAlertsTab selectedStock={selectedStock} />
+              </div>
+            )}
+            {activeTab === 'portfolio' && (
+              <AnalysisPortfolioTab selectedStock={selectedStock} />
+            )}
+            {activeTab === 'SecFields' && (
+              <SearchSecFields />
+            )}
+          </div>
         ) : (
-          <div className="flex flex-col items-center justify-center h-64 text-gray-400">
-            <svg className="w-16 h-16 mb-4 opacity-20" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
-            </svg>
-            <p className="text-lg font-medium">Selecteer een aandeel uit de lijst om de analyse te starten.</p>
+          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-16 flex flex-col items-center justify-center text-center">
+            <i className="ph-fill ph-chart-polar text-6xl text-gray-200 mb-4"></i>
+            <h3 className="text-2xl font-bold text-gray-800 mb-2">Geen Aandeel Geselecteerd</h3>
+            <p className="text-gray-500 max-w-md">Kies bovenaan een aandeel uit de lijst of gebruik de zoekfunctie in het dashboard om de fundamentele analyse en grafieken te bekijken.</p>
           </div>
         )}
       </div>

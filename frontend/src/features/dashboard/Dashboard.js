@@ -5,6 +5,7 @@ import Modal from '../../components/ui/modal';
 import http from '../../http-common';
 import toast from 'react-hot-toast';
 import Score5DistributionChart from './Score5DistributionChart';
+import IncompleteDataWidget from './IncompleteDataWidget';
 
 // Placeholder components for stats and charts
 const StatCard = ({ title, value, trend, trendUp }) => (
@@ -12,7 +13,7 @@ const StatCard = ({ title, value, trend, trendUp }) => (
     <div className="flex justify-between items-start">
       <div>
         <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
-        <h3 className="text-2xl font-bold text-gray-900 mt-2">{value}</h3>
+        <h3 className="text-2xl font-bold text-gray-900 mt-2 privacy-blur">{value}</h3>
       </div>
       {trend && (
         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${trendUp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
@@ -328,9 +329,12 @@ const Dashboard = () => {
           isExpanded={expandedCard === 'performance'}
           onToggleExpand={() => toggleExpand('performance')}
         >
-          {/* Placeholder for Line Chart */}
-          <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg">
+        <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg incognito-hide">
             <p className="text-gray-500">Portfolio Performance Chart</p>
+        </div>
+        <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
+          <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
+          Waardegrafiek verborgen in privacymodus
           </div>
         </ChartCard>
         
@@ -357,34 +361,39 @@ const Dashboard = () => {
       {/* Calculations Summary Table */}
       <CalculationsSummaryTable ref={calculationsTableRef} />
 
-      {/* Recent Activity Table */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-        <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h3>
-        <table className="min-w-full divide-y divide-gray-200">
-          <thead className="bg-gray-50">
-            <tr>
-              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
-              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Stock</th>
-              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
-              <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-            </tr>
-          </thead>
-          <tbody className="bg-white divide-y divide-gray-200">
-            {/* Placeholder rows */}
-            <tr className="hover:bg-gray-50 transition-colors">
-              <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">BUY</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">AAPL</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">$5,000</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-21</td>
-            </tr>
-            <tr className="hover:bg-gray-50 transition-colors">
-              <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">SELL</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">GOOGL</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">$3,500</td>
-              <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-20</td>
-            </tr>
-          </tbody>
-        </table>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Activity Table */}
+        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
+          <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h3>
+          <table className="min-w-full divide-y divide-gray-200">
+            <thead className="bg-gray-50">
+              <tr>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Stock</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
+                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
+              </tr>
+            </thead>
+            <tbody className="bg-white divide-y divide-gray-200">
+              {/* Placeholder rows */}
+              <tr className="hover:bg-gray-50 transition-colors">
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">BUY</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">AAPL</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">$5,000</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-21</td>
+              </tr>
+              <tr className="hover:bg-gray-50 transition-colors">
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">SELL</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">GOOGL</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">$3,500</td>
+                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-20</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {/* Incomplete Data Widget */}
+        <IncompleteDataWidget />
       </div>
 
       {/* Export Modal */}

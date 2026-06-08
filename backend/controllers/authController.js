@@ -12,8 +12,8 @@ const otpStore = new Map();
 const transporter = nodemailer.createTransport({
     service: 'hotmail',
     auth: {
-        user: process.env.MAIL_USER || 'arne.van.riel@hotmail.be',
-        pass: process.env.MAIL_PASS || 'jouw-wachtwoord' // Let op: Gebruik hier jouw actuele wachtwoord
+        user: process.env.MAIL_USER,
+        pass: process.env.MAIL_PASS
     }
 });
 
@@ -51,7 +51,7 @@ const loginStep1 = async (req, res) => {
     }
 
     const mailOptions = {
-        from: process.env.MAIL_USER || 'arne.van.riel@hotmail.be',
+        from: process.env.MAIL_USER,
         to: userEmail,
         subject: 'Je PortfolioVR Login Code',
         text: `Je verificatiecode is: ${otp}. Deze code is 10 minuten geldig.`,
@@ -108,7 +108,7 @@ const loginStep2 = async (req, res) => {
         // Bepaal de geldigheidsduur van het token
         const expiresIn = rememberMe ? '30d' : '1h';
 
-        const token = jwt.sign({ username, userID }, 'geheime_sleutel', { expiresIn });
+        const token = jwt.sign({ username, userID }, process.env.JWT_SECRET, { expiresIn });
 
         // Verwijder de gebruikte OTP zodat deze niet opnieuw gebruikt kan worden
         otpStore.delete(username);

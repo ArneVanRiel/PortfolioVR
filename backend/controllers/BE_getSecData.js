@@ -1,12 +1,11 @@
 // secData.js
-const { connectToDatabase } = require('../server');
-const axios = require('axios'); // Zorg ervoor dat je axios importeert
+const { sql, config } = require('../config/database');
+const axios = require('axios');
 
 async function getSec(ticker) {
-  await connectToDatabase();
   try {
     // Maak verbinding met de database
-    await sql.connect(config);
+    const pool = await sql.connect(config);
 
     // Stel de request header in
     const headers = { 'User-Agent': "arne.van.riel@hotmail.be" };
@@ -40,7 +39,7 @@ async function getSec(ticker) {
 
     // Voer SQL-query uit om gegevens op te halen
     const query = `SELECT * FROM aandelen_data_ WHERE ticker='${ticker}' ORDER BY period_end_date DESC`;
-    const result = await sql.query(query);
+    const result = await pool.request().query(query);
 
     // Verwerk de gegevens
     const processedData = df.map(item => {
@@ -51,9 +50,6 @@ async function getSec(ticker) {
         in_database: matchingRecord ? 'True' : 'False'
       };
     });
-
-    // Sluit de databaseverbinding
-    await sql.close();
 
     // Converteer de gegevens naar JSON
     const jsonOutput = JSON.stringify(processedData);

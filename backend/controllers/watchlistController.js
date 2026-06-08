@@ -95,6 +95,8 @@ const getStocksByView = async (req, res) => {
             s.inWatchlist,
             s.inIdealePortfolio,
             at.type_name AS asset_type_name, -- NIEUW: type_name ophalen
+            s.tob_rate,
+            s.dividend_tax_rate,
             LATEST_PRICE.closing_price AS current_price,
             LATEST_MACD.macdLine AS current_macd_line,
             LATEST_MACD.signalLine AS current_signal_line,
@@ -169,7 +171,15 @@ const getAvailableStocks = async (req, res) => {
     try {
         const pool = await sql.connect(config);
         const query = `
-            SELECT s.aandeel_id, s.name, s.ticker_symbol, s.inWatchlist, s.inIdealePortfolio, at.type_name AS asset_type_name, s.asset_type_id
+            SELECT 
+                s.aandeel_id, 
+                s.name, 
+                s.ticker_symbol, 
+                s.inWatchlist, 
+                s.inIdealePortfolio, 
+                at.type_name AS asset_type_name, 
+                s.asset_type_id,
+                s.tob_rate
             FROM [dbo].[Stocks] s
             JOIN [dbo].[AssetTypes] at ON s.asset_type_id = at.asset_type_id
             ORDER BY s.name ASC;
@@ -228,10 +238,10 @@ const getDailyUpdateStatus = async (req, res) => {
         const query = `
             SELECT COUNT(*) AS count
             FROM [dbo].[MACDValues]
-            WHERE CAST(last_updated_at AS DATE) = @todayFormatted;
+            WHERE CAST(last_updated_at AS DATE) = CAST(@todayFormatted AS DATE);
         `;
         const result = (await pool.request()
-            .input('todayFormatted', sql.Date, todayFormatted)
+            .input('todayFormatted', sql.VarChar, todayFormatted)
             .query(query)).recordset[0].count;
 
         const isUpdatedToday = result > 0;
@@ -359,7 +369,6 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
         if (fxNeedsUpdate) {
             console.log("Ophalen van EUR/USD wisselkoersen via Profit.com...");
-            const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
             
             // Bepaal startdatum (laatste in DB of 10 jaar terug)
             const latestFxQuery = await pool.request().query(`SELECT MAX(date) as max_date FROM DailyExchangeRates WHERE currency_pair = 'EURUSD'`);
@@ -373,29 +382,59 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
             const fxStartDateFormatted = fxStartDate.toISOString().split("T")[0];
             const fxEndDateFormatted = new Date().toISOString().split("T")[0];
 
-            const fxUrl = `https://api.profit.com/data-api/market-data/historical/daily/EURUSD?start_date=${fxStartDateFormatted}&end_date=${fxEndDateFormatted}&token=${apiKey}`;
+            const apiKey = process.env.PROFIT_COM_API_KEY;
+            const fxUrl = `https://api.profit.com/data-api/market-data/historical/daily/EURUSD.FOREX?start_date=${fxStartDateFormatted}&end_date=${fxEndDateFormatted}&token=${apiKey}`;
+
+            // --- BACKUP: Frankfurter API (Open source, geen API key nodig, gebaseerd op Europese Centrale Bank) ---
+            // const fxUrlFrankfurter = `https://api.frankfurter.app/${fxStartDateFormatted}..${fxEndDateFormatted}?from=EUR&to=USD`;
             
             const fxResponse = await fetch(fxUrl);
             if (fxResponse.ok) {
                 const fxData = await fxResponse.json();
                 if (fxData && fxData.length > 0) {
+                    let insertedCount = 0;
                     for (const record of fxData) {
+                        if (!record || !record.t) continue;
                         const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
                         const rate = parseFloat(record.c);
                         await pool.request()
-                            .input('date', sql.Date, recordDateStr)
+                            .input('currency_pair', sql.VarChar, 'EURUSD')
+                            .input('date', sql.VarChar, recordDateStr)
+                            .input('rate', sql.Decimal(18, 6), rate)
+                            .query(`
+                                MERGE INTO DailyExchangeRates AS target
+                                USING (SELECT @currency_pair AS currency_pair, CAST(@date AS DATE) AS date, @rate AS rate) AS source
+                                ON target.date = source.date AND target.currency_pair = source.currency_pair
+                                WHEN MATCHED THEN UPDATE SET rate = source.rate, last_updated_at = GETDATE()
+                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.date, source.currency_pair, source.rate, GETDATE());
+                            `);
+                        insertedCount++;
+                    }
+                    console.log(`EUR/USD wisselkoersen succesvol bijgewerkt via Profit.com (${insertedCount} records).`);
+                    if (res) res.write(JSON.stringify({ type: 'info', message: "EUR/USD wisselkoersen bijgewerkt." }) + '\n');
+                }
+                
+                /* BACKUP: Frankfurter API Verwerking
+                if (fxData && fxData.rates) {
+                    let insertedCount = 0;
+                    for (const [dateStr, rates] of Object.entries(fxData.rates)) {
+                        const rate = parseFloat(rates.USD);
+                        await pool.request()
+                            .input('date', sql.Date, dateStr)
                             .input('rate', sql.Decimal(18, 6), rate)
                             .query(`
                                 MERGE INTO DailyExchangeRates AS target
                                 USING (SELECT 'EURUSD' AS currency_pair, @date AS date, @rate AS rate) AS source
                                 ON target.date = source.date AND target.currency_pair = source.currency_pair
                                 WHEN MATCHED THEN UPDATE SET rate = source.rate, last_updated_at = GETDATE()
-                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.currency_pair, source.date, source.rate, GETDATE());
+                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.date, source.currency_pair, source.rate, GETDATE());
                             `);
+                        insertedCount++;
                     }
-                    console.log(`EUR/USD wisselkoersen succesvol bijgewerkt via Profit.com (${fxData.length} records).`);
-                    if (res) res.write(JSON.stringify({ type: 'info', message: "EUR/USD wisselkoersen bijgewerkt." }) + '\n');
+                    console.log(\`EUR/USD wisselkoersen succesvol bijgewerkt via Frankfurter API (\${insertedCount} records).\`);
+                    if (res) res.write(JSON.stringify({ type: 'info', message: "EUR/USD wisselkoersen bijgewerkt." }) + '\\n');
                 }
+                */
             } else {
                 console.warn(`Profit.com FX API error: ${fxResponse.statusText}`);
             }
@@ -508,7 +547,7 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
               const apiFetchEndDate = todayFormatted;
 
-              const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
+              const apiKey = process.env.PROFIT_COM_API_KEY;
               const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
 
               try {
@@ -538,17 +577,17 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
               // 2. Voeg nieuwe / werk bestaande DailyClosingPrices bij
               if (apiData && apiData.length > 0) {
                 for (const record of apiData) {
-                  const recordDate = new Date(record.t * 1000);
-                  const formattedRecordDate = recordDate.toISOString().split("T")[0];
+                  if (!record || !record.t) continue;
+                  const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
 
                   await pool.request()
                     .input("aandeel_id", sql.Int, stock.aandeel_id)
                     .input("closing_price", sql.Decimal(18, 2), record.c)
-                    .input("date", sql.Date, formattedRecordDate)
+                    .input("date", sql.VarChar, recordDateStr)
                     .input("last_updated_at", sql.DateTime, new Date())
                     .query(`
                       MERGE INTO DailyClosingPrices AS target
-                      USING (SELECT @aandeel_id AS aandeel_id, @closing_price AS closing_price, @date AS date) AS source
+                      USING (SELECT @aandeel_id AS aandeel_id, @closing_price AS closing_price, CAST(@date AS DATE) AS date) AS source
                       ON target.date = source.date AND target.aandeel_id = source.aandeel_id
                       WHEN MATCHED THEN UPDATE SET closing_price = source.closing_price, last_updated_at = @last_updated_at
                       WHEN NOT MATCHED THEN INSERT (aandeel_id, closing_price, date, last_updated_at) VALUES (source.aandeel_id, source.closing_price, source.date, @last_updated_at);
@@ -580,13 +619,13 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
             SELECT closing_price, date
             FROM [dbo].[DailyClosingPrices]
             WHERE aandeel_id = @aandeel_id
-            AND date <= @current_date
-            AND date >= DATEADD(day, -${requiredDbPrices}, @current_date)
+            AND date <= CAST(@current_date AS DATE)
+            AND date >= DATEADD(day, -${requiredDbPrices}, CAST(@current_date AS DATE))
             ORDER BY date ASC;
           `;
           let historicalPricesForMacd = (await pool.request()
             .input('aandeel_id', sql.Int, stock.aandeel_id)
-            .input('current_date', sql.Date, todayFormatted)
+            .input('current_date', sql.VarChar, todayFormatted)
             .query(macdPricesQuery)).recordset;
 
           if (historicalPricesForMacd.length < (90 + 9 - 1)) {
@@ -622,13 +661,13 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
               await pool.request()
                   .input('aandeel_id', sql.Int, stock.aandeel_id)
-                  .input('date', sql.Date, formattedLoopDate)
+                  .input('date', sql.VarChar, formattedLoopDate)
                   .input('macdLine', sql.Decimal(18, 4), isNaN(macdLine) ? null : macdLine)
                   .input('signalLine', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine)
                   .input('last_updated_at', sql.DateTime, new Date())
                   .query(`
                       MERGE INTO [dbo].[MACDValues] AS target
-                      USING (SELECT @aandeel_id AS aandeel_id, @date AS date, @macdLine AS macdLine, @signalLine AS signalLine) AS source
+                      USING (SELECT @aandeel_id AS aandeel_id, CAST(@date AS DATE) AS date, @macdLine AS macdLine, @signalLine AS signalLine) AS source
                       ON target.date = source.date AND target.aandeel_id = source.aandeel_id
                       WHEN MATCHED THEN UPDATE SET macdLine = source.macdLine, signalLine = source.signalLine, last_updated_at = @last_updated_at
                       WHEN NOT MATCHED THEN INSERT (aandeel_id, date, macdLine, signalLine, last_updated_at) VALUES (source.aandeel_id, source.date, source.macdLine, source.signalLine, @last_updated_at);
@@ -647,12 +686,12 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
                           tradeAmount = null;
                       }
 
-                      const existingAlertQuery = `SELECT alert_id FROM [dbo].[MACDAlerts] WHERE aandeel_id = @aandeel_id AND date = @date AND type_melding = @alert_type;`;
-                      const existingAlert = (await pool.request().input('aandeel_id', sql.Int, stock.aandeel_id).input('date', sql.Date, formattedLoopDate).input('alert_type', sql.VarChar, alertType).query(existingAlertQuery)).recordset;
+                      const existingAlertQuery = `SELECT alert_id FROM [dbo].[MACDAlerts] WHERE aandeel_id = @aandeel_id AND date = CAST(@date AS DATE) AND type_melding = @alert_type;`;
+                      const existingAlert = (await pool.request().input('aandeel_id', sql.Int, stock.aandeel_id).input('date', sql.VarChar, formattedLoopDate).input('alert_type', sql.VarChar, alertType).query(existingAlertQuery)).recordset;
 
                       if (existingAlert.length === 0) {
-                          const insertAlertQuery = `INSERT INTO [dbo].[MACDAlerts] (aandeel_id, date, type_melding, status, prijs_op_moment, signal_line_value, trade_amount) VALUES (@aandeel_id, @date, @type_melding, 'Nieuw', @prijs_op_moment, @signal_line_value, @trade_amount);`;
-                          await pool.request().input('aandeel_id', sql.Int, stock.aandeel_id).input('date', sql.Date, formattedLoopDate).input('type_melding', sql.VarChar, alertType).input('prijs_op_moment', sql.Decimal(18, 2), currentPrice).input('signal_line_value', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine).input('trade_amount', sql.Decimal(18, 2), isNaN(tradeAmount) ? null : tradeAmount).query(insertAlertQuery);
+                          const insertAlertQuery = `INSERT INTO [dbo].[MACDAlerts] (aandeel_id, date, type_melding, status, prijs_op_moment, signal_line_value, trade_amount) VALUES (@aandeel_id, CAST(@date AS DATE), @type_melding, 'Nieuw', @prijs_op_moment, @signal_line_value, @trade_amount);`;
+                          await pool.request().input('aandeel_id', sql.Int, stock.aandeel_id).input('date', sql.VarChar, formattedLoopDate).input('type_melding', sql.VarChar, alertType).input('prijs_op_moment', sql.Decimal(18, 2), currentPrice).input('signal_line_value', sql.Decimal(18, 4), isNaN(signalLine) ? null : signalLine).input('trade_amount', sql.Decimal(18, 2), isNaN(tradeAmount) ? null : tradeAmount).query(insertAlertQuery);
                           console.log(`NIEUWE ${alertType} Alert gegenereerd voor ${stock.ticker_symbol} op ${formattedLoopDate}.`);
                       }
                   }

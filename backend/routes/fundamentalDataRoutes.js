@@ -33,6 +33,9 @@ router.get('/sufficiency-check/:stockId', fundamentalDataController.checkFundame
 // Route om datumdata te controleren en suggesties te geven
 router.get('/check-date-data/:stockId/:periodEndDate', fundamentalDataController.checkDateAndFetchData);
 
+// Route voor overview analyse (meerdere tickers tegelijk)
+router.post('/ticker-overview', fundamentalDataController.getTickerOverviewAnalysis);
+
 // NIEUW: Route om een specifieke fundamentele data rij te verwijderen op basis van ID
 // De frontend stuurt nu de unieke 'id' van de rij.
 router.delete('/delete-data/:id', fundamentalDataController.deleteFundamentalData);

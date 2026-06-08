@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import axios from 'axios';
 
-function TransactionForm({ onSuccess, onCancel, transactionToEdit }) {
+function TransactionForm({ onSuccess, onCancel, transactionToEdit, initialStockId, initialTicker, initialStockName }) {
     const formatDateTimeLocal = (dateString) => {
         if (!dateString) return '';
         const d = new Date(dateString);
@@ -11,7 +11,7 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit }) {
 
     const [userId, setUserId] = useState(1);
     const [transactionType, setTransactionType] = useState(transactionToEdit ? transactionToEdit.transaction_type : 'BUY'); 
-    const [aandeelId, setAandeelId] = useState(transactionToEdit ? transactionToEdit.aandeel_id || '' : '');
+    const [aandeelId, setAandeelId] = useState(transactionToEdit ? transactionToEdit.aandeel_id || '' : (initialStockId || ''));
     const [brokerId, setBrokerId] = useState(transactionToEdit ? transactionToEdit.broker_id || 1 : 1);
     const [quantity, setQuantity] = useState(transactionToEdit ? transactionToEdit.quantity : '');
     const [currency, setCurrency] = useState(transactionToEdit ? transactionToEdit.currency || 'USD' : 'USD');
@@ -27,7 +27,11 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit }) {
     // Nieuwe states voor Asset Type en Zoekfunctionaliteit
     const [assetTypes, setAssetTypes] = useState([]);
     const [selectedAssetTypeId, setSelectedAssetTypeId] = useState('');
-    const [stockSearch, setStockSearch] = useState(transactionToEdit && transactionToEdit.ticker_symbol ? `${transactionToEdit.ticker_symbol} ${transactionToEdit.stock_name ? `(${transactionToEdit.stock_name})` : ''}`.trim() : '');
+    const [stockSearch, setStockSearch] = useState(
+        transactionToEdit && transactionToEdit.ticker_symbol 
+            ? `${transactionToEdit.ticker_symbol} ${transactionToEdit.stock_name ? `(${transactionToEdit.stock_name})` : ''}`.trim() 
+            : (initialTicker ? `${initialTicker} ${initialStockName ? `(${initialStockName})` : ''}`.trim() : '')
+    );
     const [showStockDropdown, setShowStockDropdown] = useState(false);
     const dropdownRef = useRef(null);
 
@@ -112,7 +116,7 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit }) {
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
                         <label className="block font-medium text-gray-700 mb-1">Asset Type (Categorie)</label>
-                        <select value={selectedAssetTypeId} onChange={(e) => { setSelectedAssetTypeId(e.target.value); setAandeelId(''); setStockSearch(''); }} className="w-full border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow border">
+                        <select value={selectedAssetTypeId} onChange={(e) => { setSelectedAssetTypeId(e.target.value); setAandeelId(''); setStockSearch(''); }} disabled={!!initialStockId} className="w-full border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow border disabled:bg-gray-100 disabled:text-gray-500">
                             <option value="">-- Alle Types --</option>
                             {assetTypes.map(t => <option key={t.asset_type_id} value={t.asset_type_id}>{t.type_name}</option>)}
                         </select>
@@ -123,9 +127,10 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit }) {
                             type="text" 
                             value={stockSearch} 
                             onChange={(e) => { setStockSearch(e.target.value); setShowStockDropdown(true); setAandeelId(''); }} 
-                            onFocus={() => setShowStockDropdown(true)} 
+                            onFocus={() => { if (!initialStockId) setShowStockDropdown(true); }} 
                             placeholder="Zoek op ticker of naam..." 
-                            className="w-full border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow border" 
+                            disabled={!!initialStockId}
+                            className="w-full border-gray-300 rounded-lg p-2 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-shadow border disabled:bg-gray-100 disabled:text-gray-500" 
                         />
                         {showStockDropdown && (
                             <ul className="absolute z-10 w-full bg-white border border-gray-200 shadow-xl max-h-48 overflow-y-auto rounded-lg mt-1 text-sm">

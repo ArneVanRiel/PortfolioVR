@@ -2,6 +2,8 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useNavigate } from 'react-router-dom';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
 const LoginPageTest = () => {
     const [mode, setMode] = useState('login'); // 'login' of 'register'
     const [step, setStep] = useState(1); // 1 = inloggegevens, 2 = OTP
@@ -34,8 +36,7 @@ const LoginPageTest = () => {
         }
         setLoading(true);
         try {
-            // Zorg dat deze poort overeenkomt met de backend-poort, 5000 is standaard in jouw project
-            const response = await axios.post('http://localhost:5000/api/auth/login-step1', { username, password });
+            const response = await axios.post(`${API_URL}/auth/login-step1`, { username, password });
             setAlert({ type: 'success', message: response.data.message });
             setStep(2);
         } catch (error) {
@@ -54,7 +55,7 @@ const LoginPageTest = () => {
         }
         setLoading(true);
         try {
-            const response = await axios.post('http://localhost:5000/api/auth/login-step2', { username, otp, rememberMe });
+            const response = await axios.post(`${API_URL}/auth/login-step2`, { username, otp, rememberMe });
             const { token, userID, role } = response.data;
 
             // Bewaar in de localStorage voor de Protected Routes in App.js
@@ -90,7 +91,7 @@ const LoginPageTest = () => {
 
         setLoading(true);
         try {
-            const response = await axios.post('http://localhost:5000/api/auth/register', { username, email, password });
+            const response = await axios.post(`${API_URL}/auth/register`, { username, email, password });
             setAlert({ type: 'success', message: response.data.message });
             
             // Switch automatisch terug naar inloggen na 2 seconden

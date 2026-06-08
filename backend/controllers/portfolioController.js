@@ -51,6 +51,97 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 
     const pool = await sql.connect(config);
     
+    // --- NEW: Fetch EURUSD Exchange Rates from Profit.com ---
+    try {
+        write({ type: 'info', message: 'Controleren op ontbrekende EUR/USD wisselkoersen...' });
+        const fxUpdateCheckQuery = `SELECT MAX(last_updated_at) as max_updated_at FROM DailyExchangeRates WHERE currency_pair = 'EURUSD'`;
+        const fxUpdateCheckResult = await pool.request().query(fxUpdateCheckQuery);
+        const fxLastUpdated = fxUpdateCheckResult.recordset[0].max_updated_at;
+        
+        const todayFormatted = new Date().toISOString().split("T")[0];
+        let fxNeedsUpdate = true;
+        if (fxLastUpdated) {
+            if (new Date(fxLastUpdated).toISOString().split('T')[0] === todayFormatted) {
+                fxNeedsUpdate = false;
+            }
+        }
+
+        if (fxNeedsUpdate) {
+            write({ type: 'info', message: 'Ophalen van historische EUR/USD wisselkoersen via Profit.com...' });
+            
+            const latestFxQuery = await pool.request().query(`SELECT MAX(date) as max_date FROM DailyExchangeRates WHERE currency_pair = 'EURUSD'`);
+            let fxStartDate = new Date();
+            if (latestFxQuery.recordset[0].max_date) {
+                fxStartDate = new Date(latestFxQuery.recordset[0].max_date);
+                fxStartDate.setDate(fxStartDate.getDate() - 5);
+            } else {
+                fxStartDate.setFullYear(fxStartDate.getFullYear() - 10);
+            }
+            const fxStartDateFormatted = fxStartDate.toISOString().split("T")[0];
+
+            const apiKey = process.env.PROFIT_COM_API_KEY;
+            const fxUrl = `https://api.profit.com/data-api/market-data/historical/daily/EURUSD.FOREX?start_date=${fxStartDateFormatted}&end_date=${todayFormatted}&token=${apiKey}`;
+
+            // --- BACKUP: Frankfurter API (Open source, geen API key nodig, gebaseerd op Europese Centrale Bank) ---
+            // const fxUrlFrankfurter = `https://api.frankfurter.app/${fxStartDateFormatted}..${todayFormatted}?from=EUR&to=USD`;
+            
+            const fxResponse = await fetch(fxUrl);
+            if (fxResponse.ok) {
+                const fxData = await fxResponse.json();
+                if (fxData && fxData.length > 0) {
+                    let insertedFx = 0;
+                    for (const record of fxData) {
+                        if (!record || !record.t) continue; // Voorkom Invalid Dates als de API een leeg veld stuurt
+                        const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
+                        const rate = parseFloat(record.c);
+                        await pool.request()
+                            .input('currency_pair', sql.VarChar, 'EURUSD')
+                            .input('date', sql.VarChar, recordDateStr)
+                            .input('rate', sql.Decimal(18, 6), rate)
+                            .query(`
+                                MERGE INTO DailyExchangeRates AS target
+                                USING (SELECT @currency_pair AS currency_pair, CAST(@date AS DATE) AS date, @rate AS rate) AS source
+                                ON target.date = source.date AND target.currency_pair = source.currency_pair
+                                WHEN MATCHED THEN UPDATE SET rate = source.rate, last_updated_at = GETDATE()
+                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.date, source.currency_pair, source.rate, GETDATE());
+                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.date, source.currency_pair, source.rate, GETDATE());
+                            `);
+                        insertedFx++;
+                    }
+                    write({ type: 'info', message: `EUR/USD wisselkoersen succesvol bijgewerkt via Profit.com (${insertedFx} records).` });
+                }
+                
+                /* BACKUP: Frankfurter API Verwerking
+                if (fxData && fxData.rates) {
+                    let insertedFx = 0;
+                    for (const [dateStr, rates] of Object.entries(fxData.rates)) {
+                        const rate = parseFloat(rates.USD);
+                        await pool.request()
+                            .input('date', sql.Date, dateStr)
+                            .input('rate', sql.Decimal(18, 6), rate)
+                            .query(`
+                                MERGE INTO DailyExchangeRates AS target
+                                USING (SELECT 'EURUSD' AS currency_pair, @date AS date, @rate AS rate) AS source
+                                ON target.date = source.date AND target.currency_pair = source.currency_pair
+                                WHEN MATCHED THEN UPDATE SET rate = source.rate, last_updated_at = GETDATE()
+                                WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.currency_pair, source.date, source.rate, GETDATE());
+                            `);
+                        insertedFx++;
+                    }
+                    write({ type: 'info', message: \`EUR/USD wisselkoersen succesvol bijgewerkt (\${insertedFx} records).\` });
+                }
+                */
+            } else {
+                write({ type: 'warn', message: `Profit.com FX API error: ${fxResponse.statusText}` });
+            }
+        } else {
+            write({ type: 'info', message: 'EUR/USD wisselkoersen zijn al up-to-date.' });
+        }
+    } catch (fxErr) {
+        write({ type: 'error', message: `Fout bij ophalen wisselkoersen: ${fxErr.message}` });
+    }
+    // --- END NEW ---
+
     // Step 1: Fetch all cashflows for XIRR calculation
     const cashflowRequest = pool.request();
     cashflowRequest.input('userId', sql.Int, userId);
@@ -159,9 +250,9 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 
     // Step 5: Calculate daily values iteratively
     const dailyValues = [];
-    let currentProcessDate = new Date(firstDateStr);
+    let currentProcessDate = new Date(`${firstDateStr}T00:00:00.000Z`); // explicitly UTC
     const todayIsoStr = new Date().toISOString().split('T')[0]; 
-    const endDateObj = new Date(todayIsoStr);
+    const endDateObj = new Date(`${todayIsoStr}T00:00:00.000Z`);
 
     const holdings = {};
     let txIndex = 0;
@@ -210,7 +301,7 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
         }
 
         dailyValues.push({ date: currentStr, total_value });
-        currentProcessDate.setDate(currentProcessDate.getDate() + 1);
+        currentProcessDate.setUTCDate(currentProcessDate.getUTCDate() + 1);
     }
 
     write({ type: 'info', message: `Start berekening vanaf: ${dailyValues.length > 0 ? dailyValues[0].date : 'Vandaag'}` });
@@ -225,14 +316,16 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 
     // Step 3: Loop through dailyValues, calculate XIRR, and store/update
     for (const [index, record] of dailyValues.entries()) {
-      const currentDate = new Date(record.date);
-      currentDate.setHours(23, 59, 59, 999); // Einde van de dag voor correcte filtering
+      const currentDate = new Date(`${record.date}T23:59:59.999Z`); // End of UTC day for XIRR duration
 
-      write({ type: 'debug', message: `\n--- Processing Day ${index + 1}/${totalDays}: ${currentDate.toISOString().split('T')[0]} ---` });
+      write({ type: 'debug', message: `\n--- Processing Day ${index + 1}/${totalDays}: ${record.date} ---` });
       write({ type: 'debug', message: `Initial Total Value (Assets): ${record.total_value}` });
 
-      // Filter transactions up to the current date once
-      const transactionsUntilDate = allCashflows.filter(t => new Date(t.purchase_time) <= currentDate);
+      // Filter transactions up to the current date once (STRING MATCHING for perfect sync with holdings logic)
+      const transactionsUntilDate = allCashflows.filter(t => {
+          const txDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+          return txDateStr <= record.date;
+      });
 
       // --- NEW: Calculate cash balance for the current day ---
       const cash_balance = transactionsUntilDate.reduce((balance, t) => {
@@ -255,6 +348,20 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 
       write({ type: 'debug', message: `Calculated cash balance: ${cash_balance.toFixed(2)}` });
       write({ type: 'debug', message: `Final account value (assets + cash): ${account_total_value.toFixed(2)}` });
+
+      // Calculate net_invested in assets and cumulative dividends
+      let net_invested_assets = 0;
+      let cumulative_dividends = 0;
+      
+      transactionsUntilDate.forEach(t => {
+        if (t.transaction_type === 'BUY') {
+          net_invested_assets += (t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0);
+        } else if (t.transaction_type === 'SELL') {
+          net_invested_assets -= ((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0));
+        } else if (t.transaction_type === 'DIVIDEND') {
+          cumulative_dividends += ((t.quantity * t.price) - (t.taxes || 0));
+        }
+      });
 
       // --- Asset XIRR Berekening ---
       let asset_xirr = 0;
@@ -371,12 +478,14 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
         .input('total_value', sql.Decimal(18, 2), record.total_value)
         .input('asset_xirr', sql.Decimal(18, 8), isFinite(asset_xirr) ? asset_xirr : 0)
         .input('account_xirr', sql.Decimal(18, 8), isFinite(account_xirr) ? account_xirr : 0)
+        .input('net_invested', sql.Decimal(18, 2), net_invested_assets)
+        .input('cumulative_dividends', sql.Decimal(18, 2), cumulative_dividends)
         .query(`
           MERGE INTO DailyPortfolioValue AS target
-          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value, @asset_xirr AS asset_xirr, @account_xirr AS account_xirr) AS source
+          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value, @asset_xirr AS asset_xirr, @account_xirr AS account_xirr, @net_invested AS net_invested, @cumulative_dividends AS cumulative_dividends) AS source
           ON target.date = source.date AND target.user_id = source.user_id
-          WHEN MATCHED THEN UPDATE SET total_value = source.total_value, asset_xirr = source.asset_xirr, account_xirr = source.account_xirr
-          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value, asset_xirr, account_xirr) VALUES (source.user_id, source.date, source.total_value, source.asset_xirr, source.account_xirr);
+          WHEN MATCHED THEN UPDATE SET total_value = source.total_value, asset_xirr = source.asset_xirr, account_xirr = source.account_xirr, net_invested = source.net_invested, cumulative_dividends = source.cumulative_dividends
+          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value, asset_xirr, account_xirr, net_invested, cumulative_dividends) VALUES (source.user_id, source.date, source.total_value, source.asset_xirr, source.account_xirr, source.net_invested, source.cumulative_dividends);
         `);
 
       // Send progress update to the client
@@ -477,7 +586,7 @@ const checkAndRepairPriceData = async (req, res) => {
                 const apiFetchStartDate = missingDates[0];
                 const apiFetchEndDate = targetEndDate.toISOString().split('T')[0];
                 
-                const apiKey = process.env.PROFIT_COM_API_KEY || '3a6089f7212f4ad383160a4860499dae';
+                const apiKey = process.env.PROFIT_COM_API_KEY;
                 const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDate}&end_date=${apiFetchEndDate}&token=${apiKey}`;
 
                 const response = await fetch(apiUrl);
@@ -579,10 +688,14 @@ const getPortfolioValues = async (req, res) => {
           SELECT DISTINCT date FROM DailyClosingPrices WHERE date >= @startDate AND date <= @endDate
         ),
         DailyFilteredPortfolioValue AS (
-          SELECT d.date, SUM(lt.total_quantity * COALESCE(lcp.closing_price, tp.price, 0)) AS total_value, ISNULL(MAX(er.rate), 1) as exchange_rate
+          SELECT d.date, SUM(lt.total_quantity * COALESCE(lcp.closing_price, tp.price, 0)) AS total_value, ISNULL(MAX(er.rate), 1) as exchange_rate,
+                 SUM(lt.net_invested) AS net_invested, SUM(lt.cumulative_dividends) AS cumulative_dividends
           FROM DailyDates d
           CROSS APPLY (
-            SELECT pt.aandeel_id, SUM(CASE WHEN pt.transaction_type = 'BUY' THEN pt.quantity WHEN pt.transaction_type = 'SELL' THEN -pt.quantity ELSE 0 END) AS total_quantity
+            SELECT pt.aandeel_id, 
+                   SUM(CASE WHEN pt.transaction_type = 'BUY' THEN pt.quantity WHEN pt.transaction_type = 'SELL' THEN -pt.quantity ELSE 0 END) AS total_quantity,
+                   SUM(CASE WHEN pt.transaction_type = 'BUY' THEN (pt.quantity * pt.price) + ISNULL(pt.fees,0) + ISNULL(pt.taxes,0) WHEN pt.transaction_type = 'SELL' THEN -((pt.quantity * pt.price) - ISNULL(pt.fees,0) - ISNULL(pt.taxes,0)) ELSE 0 END) AS net_invested,
+                   SUM(CASE WHEN pt.transaction_type = 'DIVIDEND' THEN (pt.quantity * pt.price) - ISNULL(pt.taxes,0) ELSE 0 END) AS cumulative_dividends
             FROM PF_transactions pt
             JOIN Stocks s ON pt.aandeel_id = s.aandeel_id
             JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
@@ -605,7 +718,9 @@ const getPortfolioValues = async (req, res) => {
           GROUP BY d.date
         )
         SELECT date, (ISNULL(total_value, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS total_value
-             , 0 AS asset_xirr, 0 AS account_xirr -- Set XIRR to 0 for filtered views
+             , 0 AS asset_xirr, 0 AS account_xirr, -- Set XIRR to 0 for filtered views
+             (ISNULL(net_invested, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS net_invested,
+             (ISNULL(cumulative_dividends, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS cumulative_dividends
         FROM DailyFilteredPortfolioValue
         ORDER BY date ASC
       `;
@@ -613,7 +728,9 @@ const getPortfolioValues = async (req, res) => {
       query = `
         SELECT dpv.date, 
                (dpv.total_value / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS total_value, 
-               dpv.asset_xirr, dpv.account_xirr
+               dpv.asset_xirr, dpv.account_xirr,
+               (dpv.net_invested / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS net_invested,
+               (dpv.cumulative_dividends / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS cumulative_dividends
         FROM DailyPortfolioValue dpv
         OUTER APPLY (
             SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= dpv.date ORDER BY date DESC
@@ -815,10 +932,18 @@ const getTransactions = async (req, res) => {
       .input('startDate', sql.DateTime, startDate)
       .input('endDate', sql.DateTime, endDate)
       .query(`
-        SELECT t.*, s.ticker_symbol, s.name as stock_name, at.type_name as asset_type
+        SELECT t.*, s.ticker_symbol, s.name as stock_name, at.type_name as asset_type, b.name as broker_name,
+               er.rate as historical_exchange_rate
         FROM PF_transactions t
         LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
         LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+        LEFT JOIN Brokers b ON t.broker_id = b.broker_id
+        OUTER APPLY (
+            SELECT TOP 1 rate 
+            FROM DailyExchangeRates 
+            WHERE currency_pair = 'EURUSD' AND date <= CAST(t.purchase_time AS DATE) 
+            ORDER BY date DESC
+        ) er
         WHERE t.user_id = @userId
         AND t.purchase_time >= @startDate AND t.purchase_time <= @endDate
         ORDER BY t.purchase_time DESC
@@ -885,23 +1010,6 @@ const updateTransaction = async (req, res) => {
     const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1 } = req.body;
     const pool = await sql.connect(config);
     
-    // Check of de bewerking resulteert in een duplicaat (maar negeer de huidige transactie-id)
-    const duplicateCheck = await pool.request()
-      .input('id', sql.Int, id).input('user_id', sql.Int, user_id).input('aandeel_id', sql.Int, aandeel_id).input('transaction_type', sql.VarChar, transaction_type)
-      .input('quantity', sql.Decimal(18, 5), quantity).input('price', sql.Decimal(18, 4), price).input('purchase_time', sql.DateTime, purchase_time)
-      .query(`
-        SELECT 1 FROM PF_transactions
-        WHERE id != @id AND user_id = @user_id AND aandeel_id = @aandeel_id
-        AND transaction_type = @transaction_type 
-        AND ABS(quantity - @quantity) < 0.0001
-        AND ABS(price - @price) <= 0.015 
-        AND CAST(purchase_time AS DATE) = CAST(@purchase_time AS DATE)
-      `);
-
-    if (duplicateCheck.recordset.length > 0) {
-        return res.status(409).json({ message: 'Deze bewerkte transactie resulteert in een duplicaat in de database.' });
-    }
-
     const result = await pool.request()
       .input('id', sql.Int, id).input('user_id', sql.Int, user_id).input('aandeel_id', sql.Int, aandeel_id).input('broker_id', sql.Int, broker_id)
       .input('transaction_type', sql.VarChar, transaction_type).input('quantity', sql.Decimal(18, 5), quantity).input('currency', sql.VarChar, currency)
@@ -1002,6 +1110,327 @@ const deleteTransaction = async (req, res) => {
   }
 };
 
+const markTobPaid = async (req, res) => {
+  try {
+      const { transactionIds, isPaid } = req.body;
+      if (!transactionIds || !Array.isArray(transactionIds) || transactionIds.length === 0) {
+          return res.status(400).json({ message: 'Geen transacties opgegeven.' });
+      }
+      
+      const pool = await sql.connect(config);
+      // Filter zodat we enkel getallen hebben om SQL-injecties te voorkomen
+      const cleanIds = transactionIds.map(id => parseInt(id)).filter(id => !isNaN(id));
+      if (cleanIds.length === 0) return res.status(400).json({ message: 'Ongeldige IDs.' });
+      
+      await pool.request()
+          .input('isPaid', sql.Bit, isPaid ? 1 : 0)
+          .query(`UPDATE PF_transactions SET tob_paid = @isPaid WHERE id IN (${cleanIds.join(',')})`);
+          
+      res.status(200).json({ message: 'TOB status succesvol bijgewerkt.' });
+  } catch (error) {
+      console.error('Fout bij updaten TOB status:', error);
+      res.status(500).json({ message: 'Serverfout bij updaten TOB status.' });
+  }
+};
+
+const getPortfolioReturnsDynamics = async (req, res) => {
+    try {
+        const { userId, period, customStartDate, customEndDate, currency, periodGrouping = 'monthly' } = req.query;
+
+        const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
+        const isEur = currency === 'EUR';
+
+        const pool = await sql.connect(config);
+
+        // Fetch all data needed in one go
+        const transactionsResult = await pool.request()
+            .input('userId', sql.Int, userId)
+            .input('endDate', sql.Date, endDate)
+            .query(`
+                SELECT purchase_time, transaction_type, quantity, price, fees, taxes, currency
+                FROM PF_transactions
+                WHERE user_id = @userId AND purchase_time <= @endDate;
+            `);
+        
+        const valuesResult = await pool.request()
+            .input('userId', sql.Int, userId)
+            .input('endDate', sql.Date, endDate)
+            .query(`
+                SELECT date, total_value
+                FROM DailyPortfolioValue
+                WHERE user_id = @userId AND date <= @endDate
+                ORDER BY date ASC;
+            `);
+
+        const exchangeRatesResult = await pool.request().query("SELECT date, rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' ORDER BY date ASC");
+
+        const transactions = transactionsResult.recordset;
+        const dailyValues = valuesResult.recordset;
+        const exchangeRates = exchangeRatesResult.recordset;
+
+        if (dailyValues.length === 0) {
+            return res.status(200).json([]);
+        }
+
+        // Create fast lookup maps
+        const valueMap = new Map(dailyValues.map(v => [new Date(v.date).toISOString().split('T')[0], v.total_value]));
+        const rateMap = new Map(exchangeRates.map(r => [new Date(r.date).toISOString().split('T')[0], r.rate]));
+
+        const memoizedRates = {};
+        const getRateOnDate = (date) => {
+            const dateStr = date.toISOString().split('T')[0];
+            if (memoizedRates[dateStr]) return memoizedRates[dateStr];
+            if (rateMap.has(dateStr)) {
+                memoizedRates[dateStr] = rateMap.get(dateStr);
+                return memoizedRates[dateStr];
+            }
+            const closest = exchangeRates.filter(r => new Date(r.date) <= date).pop();
+            memoizedRates[dateStr] = closest ? closest.rate : 1;
+            return memoizedRates[dateStr];
+        };
+
+        const memoizedValues = {};
+        const getValueOnDate = (date) => {
+            const dateStr = date.toISOString().split('T')[0];
+            if (memoizedValues[dateStr]) return memoizedValues[dateStr];
+
+            let value = 0;
+            if (valueMap.has(dateStr)) {
+                value = valueMap.get(dateStr);
+            } else {
+                const closest = dailyValues.filter(v => new Date(v.date) <= date).pop();
+                value = closest ? closest.total_value : 0;
+            }
+
+            if (isEur) {
+                const rate = getRateOnDate(date);
+                memoizedValues[dateStr] = value / (rate || 1);
+                return memoizedValues[dateStr];
+            }
+            memoizedValues[dateStr] = value;
+            return value;
+        };
+
+        // Generate period buckets
+        const buckets = [];
+        
+        let actualStartDate = new Date(Date.UTC(startDate.getFullYear(), startDate.getMonth(), startDate.getDate()));
+        if (transactions.length > 0) {
+            const earliestTxDate = new Date(Math.min(...transactions.map(t => new Date(t.purchase_time).getTime())));
+            if (earliestTxDate > startDate) {
+                actualStartDate = new Date(earliestTxDate);
+                actualStartDate.setHours(0, 0, 0, 0);
+                actualStartDate = new Date(Date.UTC(actualStartDate.getFullYear(), actualStartDate.getMonth(), actualStartDate.getDate()));
+            }
+        }
+
+        let cursorDate = new Date(actualStartDate);
+        const endUtc = new Date(Date.UTC(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59));
+
+        while(cursorDate <= endUtc) {
+            const year = cursorDate.getUTCFullYear();
+            const month = cursorDate.getUTCMonth();
+            const quarter = Math.floor(month / 3);
+
+            let bucketStartDate, bucketEndDate, bucketLabel;
+
+            switch(periodGrouping) {
+                case 'annually':
+                    bucketStartDate = new Date(Date.UTC(year, 0, 1));
+                    bucketEndDate = new Date(Date.UTC(year, 11, 31));
+                    bucketLabel = `${year}`;
+                    cursorDate = new Date(Date.UTC(year + 1, 0, 1));
+                    break;
+                case 'quarterly':
+                    bucketStartDate = new Date(Date.UTC(year, quarter * 3, 1));
+                    bucketEndDate = new Date(Date.UTC(year, quarter * 3 + 3, 0));
+                    bucketLabel = `${year}-Q${quarter + 1}`;
+                    cursorDate = new Date(Date.UTC(year, quarter * 3 + 3, 1));
+                    break;
+                case 'weekly':
+                    const day = cursorDate.getUTCDay();
+                    const diff = cursorDate.getUTCDate() - day + (day === 0 ? -6 : 1);
+                    bucketStartDate = new Date(cursorDate);
+                    bucketStartDate.setUTCDate(diff);
+                    bucketEndDate = new Date(bucketStartDate);
+                    bucketEndDate.setUTCDate(bucketStartDate.getUTCDate() + 6);
+                    bucketLabel = bucketStartDate.toISOString().split('T')[0];
+                    cursorDate = new Date(bucketEndDate);
+                    cursorDate.setUTCDate(cursorDate.getUTCDate() + 1);
+                    break;
+                default: // monthly
+                    bucketStartDate = new Date(Date.UTC(year, month, 1));
+                    bucketEndDate = new Date(Date.UTC(year, month + 1, 0));
+                    bucketLabel = `${year}-${String(month + 1).padStart(2, '0')}`;
+                    cursorDate = new Date(Date.UTC(year, month + 1, 1));
+                    break;
+            }
+            
+            if (bucketStartDate < actualStartDate) bucketStartDate = new Date(actualStartDate);
+            if (bucketEndDate > endUtc) bucketEndDate = new Date(endUtc);
+            if (bucketStartDate > bucketEndDate) continue;
+
+            if (!buckets.find(b => b.label === bucketLabel)) {
+                 buckets.push({ start: bucketStartDate, end: bucketEndDate, label: bucketLabel });
+            }
+        }
+
+        const results = buckets.map(bucket => {
+            const dayBeforeStart = new Date(bucket.start);
+            dayBeforeStart.setUTCDate(dayBeforeStart.getUTCDate() - 1);
+
+            const startValue = getValueOnDate(dayBeforeStart);
+            const endValue = getValueOnDate(bucket.end);
+
+            const netFlows = transactions.reduce((sum, t) => {
+                const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+                const startStr = bucket.start.toISOString().split('T')[0];
+                const endStr = bucket.end.toISOString().split('T')[0];
+                
+                if (tDateStr >= startStr && tDateStr <= endStr) {
+                    let flow = 0;
+                    switch (t.transaction_type) {
+                        // BUY voegt kapitaal toe aan je assets, SELL en DIVIDEND halen kapitaal uit je assets
+                        case 'BUY': flow = ((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0)); break;
+                        case 'SELL': flow = -((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0)); break;
+                        case 'DIVIDEND': flow = -((t.quantity * t.price) - (t.taxes || 0)); break;
+                        // DEPOSIT en WITHDRAWAL hebben geen invloed op de prestaties van de onderliggende aandelen
+                        case 'DEPOSIT': 
+                        case 'WITHDRAWAL': flow = 0; break;
+                    }
+                    // Hier zou valuta conversie moeten komen als transacties in verschillende valuta zijn.
+                    // Voor nu gaan we uit van een consistente valuta.
+                    return sum + flow;
+                }
+                return sum;
+            }, 0);
+
+            const returnValue = endValue - startValue - netFlows;
+            
+            // Gebruik de 'Modified Dietz' benadering voor het percentage
+            const averageCapital = startValue + (netFlows / 2);
+            let returnPercent = 0;
+            if (Math.abs(averageCapital) > 0.01) {
+                returnPercent = (returnValue / averageCapital) * 100;
+            }
+
+            return { period: bucket.label, returnValue, returnPercent, irr: 0 };
+        });
+
+        res.status(200).json(results);
+
+    } catch (error) {
+        console.error("Error fetching portfolio returns dynamics:", error);
+        res.status(500).json({ message: "Server error fetching portfolio returns dynamics." });
+    }
+};
+
+const forceUpdateExchangeRates = async (req, res) => {
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Transfer-Encoding', 'chunked');
+    const write = (payload) => res.write(JSON.stringify(payload) + '\n');
+    
+    try {
+        const pool = await sql.connect(config);
+        write({ type: 'info', message: 'Ophalen van historische EUR/USD wisselkoersen via Profit.com (10 jaar)...' });
+        
+        let fxStartDate = new Date();
+        fxStartDate.setFullYear(fxStartDate.getFullYear() - 10);
+        const fxStartDateFormatted = fxStartDate.toISOString().split("T")[0];
+        const todayFormatted = new Date().toISOString().split("T")[0];
+
+        const apiKey = process.env.PROFIT_COM_API_KEY;
+        const fxUrl = `https://api.profit.com/data-api/market-data/historical/daily/EURUSD.FOREX?start_date=${fxStartDateFormatted}&end_date=${todayFormatted}&token=${apiKey}`;
+
+        const fxResponse = await fetch(fxUrl);
+        if (fxResponse.ok) {
+            const fxData = await fxResponse.json();
+            if (fxData && fxData.length > 0) {
+                let insertedFx = 0;
+                for (const [index, record] of fxData.entries()) {
+                    if (!record || !record.t) continue;
+                    const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
+                    const rate = parseFloat(record.c);
+                    await pool.request()
+                        .input('currency_pair', sql.VarChar, 'EURUSD')
+                        .input('date', sql.VarChar, recordDateStr)
+                        .input('rate', sql.Decimal(18, 6), rate)
+                        .query(`
+                            MERGE INTO DailyExchangeRates AS target
+                            USING (SELECT @currency_pair AS currency_pair, CAST(@date AS DATE) AS date, @rate AS rate) AS source
+                            ON target.date = source.date AND target.currency_pair = source.currency_pair
+                            WHEN MATCHED THEN UPDATE SET rate = source.rate, last_updated_at = GETDATE()
+                            WHEN NOT MATCHED THEN INSERT (date, currency_pair, rate, last_updated_at) VALUES (source.date, source.currency_pair, source.rate, GETDATE());
+                        `);
+                    insertedFx++;
+                    
+                    if (insertedFx % 100 === 0 || index === fxData.length - 1) {
+                         write({ type: 'progress', message: `Bezig met opslaan... (${insertedFx}/${fxData.length})`, progress: ((insertedFx/fxData.length)*100).toFixed(0) });
+                    }
+                }
+                write({ type: 'complete', message: `EUR/USD wisselkoersen succesvol bijgewerkt (${insertedFx} records).` });
+            } else {
+                write({ type: 'warn', message: 'Profit.com gaf geen data terug.' });
+            }
+        } else {
+            write({ type: 'error', message: `Profit.com FX API error: ${fxResponse.statusText}` });
+        }
+        res.end();
+    } catch (error) {
+        console.error(error);
+        write({ type: 'error', message: `Fout: ${error.message}` });
+        res.end();
+    }
+};
+
+const applyStockSplit = async (req, res) => {
+    const { stockId, splitDate, splitRatio } = req.body;
+    
+    if (!stockId || !splitDate || !splitRatio || isNaN(parseFloat(splitRatio))) {
+        return res.status(400).json({ message: 'Missing required parameters.' });
+    }
+
+    try {
+        const pool = await sql.connect(config);
+        
+        // 1. Controleer of deze specifieke split al eens is toegepast
+        const checkResult = await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .input('splitDate', sql.Date, new Date(splitDate))
+            .query(`SELECT id FROM PF_StockSplits WHERE aandeel_id = @stockId AND CAST(split_date AS DATE) = CAST(@splitDate AS DATE)`);
+            
+        if (checkResult.recordset.length > 0) {
+            return res.status(409).json({ message: 'Deze stock split is al eerder toegepast voor deze datum. Om dubbele eenheden te voorkomen is deze actie geblokkeerd.' });
+        }
+
+        // 2. Pas de split toe op de transacties
+        const result = await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .input('splitDate', sql.Date, new Date(splitDate))
+            .input('splitRatio', sql.Decimal(18, 6), parseFloat(splitRatio))
+            .query(`
+                UPDATE PF_transactions
+                SET quantity = quantity * @splitRatio,
+                    price = price / @splitRatio
+                WHERE aandeel_id = @stockId 
+                  AND CAST(purchase_time AS DATE) < @splitDate
+                  AND transaction_type IN ('BUY', 'SELL', 'DIVIDEND')
+            `);
+
+        // 3. Sla op in het logboek dat deze split is uitgevoerd
+        await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .input('splitDate', sql.Date, new Date(splitDate))
+            .input('splitRatio', sql.Decimal(18, 6), parseFloat(splitRatio))
+            .query(`INSERT INTO PF_StockSplits (aandeel_id, split_date, split_ratio) VALUES (@stockId, @splitDate, @splitRatio)`);
+
+        res.status(200).json({ message: `Stock split toegepast. ${result.rowsAffected[0]} transacties bijgewerkt.` });
+    } catch (error) {
+        console.error('Error applying stock split:', error);
+        res.status(500).json({ message: 'Server error applying stock split.' });
+    }
+};
+
 module.exports = {
   recalculateAndStorePortfolioHistory,
   getPortfolioValues,
@@ -1013,5 +1442,9 @@ module.exports = {
   addTransaction,
   updateTransaction,
   addMultipleTransactions,
-  deleteTransaction
+  deleteTransaction,
+  getPortfolioReturnsDynamics,
+  markTobPaid,
+  forceUpdateExchangeRates,
+  applyStockSplit
 };

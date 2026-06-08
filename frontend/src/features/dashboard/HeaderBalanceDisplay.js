@@ -88,7 +88,7 @@ const HeaderBalanceDisplay = () => {
     <>
       <div onDoubleClick={handleDoubleClick} className="cursor-pointer select-none" title="Dubbelklik om aan te passen">
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Beschikbaar</span>
-        <p className="text-lg font-bold text-green-600">
+        <p className="text-lg font-bold text-green-600 privacy-blur">
           €{balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </p>
       </div>

@@ -56,6 +56,7 @@ function App() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isSidebarPinned, setIsSidebarPinned] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [isIncognito, setIsIncognito] = useState(localStorage.getItem('incognito') === 'true');
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -84,11 +85,41 @@ function App() {
     navigate('/login');
   };
 
+  // Incognito modus CSS klasse toepassen op de body
+  useEffect(() => {
+    localStorage.setItem('incognito', isIncognito);
+    if (isIncognito) {
+      document.body.classList.add('incognito-active');
+    } else {
+      document.body.classList.remove('incognito-active');
+    }
+  }, [isIncognito]);
+
   const isLoginPage = location.pathname === '/login';
   const user = { name: localStorage.getItem('username') || 'Arne' }; // Ophalen uit auth data
 
   return (
     <div className="flex flex-col h-screen bg-gray-50/50 font-sans text-gray-900 overflow-hidden">
+      {/* Globale CSS voor de incognito modus */}
+      <style>{`
+        .incognito-active .privacy-blur {
+          filter: blur(15px);
+          opacity: 0.6;
+          pointer-events: none;
+          user-select: none;
+          transition: filter 0.3s ease, opacity 0.3s ease;
+        }
+        .incognito-active .incognito-hide {
+          display: none !important;
+        }
+        .incognito-active .incognito-show {
+          display: flex !important;
+        }
+        .incognito-show {
+          display: none;
+        }
+      `}</style>
+
       <Toaster position="top-center" reverseOrder={false} />
 
       {!isLoginPage && (
@@ -114,6 +145,17 @@ function App() {
                 onClick={handleOpenSearchModal}
                 className="w-32 focus:w-64 transition-all duration-300 ease-in-out cursor-pointer rounded-full border border-gray-200 bg-gray-100 px-4 py-2 text-sm text-gray-700 placeholder-gray-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
               />
+
+              {/* Incognito Knop */}
+              <button
+                onClick={() => setIsIncognito(!isIncognito)}
+                className={`p-2 rounded-full transition-colors duration-200 ${
+                  isIncognito ? 'bg-blue-100 text-blue-600 shadow-inner' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
+                }`}
+                title={isIncognito ? "Privacy modus uitschakelen" : "Privacy modus inschakelen"}
+              >
+                <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-xl`}></i>
+              </button>
 
               {/* Beschikbaar en Geïnvesteerd Vermogen Displays */}
               <div className="flex items-center space-x-4 divide-x divide-gray-200">

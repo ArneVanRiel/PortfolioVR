@@ -603,7 +603,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                     const value = item[col.key];
                                     switch (col.key) {
                                         case 'name':
-                                            return `${item.name} (${item.ticker_symbol})`;
+                                            return <span className="privacy-blur">{item.name} ({item.ticker_symbol})</span>;
                                         case 'selectiecriteria':
                                             return value !== null ? value : '-';
                                         case 'waarde_verdeling':
@@ -625,12 +625,12 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                         case 'intrinsieke_waarde':
                                             if (col.key === 'current_price') {
                                                 return (
-                                                    <div onMouseEnter={(e) => handleMouseEnterPrice(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className="cursor-pointer underline decoration-dotted decoration-gray-400 hover:text-blue-600">
-                                                        {value != null ? `€${Number(value).toFixed(2)}` : 'N/A'}
+                                                    <div onMouseEnter={(e) => handleMouseEnterPrice(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className="cursor-pointer underline decoration-dotted decoration-gray-400 hover:text-blue-600 privacy-blur">
+                                                        {value != null ? `<span className="privacy-blur">€${Number(value).toFixed(2)}</span>` : 'N/A'}
                                                     </div>
                                                 );
                                             }
-                                            return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
+                                            return value != null ? <span className="privacy-blur">€{Number(value).toFixed(2)}</span> : 'N/A';
                                         case 'percentage':
                                             return (
                                                 <div className="flex flex-col">
@@ -641,12 +641,12 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                         case 'ideal_invested':
                                             return value != null ? (
                                                 <div className="flex flex-col">
-                                                    <span className="font-medium">€{value.toFixed(2)} <span className="text-gray-400 font-normal text-[10px]">(Ideaal)</span></span>
-                                                    <span className="text-xs text-gray-500 mt-0.5">€{item.actual_invested.toFixed(2)} <span className="text-gray-400 font-normal text-[10px]">(Huidig)</span></span>
+                                                    <span className="font-medium privacy-blur">€{value.toFixed(2)} <span className="text-gray-400 font-normal text-[10px]">(Ideaal)</span></span>
+                                                    <span className="text-xs text-gray-500 mt-0.5 privacy-blur">€{item.actual_invested.toFixed(2)} <span className="text-gray-400 font-normal text-[10px]">(Huidig)</span></span>
                                                 </div>
                                             ) : 'N/A';
                                         case 'price_to_intrinsic':
-                                            return value != null ? <span className="font-medium">{(value * 100).toFixed(2)}%</span> : 'N/A';
+                                            return value != null ? <span className="font-medium privacy-blur">{(value * 100).toFixed(2)}%</span> : 'N/A';
                                         case 'period_end_date':
                                             return <span className={`px-2 py-1 rounded-md ${highlightClass}`}>{value ? new Date(value).toLocaleDateString() : 'N/A'}</span>;
                                         case 'current_signal_line':
@@ -664,11 +664,11 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                         case 'latest_trade_amount':
                                             if (displayAlertType === 'Verkoopsignaal') {
                                                 // Backend geeft percentage als decimaal (bv -0.05), wij tonen %
-                                                return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">{(value * 100).toFixed(2)}%</span>;
+                                                return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 privacy-blur">{(value * 100).toFixed(2)}%</span>;
                                             }
-                                            return (value != null && displayAlertType === 'Koopsignaal') ? `€${(value * (percentage / 100) / 10 * item.weight_factor).toFixed(2)}` : 'N/A';
+                                            return (value != null && displayAlertType === 'Koopsignaal') ? <span className="privacy-blur">€{(value * (percentage / 100) / 10 * item.weight_factor).toFixed(2)}</span> : 'N/A';
                                         case 'current_recommended_amount':
-                                             return currentRecommendedAmount != null ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A';
+                                             return currentRecommendedAmount != null ? <span className="privacy-blur">€{currentRecommendedAmount.toFixed(2)}</span> : 'N/A';
                                         default:
                                             return value || 'N/A';
                                     }

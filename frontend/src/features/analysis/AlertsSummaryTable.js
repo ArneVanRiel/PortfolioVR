@@ -348,7 +348,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                             case 'trade_amount':
                                                 if (item.type_melding === 'Verkoopsignaal') {
                                                     const pct = value * 100;
-                                                    return <span className={`${badgeBase} bg-red-100 text-red-800`}>{pct.toFixed(2)}%</span>;
+                                                    return <span className={`${badgeBase} bg-red-100 text-red-800 privacy-blur`}>{pct.toFixed(2)}%</span>;
                                                 }
                                                 // Apply weighting logic consistent with CalculationsSummaryTable
                                                 const calcContext = calculationData[item.aandeel_id] || { percentage: 0, weight_factor: 1 };
@@ -359,7 +359,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                                         onMouseEnter={(e) => handleMouseEnterAmount(e, item)}
                                                         onMouseLeave={handleMouseLeaveAmount}
                                                     >
-                                                        {adjustedValue != null ? `€${Number(adjustedValue).toFixed(2)}` : 'N/A'}
+                                                        {adjustedValue != null ? <span className="privacy-blur">€{Number(adjustedValue).toFixed(2)}</span> : 'N/A'}
                                                     </div>
                                                 );
                                             case 'date':
@@ -410,7 +410,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                     <h4 className="font-bold text-gray-800 mb-2 border-b pb-1">Berekening Aanbevolen Bedrag</h4>
                     
                     {hoveredAlert.type_melding === 'Koopsignaal' && (
-                        <div className="mb-3 pb-2 border-b border-gray-100">
+                        <div className="mb-3 pb-2 border-b border-gray-100 privacy-blur">
                             <h5 className="font-semibold text-gray-700 text-xs mb-1">1. Basis Bedrag (Backend)</h5>
                             <div className="text-xs text-gray-600 space-y-1">
                                 <div className="flex justify-between">
@@ -436,7 +436,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                         <h5 className="font-semibold text-gray-700 text-xs mb-1">
                             {hoveredAlert.type_melding === 'Koopsignaal' ? '2. Weging & Eindresultaat' : 'Berekening'}
                         </h5>
-                        <div className="text-xs text-gray-600 space-y-1">
+                        <div className="text-xs text-gray-600 space-y-1 privacy-blur">
                             <div className="flex justify-between">
                                 <span>Basis Bedrag:</span>
                                 <span className="font-mono">€{Number(hoveredAlert.trade_amount).toFixed(2)}</span>

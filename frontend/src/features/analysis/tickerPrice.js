@@ -7,7 +7,7 @@ const StockPriceComponent = () => {
     const [closePrice, setClosePrice] = useState(null);
 
     const fetchStockPrice = async () => {
-        const apiKey = 'TJOHIG1FLBOHQTY1';
+        const apiKey = process.env.REACT_APP_ALPHA_VANTAGE_API_KEY;
         const url = `https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol=${ticker}&apikey=${apiKey}`;
 
         try {

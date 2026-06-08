@@ -6,7 +6,7 @@ let fetch; // for node-fetch (dynamically imported)
 const REQUIRED_QUARTERS_FOR_SUFFICIENCY = 5; // Number of quarters considered 'sufficient'
 
 // This should be your Alpha Vantage API Key
-const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || 'YOUR_ALPHA_VANTAGE_API_KEY';
+const ALPHA_VANTAGE_API_KEY = process.env.ALPHA_VANTAGE_API_KEY;
 
 // Helps in mapping SEC Form IDs (internal mapping)
 const FORM_TYPES_MAP = {
@@ -971,6 +971,15 @@ const getTickerOverviewAnalysis = async (req, res) => {
             }
             // Sorteer ontbrekende recente kwartalen op datum (oplopend)
             missingRecentQuarters.sort((a, b) => new Date(a.expectedDate).getTime() - new Date(b.expectedDate).getTime());
+
+            // Voeg resultaat toe aan de lijst
+            analysisResults.push({
+                aandeel_id: stockId,
+                ticker_symbol: stock.ticker_symbol,
+                name: stock.name,
+                overallCompletenessPercentage,
+                missingRecentQuarters
+            });
         }
 
         res.status(200).json(analysisResults);
