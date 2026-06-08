@@ -22,6 +22,9 @@ const Analysis = () => {
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('Analyse'); // Standaard tab
 
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
+
   useEffect(() => {
     const fetchStocks = async () => {
       try {
@@ -61,7 +64,8 @@ const Analysis = () => {
   const TABS = [
     { id: 'Analyse', label: 'Overzicht & Grafieken', icon: 'ph-chart-line-up' },
     { id: 'portfolio', label: 'Portfolio', icon: 'ph-briefcase' },
-    { id: 'data', label: 'Data Beheer', icon: 'ph-database' },
+    // Voeg Data Beheer enkel toe als het geen demo account is
+    ...(!isDemo ? [{ id: 'data', label: 'Data Beheer', icon: 'ph-database' }] : []),
     { id: 'calculations', label: 'Berekeningen', icon: 'ph-calculator' },
     { id: 'SecFields', label: 'SEC Velden Zoeken', icon: 'ph-magnifying-glass' }
   ];

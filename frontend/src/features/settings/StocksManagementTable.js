@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 function StocksManagementTable() {
     const [stocks, setStocks] = useState([]);
@@ -10,7 +10,7 @@ function StocksManagementTable() {
     const fetchStocks = async () => {
         try {
             // Gebruikt de route die al beschikbaar is in je applicatie
-            const response = await axios.get('/api/stocks');
+            const response = await http.get('/stocks');
             setStocks(response.data);
         } catch (error) {
             console.error('Fout bij het ophalen van aandelen:', error);
@@ -28,7 +28,7 @@ function StocksManagementTable() {
 
     const handleSave = async (id) => {
         try {
-            await axios.put(`/api/stocks/${id}`, editData);
+            await http.put(`/stocks/${id}`, editData);
             setEditStockId(null);
             fetchStocks();
         } catch (error) {
@@ -39,7 +39,7 @@ function StocksManagementTable() {
 
     const handleDelete = async (id) => {
         try {
-            await axios.delete(`/api/stocks/${id}`);
+            await http.delete(`/stocks/${id}`);
             setDeleteStockId(null);
             fetchStocks();
         } catch (error) {

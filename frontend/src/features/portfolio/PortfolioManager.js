@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 import * as XLSX from 'xlsx';
 import TransactionForm from './TransactionForm';
 import TaxesTab from './TaxesTab';
@@ -23,8 +23,15 @@ ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement, Filler, BarElement
 );
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
 const PortfolioManager = () => {
   const navigate = useNavigate();
+
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
+  const uid = localStorage.getItem('userID') || 1;
+
   const [rawHoldings, setRawHoldings] = useState([]);
   const [rawTransactions, setRawTransactions] = useState([]);
   const [history, setHistory] = useState([]);
@@ -60,7 +67,7 @@ const PortfolioManager = () => {
       const fetchProfileCurrency = async () => {
           const uid = localStorage.getItem('userID') || 1;
           try {
-              const res = await axios.get(`/api/auth/profile/${uid}`);
+              const res = await http.get(`/auth/profile/${uid}`);
               if (res.data && res.data.default_currency) {
                   setDisplayCurrency(res.data.default_currency);
               }
@@ -148,9 +155,9 @@ const PortfolioManager = () => {
       const customEndParam = chartPeriod === 'Custom' && customEndDate ? `&customEndDate=${customEndDate}` : '';
       const currencyParam = `&currency=${displayCurrency}`;
       const [holdingsRes, transactionsRes, typesRes] = await Promise.all([
-        axios.get(`/api/portfolio/holdings?userId=1&period=${chartPeriod}${customStartParam}${customEndParam}${currencyParam}`),
-        axios.get(`/api/portfolio/transactions?userId=1&period=All`),
-        axios.get('/api/watchlist/asset-types') // Gebruikt de bestaande route voor categorieën
+        http.get(`/portfolio/holdings?userId=${uid}&period=${chartPeriod}${customStartParam}${customEndParam}${currencyParam}`),
+        http.get(`/portfolio/transactions?userId=${uid}&period=All`),
+        http.get('/watchlist/asset-types') // Gebruikt de bestaande route voor categorieën
       ]);
       
       // Verwijder onzichtbare spaties uit de database strings met .trim()
@@ -180,7 +187,7 @@ const PortfolioManager = () => {
     const customEndParam = periodToFetch === 'Custom' && customEndDate ? `&customEndDate=${customEndDate}` : '';
     const currencyParam = `&currency=${displayCurrency}`;
     try {
-      const res = await axios.get(`/api/portfolio/calculatePortfolioValues?userId=1&period=${periodToFetch}${typesParam}${customStartParam}${customEndParam}${currencyParam}`);
+      const res = await http.get(`/portfolio/calculatePortfolioValues?userId=${uid}&period=${periodToFetch}${typesParam}${customStartParam}${customEndParam}${currencyParam}`);
       setHistory(res.data);
     } catch (e) {
       console.error("Fout bij ophalen van historische grafiek:", e);
@@ -196,7 +203,7 @@ const PortfolioManager = () => {
     setDynamicsLoading(true);
     try {
         const params = new URLSearchParams({
-            userId: 1,
+            userId: uid,
             period: dynPeriod,
             currency: displayCurrency,
             periodGrouping: dynamicsPeriod
@@ -205,7 +212,7 @@ const PortfolioManager = () => {
             params.append('customStartDate', dynStart);
             params.append('customEndDate', dynEnd);
         }
-        const res = await axios.get(`/api/portfolio/returns-dynamics?${params.toString()}`);
+        const res = await http.get(`/portfolio/returns-dynamics?${params.toString()}`);
         setDynamicsData(res.data);
     } catch (e) {
         console.error("Error fetching dynamics data:", e);
@@ -252,12 +259,12 @@ const PortfolioManager = () => {
     }
 
     try {
-      const payload = { userId: 1 };
+      const payload = { userId: uid };
       if (fromDate && typeof fromDate === 'string') {
         payload.fromDate = fromDate;
       }
 
-      const response = await fetch('/api/portfolio/recalculateAndStorePortfolioHistory', {
+      const response = await fetch(`${API_URL}/portfolio/recalculateAndStorePortfolioHistory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -318,10 +325,10 @@ const PortfolioManager = () => {
     setShowLogModal(true);
 
     try {
-        const response = await fetch('/api/portfolio/checkAndRepairPriceData', {
+        const response = await fetch(`${API_URL}/portfolio/checkAndRepairPriceData`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: 1 })
+            body: JSON.stringify({ userId: uid })
         });
 
         if (!response.ok) {
@@ -381,7 +388,7 @@ const PortfolioManager = () => {
     setShowLogModal(true);
 
     try {
-      const response = await fetch('/api/portfolio/force-update-exchange-rates', {
+      const response = await fetch(`${API_URL}/portfolio/force-update-exchange-rates`, {
         method: 'POST',
       });
 
@@ -577,7 +584,7 @@ const PortfolioManager = () => {
     if (!transactionToDelete) return;
     try {
       const delDate = transactionToDelete.purchase_time;
-      await axios.delete(`/api/portfolio/transactions/${transactionToDelete.id}`);
+      await http.delete(`/portfolio/transactions/${transactionToDelete.id}`);
       setTransactionToDelete(null);
       fetchPortfolioData();
       handleRecalculateHistory(true, delDate);
@@ -865,7 +872,7 @@ const PortfolioManager = () => {
             // om een 100% accurate duplicaat check te garanderen.
             let allTransactionsForCheck = rawTransactions;
             try {
-                const allTransRes = await axios.get('/api/portfolio/transactions?userId=1&period=All');
+                const allTransRes = await http.get(`/portfolio/transactions?userId=${uid}&period=All`);
                 allTransactionsForCheck = allTransRes.data;
             } catch (err) {
                 console.warn("Kon niet alle transacties ophalen voor duplicaat check", err);
@@ -940,7 +947,7 @@ const PortfolioManager = () => {
          return d < min ? d : min;
       }, new Date());
 
-      const res = await axios.post('/api/portfolio/addMultipleTransactions', { transactions: dataToImport });
+      const res = await http.post('/portfolio/addMultipleTransactions', { transactions: dataToImport });
       alert(res.data.message);
       setShowImportReviewModal(false);
       fetchPortfolioData();
@@ -1464,6 +1471,8 @@ const PortfolioManager = () => {
 
         {/* Top Actieknoppen */}
         <div className="flex flex-wrap items-center gap-3">
+          {!isDemo && (
+            <>
           <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
           <button onClick={handleDownloadTemplate} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
             <i className="ph ph-download-simple mr-2 text-lg"></i> Template
@@ -1489,6 +1498,8 @@ const PortfolioManager = () => {
           <button onClick={() => setIsAddModalOpen(true)} className="text-sm font-bold flex items-center bg-blue-600 text-white px-5 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors">
             <i className="ph-fill ph-plus-circle mr-2 text-xl"></i> Transactie
           </button>
+            </>
+          )}
 
           {/* Extra functies als iconen om de header rustig te houden */}
           <div className="flex bg-white rounded-lg border border-gray-300 shadow-sm p-1 ml-2">
@@ -1816,7 +1827,7 @@ const PortfolioManager = () => {
                     <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right" onClick={() => handleTransSort('quantity')}>Aantal{getSortIcon(transSort, 'quantity')}</th>
                     <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right" onClick={() => handleTransSort('price')}>Prijs{getSortIcon(transSort, 'price')}</th>
                     <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right" onClick={() => handleTransSort('total_value')}>Totaal{getSortIcon(transSort, 'total_value')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">Acties</th>
+                    {!isDemo && <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">Acties</th>}
                   </tr>
                 </thead>
                 <tbody>
@@ -1850,14 +1861,16 @@ const PortfolioManager = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{t.quantity}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{formatCurrency(t.price)}</td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800 text-right privacy-blur">{formatCurrency(t.quantity * t.price)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                        <button onClick={() => { setTransactionToEdit(t); setIsEditModalOpen(true); }} className="text-gray-400 hover:text-blue-600 transition-colors focus:outline-none mr-3" title="Bewerken">
-                          <i className="ph-fill ph-pencil-simple text-lg"></i>
-                       </button>
-                        <button onClick={() => setTransactionToDelete(t)} className="text-gray-400 hover:text-rose-600 transition-colors focus:outline-none" title="Verwijderen">
-                          <i className="ph-fill ph-trash text-lg"></i>
-                       </button>
-                     </td>
+                      {!isDemo && (
+                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                          <button onClick={() => { setTransactionToEdit(t); setIsEditModalOpen(true); }} className="text-gray-400 hover:text-blue-600 transition-colors focus:outline-none mr-3" title="Bewerken">
+                            <i className="ph-fill ph-pencil-simple text-lg"></i>
+                          </button>
+                          <button onClick={() => setTransactionToDelete(t)} className="text-gray-400 hover:text-rose-600 transition-colors focus:outline-none" title="Verwijderen">
+                            <i className="ph-fill ph-trash text-lg"></i>
+                          </button>
+                        </td>
+                      )}
                    </tr>
                  ))}
                  {processedTransactions.length === 0 && (
@@ -1906,7 +1919,7 @@ const PortfolioManager = () => {
                     <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Aandeel</th>
                     <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Type</th>
                     <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Aantal / Prijs</th>
-                    <th className="px-4 py-2 text-right text-xs font-semibold text-orange-800 uppercase">Acties</th>
+                    {!isDemo && <th className="px-4 py-2 text-right text-xs font-semibold text-orange-800 uppercase">Acties</th>}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-orange-100">
@@ -1928,9 +1941,11 @@ const PortfolioManager = () => {
                           </span>
                         )}
                       </td>
-                      <td className="px-4 py-3 whitespace-nowrap text-right text-sm">
-                        <button onClick={() => setTransactionToDelete(t)} className="text-red-500 hover:text-red-700 focus:outline-none bg-red-50 px-3 py-1 rounded" title="Verwijderen">Verwijderen</button>
-                      </td>
+                      {!isDemo && (
+                        <td className="px-4 py-3 whitespace-nowrap text-right text-sm">
+                          <button onClick={() => setTransactionToDelete(t)} className="text-red-500 hover:text-red-700 focus:outline-none bg-red-50 px-3 py-1 rounded" title="Verwijderen">Verwijderen</button>
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>

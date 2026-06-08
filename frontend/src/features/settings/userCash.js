@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 const UserCash = ({ userID }) => {
   const [entries, setEntries] = useState([]);
@@ -13,7 +13,7 @@ const UserCash = ({ userID }) => {
   useEffect(() => {
     const fetchUserCash = async () => {
       try {
-        const response = await axios.get(`/api/user/${userID}`);
+        const response = await http.get(`/user/${userID}`);
         if (response.status === 200) {
           const data = response.data;
           let initialEntries = [];
@@ -66,7 +66,7 @@ const UserCash = ({ userID }) => {
         date: today
       };
 
-      const response = await axios.post('/api/user/update', payload);
+      const response = await http.post('/user/update', payload);
       if (response.status === 200) {
         setIsEditing(false);
         setNoDataFound(false);

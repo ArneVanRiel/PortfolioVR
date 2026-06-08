@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 function TransactionForm({ onSuccess, onCancel, transactionToEdit, initialStockId, initialTicker, initialStockName }) {
     const formatDateTimeLocal = (dateString) => {
@@ -9,7 +9,7 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit, initialStockI
         return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
     };
 
-    const [userId, setUserId] = useState(1);
+    const [userId, setUserId] = useState(localStorage.getItem('userID') || 1);
     const [transactionType, setTransactionType] = useState(transactionToEdit ? transactionToEdit.transaction_type : 'BUY'); 
     const [aandeelId, setAandeelId] = useState(transactionToEdit ? transactionToEdit.aandeel_id || '' : (initialStockId || ''));
     const [brokerId, setBrokerId] = useState(transactionToEdit ? transactionToEdit.broker_id || 1 : 1);
@@ -38,8 +38,8 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit, initialStockI
     useEffect(() => {
         // Haal zowel aandelen als categorieën op
         Promise.all([
-            axios.get('/api/stocks'),
-            axios.get('/api/watchlist/asset-types')
+            http.get('/stocks'),
+            http.get('/watchlist/asset-types')
         ]).then(([stocksRes, typesRes]) => {
             const sortedStocks = stocksRes.data.sort((a, b) => a.ticker.localeCompare(b.ticker));
             setStocks(sortedStocks);
@@ -84,9 +84,9 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit, initialStockI
 
         try {
             if (transactionToEdit) {
-                await axios.put(`/api/portfolio/transactions/${transactionToEdit.id}`, newTransaction);
+                await http.put(`/portfolio/transactions/${transactionToEdit.id}`, newTransaction);
             } else {
-                await axios.post('/api/portfolio/addTransaction', newTransaction);
+                await http.post('/portfolio/addTransaction', newTransaction);
             }
             if (onSuccess) onSuccess(transactionTime);
         } catch (err) {

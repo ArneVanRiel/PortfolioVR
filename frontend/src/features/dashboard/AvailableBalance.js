@@ -1,8 +1,6 @@
 // components/AvailableBalance.js
 import React, { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:5000/api/available-balance'; // Pas dit aan indien nodig
+import http from '../../http-common';
 
 const AvailableBalance = () => {
   const [totalAmount, setTotalAmount] = useState(0);
@@ -19,7 +17,7 @@ const AvailableBalance = () => {
     setLoading(true);
     setError('');
     try {
-      const response = await axios.get(`${API_BASE_URL}/latest-balance`);
+      const response = await http.get(`/balance/available/latest-balance`);
       const { totalAmount, lastUpdateDate, balances } = response.data;
       setTotalAmount(totalAmount);
       setLastUpdateDate(lastUpdateDate ? new Date(lastUpdateDate) : null);
@@ -55,7 +53,7 @@ const AvailableBalance = () => {
   // Functie om beschikbare saldo types op te halen (eenmalig bij laden component)
   const fetchBalanceTypes = useCallback(async () => {
     try {
-      const response = await axios.get(`${API_BASE_URL}/balance-types`);
+      const response = await http.get(`/balance/available/balance-types`);
       setBalanceTypes(response.data);
     } catch (err) {
       console.error('Fout bij ophalen saldo types:', err);
@@ -98,7 +96,7 @@ const AvailableBalance = () => {
         amount: parseFloat(currentInputBalances[type.balance_type_id] || 0) // Parse naar float, standaard 0 indien leeg
       }));
 
-      await axios.post(`${API_BASE_URL}/update-balance`, { balances: balancesToUpdate });
+      await http.post(`/balance/available/update-balance`, { balances: balancesToUpdate });
       alert('Vermogen succesvol bijgewerkt!');
       handleCloseUpdateModal();
       fetchLatestBalance(); // Herlaad de data na een succesvolle update

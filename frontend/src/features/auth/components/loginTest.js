@@ -5,12 +5,9 @@ import { useNavigate } from 'react-router-dom';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 const LoginPageTest = () => {
-    const [mode, setMode] = useState('login'); // 'login' of 'register'
     const [step, setStep] = useState(1); // 1 = inloggegevens, 2 = OTP
     const [username, setUsername] = useState('');
-    const [email, setEmail] = useState('');
     const [password, setPassword] = useState(''); 
-    const [confirmPassword, setConfirmPassword] = useState('');
     const [otp, setOtp] = useState('');
     const [rememberMe, setRememberMe] = useState(true);
     
@@ -64,44 +61,15 @@ const LoginPageTest = () => {
             localStorage.setItem('role', role);
             localStorage.setItem('username', username);
 
+            // Zet privacymodus standaard aan voor demo accounts
+            if (role === 'demo') {
+                localStorage.setItem('incognito', 'true');
+            }
+
             // Navigeer succesvol naar dashboard
             navigate('/dashboard');
         } catch (error) {
             setAlert({ type: 'error', message: error.response?.data?.message || 'Onjuiste verificatiecode.' });
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    // STAP: Registreren
-    const handleRegister = async (e) => {
-        e.preventDefault();
-        if (!username || !email || !password || !confirmPassword) {
-            setAlert({ type: 'error', message: 'Vul alle velden in.' });
-            return;
-        }
-        if (password !== confirmPassword) {
-            setAlert({ type: 'error', message: 'Wachtwoorden komen niet overeen.' });
-            return;
-        }
-        if (password.length < 8) {
-            setAlert({ type: 'error', message: 'Het wachtwoord moet minimaal 8 tekens lang zijn.' });
-            return;
-        }
-
-        setLoading(true);
-        try {
-            const response = await axios.post(`${API_URL}/auth/register`, { username, email, password });
-            setAlert({ type: 'success', message: response.data.message });
-            
-            // Switch automatisch terug naar inloggen na 2 seconden
-            setTimeout(() => {
-                setMode('login');
-                setPassword('');
-                setConfirmPassword('');
-            }, 2000);
-        } catch (error) {
-            setAlert({ type: 'error', message: error.response?.data?.message || 'Fout bij registratie.' });
         } finally {
             setLoading(false);
         }
@@ -116,8 +84,7 @@ const LoginPageTest = () => {
                         Portfolio<span className="text-blue-500">VR</span>
                     </h2>
                     <p className="text-gray-500 mt-2">
-                        {mode === 'register' ? 'Maak een nieuw account aan' 
-                            : step === 1 ? 'Log in op je account' : 'Voer je verificatiecode in'}
+                        {step === 1 ? 'Log in op je account' : 'Voer je verificatiecode in'}
                     </p>
                 </div>
 
@@ -127,7 +94,7 @@ const LoginPageTest = () => {
                     </div>
                 )}
 
-                {mode === 'login' && step === 1 && (
+                {step === 1 && (
                     <form onSubmit={handleLoginStep1} className="space-y-5">
                         <div>
                             <label className="block text-sm font-semibold text-gray-700 mb-1">Gebruikersnaam</label>
@@ -168,17 +135,10 @@ const LoginPageTest = () => {
                         >
                             {loading ? 'Bezig...' : 'Inloggen'}
                         </button>
-                        <div className="text-center mt-4">
-                            <p className="text-sm text-gray-600">Nog geen account?{' '}
-                                <button type="button" onClick={() => { setMode('register'); setAlert(null); }} className="text-blue-500 font-medium hover:text-blue-700">
-                                    Maak er één aan
-                                </button>
-                            </p>
-                        </div>
                     </form>
                 )}
 
-                {mode === 'login' && step === 2 && (
+                {step === 2 && (
                     <form onSubmit={handleLoginStep2} className="space-y-5">
                         <div>
                             <label className="block text-sm font-semibold text-gray-700 mb-1">Verificatiecode (OTP)</label>
@@ -209,65 +169,6 @@ const LoginPageTest = () => {
                             >
                                 Terug naar inloggen
                             </button>
-                        </div>
-                    </form>
-                )}
-
-                {mode === 'register' && (
-                    <form onSubmit={handleRegister} className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Gebruikersnaam</label>
-                            <input 
-                                type="text" 
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                                value={username}
-                                onChange={(e) => setUsername(e.target.value)}
-                                placeholder="Kies een gebruikersnaam"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">E-mailadres</label>
-                            <input 
-                                type="email" 
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                                value={email}
-                                onChange={(e) => setEmail(e.target.value)}
-                                placeholder="jouw@email.be"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Wachtwoord</label>
-                            <input 
-                                type="password" 
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                                value={password}
-                                onChange={(e) => setPassword(e.target.value)}
-                                placeholder="••••••••"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-semibold text-gray-700 mb-1">Bevestig Wachtwoord</label>
-                            <input 
-                                type="password" 
-                                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                                value={confirmPassword}
-                                onChange={(e) => setConfirmPassword(e.target.value)}
-                                placeholder="••••••••"
-                            />
-                        </div>
-                        <button 
-                            type="submit" 
-                            disabled={loading}
-                            className="w-full bg-blue-600 text-white font-semibold py-2.5 rounded-lg hover:bg-blue-700 transition-colors shadow-sm disabled:opacity-50 mt-2"
-                        >
-                            {loading ? 'Bezig...' : 'Registreren'}
-                        </button>
-                        <div className="text-center mt-4">
-                            <p className="text-sm text-gray-600">Al een account?{' '}
-                                <button type="button" onClick={() => { setMode('login'); setAlert(null); }} className="text-blue-500 font-medium hover:text-blue-700">
-                                    Log in
-                                </button>
-                            </p>
                         </div>
                     </form>
                 )}

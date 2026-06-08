@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 const SearchSecFields = () => {
     const [ticker, setTicker] = useState('');
@@ -18,8 +18,7 @@ const SearchSecFields = () => {
         setFilterText('');
 
         try {
-            // Pas de URL aan als je route prefix anders is in server.js
-            const response = await axios.get(`http://localhost:5000/api/sec-fields/${ticker}`);
+            const response = await http.get(`/sec-fields/${ticker}`);
             setResult(response.data);
         } catch (err) {
             console.error(err);

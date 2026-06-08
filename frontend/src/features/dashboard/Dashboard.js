@@ -7,6 +7,8 @@ import toast from 'react-hot-toast';
 import Score5DistributionChart from './Score5DistributionChart';
 import IncompleteDataWidget from './IncompleteDataWidget';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
 // Placeholder components for stats and charts
 const StatCard = ({ title, value, trend, trendUp }) => (
   <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300">
@@ -64,6 +66,9 @@ const Dashboard = () => {
   const [isUpdatingData, setIsUpdatingData] = useState(false);
   const [updateProgress, setUpdateProgress] = useState(0);
   const [expandedCard, setExpandedCard] = useState(null);
+
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
 
   const toggleExpand = (cardId) => {
     setExpandedCard(expandedCard === cardId ? null : cardId);
@@ -221,7 +226,7 @@ const Dashboard = () => {
     const toastId = toast.loading('Verbinden met server...');
 
     try {
-      const response = await fetch('http://localhost:5000/api/watchlist/update-data', {
+      const response = await fetch(`${API_URL}/watchlist/update-data`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
       });
@@ -292,19 +297,23 @@ const Dashboard = () => {
         <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
         <div className="flex space-x-4">
           {/* Knoppen */}
-          <button
-            onClick={handleAddStock}
-            className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-          >
-            Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
-          </button>
-          <button 
-            onClick={handleUpdateData}
-            disabled={isUpdatingData}
-            className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {isUpdatingData ? `Bezig... (${updateProgress}%)` : 'Update Prijzen & Meldingen'}
-          </button>
+          {!isDemo && (
+            <>
+              <button
+                onClick={handleAddStock}
+                className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+              >
+                Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
+              </button>
+              <button 
+                onClick={handleUpdateData}
+                disabled={isUpdatingData}
+                className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {isUpdatingData ? `Bezig... (${updateProgress}%)` : 'Update Prijzen & Meldingen'}
+              </button>
+            </>
+          )}
           <button 
             onClick={handleOpenExportModal}
             className="bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"

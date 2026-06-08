@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 function BrokersTable() {
     const [brokers, setBrokers] = useState([]);
@@ -10,7 +10,7 @@ function BrokersTable() {
 
     const fetchBrokers = async () => {
         try {
-            const response = await axios.get('/api/brokers');
+            const response = await http.get('/brokers');
             setBrokers(response.data);
         } catch (error) {
             console.error('Fout bij het ophalen van brokers:', error);
@@ -24,7 +24,7 @@ function BrokersTable() {
 
     const handleSave = async (id) => {
         try {
-            await axios.put(`/api/brokers/${id}`, { name: editedName });
+            await http.put(`/brokers/${id}`, { name: editedName });
             setEditBrokerId(null);
             fetchBrokers();
         } catch (error) {
@@ -34,7 +34,7 @@ function BrokersTable() {
 
     const handleDelete = async (id) => {
         try {
-            await axios.delete(`/api/brokers/${id}`);
+            await http.delete(`/brokers/${id}`);
             fetchBrokers();
         } catch (error) {
             console.error('Fout bij het verwijderen van broker:', error);
@@ -44,7 +44,7 @@ function BrokersTable() {
     const handleAddBroker = async () => {
         if (!newBrokerName.trim()) return;
         try {
-            await axios.post('/api/brokers', { name: newBrokerName });
+            await http.post('/brokers', { name: newBrokerName });
             setNewBrokerName('');
             fetchBrokers();
         } catch (error) {

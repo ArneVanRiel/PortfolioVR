@@ -5,6 +5,8 @@ import AddData from './AddData';
 import DataCompleteness from './DataCompleteness';
 import ExistingData from './ExistingData';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
 const dataPeriods = {
   StockholdersEquity: 44 * 3,
   NetCashProvidedByUsedInOperatingActivities: 44 * 3,
@@ -251,7 +253,7 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
     setImportProgress(0);
     
     try {
-        const response = await fetch(`http://localhost:5000/api/sec/import`, {
+        const response = await fetch(`${API_URL}/sec/import`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ ticker: selectedStock.ticker, periodOption: secPeriodOption }),

@@ -626,11 +626,11 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             if (col.key === 'current_price') {
                                                 return (
                                                     <div onMouseEnter={(e) => handleMouseEnterPrice(e, item.stock_id)} onMouseLeave={handleMouseLeaveChart} className="cursor-pointer underline decoration-dotted decoration-gray-400 hover:text-blue-600 privacy-blur">
-                                                        {value != null ? `<span className="privacy-blur">€${Number(value).toFixed(2)}</span>` : 'N/A'}
+                                                        {value != null ? `€${Number(value).toFixed(2)}` : 'N/A'}
                                                     </div>
                                                 );
                                             }
-                                            return value != null ? <span className="privacy-blur">€{Number(value).toFixed(2)}</span> : 'N/A';
+                                            return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
                                         case 'percentage':
                                             return (
                                                 <div className="flex flex-col">
@@ -668,7 +668,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             }
                                             return (value != null && displayAlertType === 'Koopsignaal') ? <span className="privacy-blur">€{(value * (percentage / 100) / 10 * item.weight_factor).toFixed(2)}</span> : 'N/A';
                                         case 'current_recommended_amount':
-                                             return currentRecommendedAmount != null ? <span className="privacy-blur">€{currentRecommendedAmount.toFixed(2)}</span> : 'N/A';
+                                             return currentRecommendedAmount != null ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A';
                                         default:
                                             return value || 'N/A';
                                     }

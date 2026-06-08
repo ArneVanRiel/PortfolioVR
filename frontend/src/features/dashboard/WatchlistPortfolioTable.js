@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback, useMemo, useRef, forwardRef, u
 import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 
+const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
+
 export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = () => {} }, ref) {
   const [viewType, setViewType] = useState('idealePortfolio');
   const [stocks, setStocks] = useState([]);
@@ -21,6 +23,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   const MAX_STOCKS = 99;
 
   const navigate = useNavigate();
+
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
 
   // NIEUW: State voor sorteren
   const [sortConfig, setSortConfig] = useState({ key: null, direction: 'asc' });
@@ -74,7 +79,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
       setLoading(true);
       setError('');
 
-      const stocksResponse = await fetch(`http://localhost:5000/api/watchlist/watchlist?view=${viewType}`);
+      const stocksResponse = await fetch(`${API_URL}/watchlist/watchlist?view=${viewType}`);
       if (!stocksResponse.ok) {
         throw new Error(`HTTP error! status: ${stocksResponse.status}`);
       }
@@ -108,7 +113,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   // Functie om alle beschikbare stocks op te halen uit de database
   const fetchAvailableStocks = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/watchlist/available-stocks');
+      const response = await fetch(`${API_URL}/watchlist/available-stocks`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -122,7 +127,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   // Functie om alle beschikbare asset types op te halen
   const fetchAssetTypes = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/watchlist/asset-types');
+      const response = await fetch(`${API_URL}/watchlist/asset-types`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -140,7 +145,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   // Controleer de status van de dagelijkse update
   const checkDailyUpdateStatus = useCallback(async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/watchlist/update-status');
+      const response = await fetch(`${API_URL}/watchlist/update-status`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -231,7 +236,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     }
 
     try {
-      const response = await fetch('http://localhost:5000/api/watchlist/add-stock', {
+      const response = await fetch(`${API_URL}/watchlist/add-stock`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -266,7 +271,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     if (!stockToDelete) return;
 
     try {
-      const response = await fetch(`http://localhost:5000/api/watchlist/remove-stock/${stockToDelete.aandeel_id}`, {
+      const response = await fetch(`${API_URL}/watchlist/remove-stock/${stockToDelete.aandeel_id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ viewType }),
@@ -571,8 +576,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                       {col.label} {col.sortable ? getSortArrow(col.key) : ''}
                     </th>
                   ))}
-                  {/* Acties kolom is altijd zichtbaar */}
-                  <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acties</th>
+                  {!isDemo && <th scope="col" className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Acties</th>}
                 </tr>
               </thead>
               <tbody className="bg-white divide-y divide-gray-200">
@@ -601,8 +605,8 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                              stock[col.key] || 'N/A'}
                           </td>
                         ))}
-                        {/* Acties kolom is altijd zichtbaar */}
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                    {!isDemo && (
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
                           <button
                             className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
                             onClick={() => handleAddStockData(stock.ticker_symbol)}
@@ -633,7 +637,8 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                               <path fillRule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4 4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>
                             </svg>
                           </button>
-                        </td>
+                      </td>
+                    )}
                       </tr>
                     );
                   })

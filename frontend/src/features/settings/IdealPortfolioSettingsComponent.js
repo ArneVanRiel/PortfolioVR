@@ -1,8 +1,6 @@
 // components/IdealPortfolioSettingsComponent.js
 import React, { useState, useEffect, useCallback } from 'react';
-import axios from 'axios';
-
-const API_BASE_URL = 'http://localhost:5000/api/ideal-portfolio'; // Pas dit aan indien nodig
+import http from '../../http-common';
 
 const IdealPortfolioSettingsComponent = () => {
   const [settings, setSettings] = useState({ gewenst_rendement: null, terminal_rate: null });
@@ -18,7 +16,7 @@ const IdealPortfolioSettingsComponent = () => {
     setLoading(true);
     setError('');
     try {
-      const response = await axios.get(`${API_BASE_URL}/settings`);
+      const response = await http.get(`/ideal-portfolio/settings`);
       setSettings(response.data);
       // Vul de inputvelden in met de huidige waarden, omgezet naar decimale weergave voor de gebruiker
       // Bijv. als database 15.00 bevat, toon 0.15 in de input
@@ -68,7 +66,7 @@ const IdealPortfolioSettingsComponent = () => {
     const terminalVoorBackend = terminalInput * 100;
 
     try {
-      await axios.post(`${API_BASE_URL}/settings`, {
+      await http.post(`/ideal-portfolio/settings`, {
         gewenst_rendement: gewenstVoorBackend,
         terminal_rate: terminalVoorBackend
       });

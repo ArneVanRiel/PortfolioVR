@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 function StockExchangeTable() {
     const [exchanges, setExchanges] = useState([]);
@@ -10,7 +10,7 @@ function StockExchangeTable() {
 
     const fetchStockExchanges = async () => {
         try {
-            const response = await axios.get('/api/stockexchange');
+            const response = await http.get('/stockexchange');
             setExchanges(response.data);
         } catch (error) {
             console.error('Fout bij het ophalen van beurzen:', error);
@@ -24,7 +24,7 @@ function StockExchangeTable() {
 
     const handleSave = async (id) => {
         try {
-            await axios.put(`/api/stockexchange/${id}`, { name: editedName });
+            await http.put(`/stockexchange/${id}`, { name: editedName });
             setEditExchangeId(null);
             fetchStockExchanges();
         } catch (error) {
@@ -34,7 +34,7 @@ function StockExchangeTable() {
 
     const handleDelete = async (id) => {
         try {
-            await axios.delete(`/api/stockexchange/${id}`);
+            await http.delete(`/stockexchange/${id}`);
             fetchStockExchanges();
         } catch (error) {
             console.error('Fout bij het verwijderen van beurs:', error);
@@ -44,7 +44,7 @@ function StockExchangeTable() {
     const handleAddExchange = async () => {
         if (!newExchangeName.trim()) return;
         try {
-            await axios.post('/api/stockexchange', { name: newExchangeName });
+            await http.post('/stockexchange', { name: newExchangeName });
             setNewExchangeName('');
             fetchStockExchanges();
         } catch (error) {

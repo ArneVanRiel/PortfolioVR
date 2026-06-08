@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 
 function AddStockForm({ fetchStocks }) {
     const [isOpen, setIsOpen] = useState(false);
@@ -17,8 +17,8 @@ function AddStockForm({ fetchStocks }) {
             const fetchData = async () => {
                 try {
                     const [exchangesRes, assetTypesRes] = await Promise.all([
-                        axios.get('/api/watchlist/stock-exchanges'),
-                        axios.get('/api/watchlist/asset-types')
+                        http.get('/watchlist/stock-exchanges'),
+                        http.get('/watchlist/asset-types')
                     ]);
                     setStockExchanges(exchangesRes.data);
                     setAssetTypes(assetTypesRes.data);
@@ -52,7 +52,7 @@ function AddStockForm({ fetchStocks }) {
         };
     
         try {
-            await axios.post('/api/stocks', newStock);
+            await http.post('/stocks', newStock);
             if (fetchStocks) fetchStocks();  // Refresh de tabel indien de functie is meegegeven
             setName('');
             setTicker('');

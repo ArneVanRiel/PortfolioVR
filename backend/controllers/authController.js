@@ -10,10 +10,15 @@ const otpStore = new Map();
 
 // Configureer de nodemailer transporter
 const transporter = nodemailer.createTransport({
-    service: 'hotmail',
+    host: "smtp-mail.outlook.com",
+    port: 587,
+    secure: false, // true voor 465, false voor andere poorten
     auth: {
         user: process.env.MAIL_USER,
         pass: process.env.MAIL_PASS
+    },
+    tls: {
+        ciphers: 'SSLv3'
     }
 });
 
@@ -36,13 +41,20 @@ const loginStep1 = async (req, res) => {
       return res.status(401).json({ message: 'Gebruiker niet gevonden of onjuist wachtwoord' });
     }
 
-    const otp = crypto.randomInt(100000, 999999).toString();
+    // Kijk of de gebruiker een demo account is
+    const isDemo = user.role === 'demo' || username.toLowerCase() === 'demo';
+    const otp = isDemo ? '000000' : crypto.randomInt(100000, 999999).toString();
     
     otpStore.set(username, {
         otp: otp,
         expiresAt: Date.now() + 10 * 60 * 1000,
         user: user 
     });
+
+    // Sla de mail server over voor demo accounts
+    if (isDemo) {
+        return res.json({ message: 'Demo account herkend. Gebruik verificatiecode: 000000' });
+    }
 
     const userEmail = user.email || user.Email; 
 
@@ -68,13 +80,13 @@ const loginStep1 = async (req, res) => {
     console.log(`🔑 JOUW LOGIN CODE VOOR ${username}: ${otp}`);
     console.log(`=========================================\n`);
 
-    // OPLOSSING VOOR TRAGE LOGIN: We wachten (await) niet meer op de mailserver.
-    transporter.sendMail(mailOptions).catch(mailError => {
-        console.error('Email verzenden op de achtergrond mislukt:', mailError.message);
-    });
-
-    // Frontend mag meteen door, geen vertraging meer!
-    res.json({ message: 'Kijk in je Node.js console (terminal) voor je inlogcode!' });
+    try {
+        await transporter.sendMail(mailOptions);
+        res.json({ message: 'Verificatiecode is verstuurd naar je e-mailadres.' });
+    } catch (mailError) {
+        console.error('Email verzenden mislukt:', mailError);
+        res.status(500).json({ message: 'Fout bij verzenden e-mail via Outlook. Bekijk de logs in Render.' });
+    }
   } catch (error) {
     console.error('Fout bij inloggen stap 1:', error);
     res.status(500).json({ message: 'Serverfout bij het inloggen.' });
@@ -102,8 +114,22 @@ const loginStep2 = async (req, res) => {
 
         // Code is correct!
         const user = storedOtpData.user;
-        const userID = user.id;
+        let userID = user.id;
         const role = user.role || user.Roles;
+
+        // Forceer demo gebruiker naar de data van ArneVR
+        if (role === 'demo' || username.toLowerCase() === 'demo') {
+            try {
+                const arneReq = new sql.Request();
+                // Pas de naam 'ArneVR' hier eventueel aan naar hoe je exact heet in de database
+                const arneRes = await arneReq.query("SELECT id FROM PF_Users WHERE username = 'ArneVR'");
+                if (arneRes.recordset.length > 0) {
+                    userID = arneRes.recordset[0].id;
+                }
+            } catch (err) {
+                console.error("Kon ID van ArneVR niet ophalen:", err);
+            }
+        }
 
         // Bepaal de geldigheidsduur van het token
         const expiresIn = rememberMe ? '30d' : '1h';
@@ -121,7 +147,7 @@ const loginStep2 = async (req, res) => {
 };
 
 const register = async (req, res) => {
-  const { username, email, password } = req.body;
+  const { username, email, password, role } = req.body;
 
   if (!username || !email || !password) {
     return res.status(400).json({ message: 'Vul gebruikersnaam, e-mailadres en wachtwoord in.' });
@@ -143,8 +169,9 @@ const register = async (req, res) => {
     insertRequest.input('username', sql.NVarChar, username);
     insertRequest.input('email', sql.NVarChar, email);
     insertRequest.input('password', sql.NVarChar, hashedPassword);
+    insertRequest.input('role', sql.NVarChar, role || 'user');
     
-    await insertRequest.query(`INSERT INTO PF_Users (username, email, password, role) VALUES (@username, @email, @password, 'user')`);
+    await insertRequest.query(`INSERT INTO PF_Users (username, email, password, role) VALUES (@username, @email, @password, @role)`);
 
     res.status(201).json({ message: 'Account succesvol aangemaakt! Je kan nu inloggen.' });
   } catch (error) {
@@ -220,4 +247,43 @@ const updatePassword = async (req, res) => {
     }
 };
 
-module.exports = { loginStep1, loginStep2, register, getProfile, updateProfile, updatePassword };
+const getAllUsers = async (req, res) => {
+    try {
+        // 1. Gebruik een sql.Request() object voor een veilige uitvoering
+        const request = new sql.Request();
+        const result = await request.query('SELECT * FROM PF_Users');
+        
+        // 2. Map de database resultaten zodat de frontend altijd exact weet wat hij krijgt,
+        // zelfs als SQL Server de kolommen toevallig met een hoofdletter heeft aangemaakt.
+        const mappedUsers = result.recordset.map(u => ({
+            id: u.id || u.Id || u.ID,
+            username: u.username || u.Username || u.USERNAME,
+            email: u.email || u.Email || u.EMAIL,
+            role: u.role || u.Role || u.Roles || 'user'
+        }));
+        
+        res.json(mappedUsers);
+    } catch (error) {
+        console.error('Fout bij ophalen gebruikers:', error);
+        res.status(500).json({ message: 'Serverfout bij ophalen gebruikers.' });
+    }
+};
+
+const updateUserRole = async (req, res) => {
+    const { id } = req.params;
+    const { role } = req.body;
+
+    try {
+        const request = new sql.Request();
+        request.input('id', sql.Int, id);
+        request.input('role', sql.NVarChar, role);
+        await request.query('UPDATE PF_Users SET role = @role WHERE id = @id');
+        
+        res.json({ message: 'Gebruikersrol succesvol bijgewerkt.' });
+    } catch (error) {
+        console.error('Fout bij updaten rol:', error);
+        res.status(500).json({ message: 'Serverfout bij updaten rol.' });
+    }
+};
+
+module.exports = { loginStep1, loginStep2, register, getProfile, updateProfile, updatePassword, getAllUsers, updateUserRole };
