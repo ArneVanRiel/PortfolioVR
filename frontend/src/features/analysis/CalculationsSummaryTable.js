@@ -670,7 +670,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             }
                                             return (value != null && displayAlertType === 'Koopsignaal') ? <span className="privacy-blur">{isIncognito ? '€ ••••••' : `€${(value * (percentage / 100) / 10 * item.weight_factor).toFixed(2)}`}</span> : 'N/A';
                                         case 'current_recommended_amount':
-                                             return currentRecommendedAmount != null ? `€${currentRecommendedAmount.toFixed(2)}` : 'N/A';
+                                             return currentRecommendedAmount != null ? <span className="privacy-blur">{isIncognito ? '€ ••••••' : `€${currentRecommendedAmount.toFixed(2)}`}</span> : 'N/A';
                                         default:
                                             return value || 'N/A';
                                     }

@@ -47,6 +47,9 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   
   const isIncognito = useIncognito();
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
+
 
   const fetchData = useCallback(async () => {
     if (!selectedStock) return;
@@ -360,12 +363,16 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
                     <option value="SELL">SELL</option>
                     <option value="DIVIDEND">DIVIDEND</option>
                 </select>
-                <button onClick={() => setIsAddModalOpen(true)} className="px-3 py-1.5 text-xs font-bold bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-md transition-colors shadow-sm border border-blue-200">
-                    + Transactie
-                </button>
-                <button onClick={() => setShowSplitModal(true)} className="px-3 py-1.5 text-xs font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 rounded-md transition-colors shadow-sm border border-orange-200">
-                    Stock Split Verwerken
-                </button>
+                {!isDemo && (
+                  <>
+                    <button onClick={() => setIsAddModalOpen(true)} className="px-3 py-1.5 text-xs font-bold bg-blue-100 text-blue-700 hover:bg-blue-200 rounded-md transition-colors shadow-sm border border-blue-200">
+                        + Transactie
+                    </button>
+                    <button onClick={() => setShowSplitModal(true)} className="px-3 py-1.5 text-xs font-bold bg-orange-100 text-orange-700 hover:bg-orange-200 rounded-md transition-colors shadow-sm border border-orange-200">
+                        Stock Split Verwerken
+                    </button>
+                  </>
+                )}
             </div>
         </div>
         <div className="overflow-x-auto">

@@ -362,7 +362,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                                         onMouseEnter={(e) => handleMouseEnterAmount(e, item)}
                                                         onMouseLeave={handleMouseLeaveAmount}
                                                     >
-                                                        {adjustedValue != null ? <span className="privacy-blur">€{Number(adjustedValue).toFixed(2)}</span> : 'N/A'}
+                                                        {adjustedValue != null ? <span className="privacy-blur">{isIncognito ? '€ ••••••' : `€${Number(adjustedValue).toFixed(2)}`}</span> : 'N/A'}
                                                     </div>
                                                 );
                                             case 'date':

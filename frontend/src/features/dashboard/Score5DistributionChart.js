@@ -3,11 +3,13 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { Bar } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
 import http from '../../http-common';
+import { useIncognito } from '../../hooks/useIncognito';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
 const Score5DistributionChart = () => {
   const [portfolioData, setPortfolioData] = useState(null);
+  const isIncognito = useIncognito();
   const [sortBy, setSortBy] = useState('ideal'); // 'ideal' of 'actual'
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -150,7 +152,7 @@ const Score5DistributionChart = () => {
             if (datasetLabel === 'Huidig (%)') {
               const absValue = context.dataset.absoluteValues[context.dataIndex];
               const formattedValue = new Intl.NumberFormat('nl-BE', { style: 'currency', currency: 'EUR' }).format(absValue);
-              return `${datasetLabel}: ${percentage}% (${formattedValue})`;
+              return `${datasetLabel}: ${percentage}% ${isIncognito ? '€ ••••••' : `(${formattedValue})`}`;
             }
             
             return `${datasetLabel}: ${percentage}%`;
