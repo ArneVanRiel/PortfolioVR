@@ -16,6 +16,7 @@ const portfolioRoutes = require('./routes/portfolioRoutes');
 const brokerRoutes = require('./routes/brokerRoutes');
 const stockExchangeRoutes = require('./routes/stockExchangeRoutes');
 const authRoutes = require('./routes/authRoutes');
+const verifyToken = require('./middleware/authMiddleware');
 
 const app = express();
 app.use(express.json());
@@ -28,19 +29,21 @@ connectToDatabase().catch(err => {
 });
 
 // Gebruik de routes
-app.use('/api', secRoutes);
-app.use('/api/watchlist', watchlistRoutes); // alle pagina's voor watchlists en ideale portfolio
-app.use('/api/balance/available', availableBalanceRoutes); 
-app.use('/api/ideal-portfolio', idealPortfolioRoutes); 
-app.use('/api/fundamental-data', fundamentalDataRoutes); // NIEUW
-app.use('/api/sec', secImportRoutes);
-app.use('/api/calculations', calculationRoutes);
-app.use('/api/alerts', alertsRoutes);
-app.use('/api/sec-fields', secFieldRoutes);
-app.use('/api/portfolio', portfolioRoutes); // NIEUW: Koppel de portfolio routes
-app.use('/api/brokers', brokerRoutes);
-app.use('/api/stockexchange', stockExchangeRoutes);
-app.use('/api/auth', authRoutes);
+app.use('/api/auth', authRoutes); // Auth is publiek toegankelijk
+
+// Beveilig alle andere routes met verifyToken
+app.use('/api', verifyToken, secRoutes);
+app.use('/api/watchlist', verifyToken, watchlistRoutes); 
+app.use('/api/balance/available', verifyToken, availableBalanceRoutes); 
+app.use('/api/ideal-portfolio', verifyToken, idealPortfolioRoutes); 
+app.use('/api/fundamental-data', verifyToken, fundamentalDataRoutes);
+app.use('/api/sec', verifyToken, secImportRoutes);
+app.use('/api/calculations', verifyToken, calculationRoutes);
+app.use('/api/alerts', verifyToken, alertsRoutes);
+app.use('/api/sec-fields', verifyToken, secFieldRoutes);
+app.use('/api/portfolio', verifyToken, portfolioRoutes);
+app.use('/api/brokers', verifyToken, brokerRoutes);
+app.use('/api/stockexchange', verifyToken, stockExchangeRoutes);
 
 
 // Algemene foutafhandeling

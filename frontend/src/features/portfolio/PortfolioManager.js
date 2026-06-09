@@ -268,7 +268,10 @@ const PortfolioManager = () => {
 
       const response = await fetch(`${API_URL}/portfolio/recalculateAndStorePortfolioHistory`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
         body: JSON.stringify(payload)
       });
 
@@ -329,7 +332,10 @@ const PortfolioManager = () => {
     try {
         const response = await fetch(`${API_URL}/portfolio/checkAndRepairPriceData`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${localStorage.getItem('token')}`
+            },
             body: JSON.stringify({ userId: uid })
         });
 
@@ -392,6 +398,9 @@ const PortfolioManager = () => {
     try {
       const response = await fetch(`${API_URL}/portfolio/force-update-exchange-rates`, {
         method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
       });
 
       if (!response.ok) throw new Error('Serverfout');

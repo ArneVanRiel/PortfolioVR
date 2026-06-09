@@ -77,7 +77,11 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
       setLoading(true);
       setError('');
 
-      const stocksResponse = await fetch(`${API_URL}/watchlist/watchlist?view=${viewType}`);
+      const stocksResponse = await fetch(`${API_URL}/watchlist/watchlist?view=${viewType}`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
       if (!stocksResponse.ok) {
         throw new Error(`HTTP error! status: ${stocksResponse.status}`);
       }
@@ -111,7 +115,11 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   // Functie om alle beschikbare stocks op te halen uit de database
   const fetchAvailableStocks = useCallback(async () => {
     try {
-      const response = await fetch(`${API_URL}/watchlist/available-stocks`);
+      const response = await fetch(`${API_URL}/watchlist/available-stocks`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -125,7 +133,11 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   // Functie om alle beschikbare asset types op te halen
   const fetchAssetTypes = useCallback(async () => {
     try {
-      const response = await fetch(`${API_URL}/watchlist/asset-types`);
+      const response = await fetch(`${API_URL}/watchlist/asset-types`, {
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
+      });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -220,7 +232,10 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     try {
       const response = await fetch(`${API_URL}/watchlist/add-stock`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
         body: JSON.stringify({
           aandeel_id: selectedStockToAdd,
           viewType: viewType,
@@ -255,7 +270,10 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     try {
       const response = await fetch(`${API_URL}/watchlist/remove-stock/${stockToDelete.aandeel_id}`, {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        },
         body: JSON.stringify({ viewType }),
       });
 
