@@ -28,31 +28,41 @@ const SidebarLink = ({ to, iconClass, children, isActive, onClick, isSidebarPinn
     <Link
       to={to}
       onClick={onClick}
-      className={`group relative flex flex-col md:flex-row items-center justify-center transition-all duration-300 ease-in-out flex-1 md:flex-none h-full md:h-auto py-1 md:py-0 ${
+      className={`group relative flex items-center transition-all duration-300 ease-in-out ${
         isActive
-          ? 'text-blue-600 md:bg-blue-600 md:text-white md:shadow-md'
-          : 'text-gray-500 hover:bg-gray-50 md:hover:bg-gray-100 hover:text-blue-600'
+          ? 'bg-blue-600 text-white shadow-md'
+          : 'text-gray-600 hover:bg-gray-100 hover:text-blue-600'
       } ${
         isSidebarPinned 
-          ? 'md:justify-start md:px-4 md:py-3 md:mx-4 md:rounded-xl' 
-          : 'md:justify-center md:w-12 md:h-12 md:mx-auto md:rounded-xl'
+          ? 'justify-start px-4 py-3 mx-4 rounded-xl' 
+          : 'justify-center w-12 h-12 mx-auto rounded-xl'
       }`}
     >
-      {/* Mobiele actieve indicator (blauw streepje bovenaan het icoon) */}
-      <div className={`absolute top-0 left-0 right-0 h-1 bg-blue-600 md:hidden ${isActive ? 'block' : 'hidden'}`}></div>
+      <i className={`${iconClass} text-2xl flex-shrink-0 flex items-center justify-center`}></i>
       
-      <i className={`${iconClass} text-2xl md:text-2xl mb-1 md:mb-0 flex-shrink-0 flex items-center justify-center`}></i>
-      
-      {/* Tekst voor Mobiel (klein, onder het icoon) */}
-      <span className="text-[10px] md:hidden font-medium leading-none">{children}</span>
-
       {isSidebarPinned ? (
-        <span className="hidden md:block ml-3 font-medium whitespace-nowrap">{children}</span>
+        <span className="ml-3 font-medium whitespace-nowrap">{children}</span>
       ) : (
-        <span className="hidden md:block absolute left-14 bg-white text-gray-700 border border-gray-200 shadow-md px-3 py-1 rounded-md text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-50 pointer-events-none">
+        <span className="absolute left-14 bg-white text-gray-700 border border-gray-200 shadow-md px-3 py-1 rounded-md text-sm font-medium opacity-0 group-hover:opacity-100 transition-opacity duration-200 whitespace-nowrap z-50 pointer-events-none">
           {children}
         </span>
       )}
+    </Link>
+  );
+};
+
+const MobileBottomLink = ({ to, iconClass, children, isActive, onClick }) => {
+  return (
+    <Link
+      to={to}
+      onClick={onClick}
+      className={`relative flex flex-col items-center justify-center flex-1 h-full py-1 ${
+        isActive ? 'text-blue-600 bg-blue-50/50' : 'text-gray-500 hover:bg-gray-50 hover:text-blue-600'
+      }`}
+    >
+      <div className={`absolute top-0 left-0 right-0 h-1 bg-blue-600 ${isActive ? 'block' : 'hidden'}`}></div>
+      <i className={`${iconClass} text-2xl mb-1 flex-shrink-0 flex items-center justify-center`}></i>
+      <span className="text-[10px] font-medium leading-none">{children}</span>
     </Link>
   );
 };
@@ -216,16 +226,16 @@ function App() {
       )}
 
       {/* Zijbalk + Hoofdinhoud Layout */}
-      <div className="flex flex-col-reverse md:flex-row flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* Sidebar Navigatie */}
         {!isLoginPage && (
           <aside
-            className={`bg-white border-t md:border-t-0 md:border-r border-gray-200 transition-all duration-300 ease-in-out flex flex-row md:flex-col z-40 w-full h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] md:h-auto md:pb-0 md:py-4 ${
+            className={`hidden md:flex bg-white border-r border-gray-200 transition-all duration-300 ease-in-out flex-col py-4 z-40 ${
               isSidebarPinned ? 'w-64' : 'w-20'
             }`}
           >
             {/* Menu knop om zijbalk vast te zetten */}
-            <div className="hidden md:flex items-center justify-center mb-6">
+            <div className="flex items-center justify-center mb-6">
               <button
                 onClick={() => setIsSidebarPinned(!isSidebarPinned)}
                 className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors focus:outline-none"
@@ -237,13 +247,13 @@ function App() {
               </button>
             </div>
             
-            <nav className="flex flex-row md:flex-col flex-1 gap-1 md:gap-2 justify-around md:justify-start px-2 md:px-0">
+            <nav className="flex flex-col flex-1 gap-2">
               <SidebarLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')} isSidebarPinned={isSidebarPinned}>Dashboard</SidebarLink>
               <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analysis</SidebarLink>
               <SidebarLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')} isSidebarPinned={isSidebarPinned}>Portfolio</SidebarLink>
               
               {isAdmin && (
-                <div className="flex flex-1 md:flex-none md:mt-auto md:mb-2">
+                <div className="mt-auto mb-2">
                   <SidebarLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')} isSidebarPinned={isSidebarPinned}>Settings</SidebarLink>
                 </div>
               )}
@@ -266,6 +276,19 @@ function App() {
             </Routes>
           </div>
         </main>
+
+        {/* Mobile Bottom Navigation */}
+        {!isLoginPage && (
+          <nav className="md:hidden bg-white border-t border-gray-200 flex flex-row justify-around z-50 w-full h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)]">
+            <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')}>Dashboard</MobileBottomLink>
+            <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')}>Analysis</MobileBottomLink>
+            <MobileBottomLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')}>Portfolio</MobileBottomLink>
+            
+            {isAdmin && (
+              <MobileBottomLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')}>Settings</MobileBottomLink>
+            )}
+          </nav>
+        )}
       </div>
 
       {/* Zoekmodal component */}
