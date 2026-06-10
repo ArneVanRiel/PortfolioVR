@@ -142,7 +142,15 @@ const loginStep2 = async (req, res) => {
         // Verwijder de gebruikte OTP zodat deze niet opnieuw gebruikt kan worden
         otpStore.delete(username);
 
-        res.json({ token, username, userID, role, expiresIn });
+        // Stop het token in een onzichtbare HttpOnly cookie!
+        res.cookie('token', token, {
+            httpOnly: true, // Javascript kan dit NIET meer uitlezen (Veilig tegen XSS!)
+            secure: true,   // Vereist voor cross-site (Render/Vercel) over HTTPS
+            sameSite: 'none', // Noodzakelijk omdat React (Vercel) en Node (Render) op verschillende domeinen draaien
+            maxAge: rememberMe ? 30 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000
+        });
+
+        res.json({ username, userID, role, expiresIn }); // We sturen geen 'token' meer mee in de body
     } catch (error) {
         console.error('Fout bij inloggen stap 2:', error);
         res.status(500).json({ message: 'Serverfout bij het verifiëren.' });
@@ -289,4 +297,14 @@ const updateUserRole = async (req, res) => {
     }
 };
 
-module.exports = { loginStep1, loginStep2, register, getProfile, updateProfile, updatePassword, getAllUsers, updateUserRole };
+const logout = (req, res) => {
+    // Wis de veilige cookie bij het uitloggen
+    res.clearCookie('token', {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none'
+    });
+    res.json({ message: 'Succesvol uitgelogd' });
+};
+
+module.exports = { loginStep1, loginStep2, register, getProfile, updateProfile, updatePassword, getAllUsers, updateUserRole, logout };

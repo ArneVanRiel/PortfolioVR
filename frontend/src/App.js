@@ -16,8 +16,10 @@ import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.
 
 // Protected Route Component om onbevoegde toegang te blokkeren
 const ProtectedRoute = ({ children }) => {
-  const token = localStorage.getItem('token');
-  if (!token) {
+  // Omdat de token nu onzichtbaar in een cookie zit, checken we in de UI puur op userID.
+  // De échte veiligheid ligt nu in de backend die een 401 geeft als de onzichtbare cookie ontbreekt.
+  const userID = localStorage.getItem('userID');
+  if (!userID) {
     return <Navigate to="/login" replace />;
   }
   return children;
@@ -96,8 +98,13 @@ function App() {
   }, [location]);
 
   // Functie om de gebruiker uit te loggen
-  const handleLogout = () => {
-    localStorage.removeItem('token');
+  const handleLogout = async () => {
+    try {
+      // Roep de backend aan zodat deze de veilige HttpOnly cookie vernietigt
+      await http.post('/auth/logout');
+    } catch (err) {
+      console.error('Fout bij uitloggen:', err);
+    }
     localStorage.removeItem('userID');
     localStorage.removeItem('role');
     localStorage.removeItem('username');

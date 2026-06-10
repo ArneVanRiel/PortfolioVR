@@ -256,9 +256,9 @@ const AnalysisDataTab = ({ selectedStock, onDataUpdate }) => {
         const response = await fetch(`${API_URL}/sec/import`, {
             method: 'POST',
             headers: { 
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${localStorage.getItem('token')}`
+              'Content-Type': 'application/json'
             },
+            credentials: 'include',
             body: JSON.stringify({ ticker: selectedStock.ticker, periodOption: secPeriodOption }),
         });
         

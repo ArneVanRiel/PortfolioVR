@@ -2,6 +2,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const cookieParser = require('cookie-parser');
 const { connectToDatabase } = require('./config/database');
 const secRoutes = require('./routes/secRoutes');
 const watchlistRoutes = require('./routes/watchlistRoutes'); // alle pagina's voor watchlists en ideale portfolio
@@ -20,7 +21,11 @@ const verifyToken = require('./middleware/authMiddleware');
 
 const app = express();
 app.use(express.json());
-app.use(cors());
+app.use(cookieParser());
+app.use(cors({
+  origin: ['http://localhost:3000', process.env.FRONTEND_URL], // Enkel jouw domeinen mogen de API aanspreken
+  credentials: true // Cruciaal: Sta toe dat de browser veilige cookies meestuurt
+}));
 
 // Verbind met de database
 connectToDatabase().catch(err => {

@@ -234,9 +234,9 @@ const Dashboard = () => {
       const response = await fetch(`${API_URL}/watchlist/update-data`, {
         method: 'POST',
         headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('token')}`
+          'Content-Type': 'application/json'
         },
+        credentials: 'include'
       });
 
       if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
