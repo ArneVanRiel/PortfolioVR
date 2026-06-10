@@ -53,6 +53,16 @@
   --text-color: #d6dde0;
 }
 
+/* Custom utility to hide scrollbars */
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
+.hide-scrollbar {
+  -ms-overflow-style: none;  /* IE and Edge */
+  scrollbar-width: none;  /* Firefox */
+}
+
 /* Alle andere handgeschreven CSS-klassen zijn verwijderd
    omdat de WatchlistPortfolioTable.js component nu direct
    Bootstrap utility classes gebruikt.

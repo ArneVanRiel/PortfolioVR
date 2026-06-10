@@ -86,6 +86,14 @@ function Settings() {
         }
     };
 
+    // Helper functie om te controleren of iemand "Online" is (ingelogd in de laatste 2 uur)
+    const isOnline = (lastLoginDate) => {
+        if (!lastLoginDate) return false;
+        const lastLogin = new Date(lastLoginDate);
+        const now = new Date();
+        return (now - lastLogin) < (2 * 60 * 60 * 1000); // 2 uur
+    };
+
     return (
         <div className="space-y-8 pb-10">
             {/* Header */}
@@ -120,6 +128,7 @@ function Settings() {
                                     <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Naam</th>
                                     <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase">E-mail</th>
                                     <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Rol</th>
+                                    <th className="px-4 py-2 text-left text-xs font-semibold text-gray-500 uppercase">Laatste Login</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
@@ -138,6 +147,12 @@ function Settings() {
                                                 <option value="demo">Demo (Alleen-lezen)</option>
                                             </select>
                                         </td>
+                                    <td className="px-4 py-2 text-sm text-gray-600">
+                                        <div className="flex items-center">
+                                            <span className={`w-2 h-2 rounded-full mr-2 ${isOnline(user.last_login) ? 'bg-green-500 shadow-[0_0_5px_#22c55e]' : 'bg-gray-300'}`}></span>
+                                            {user.last_login ? new Date(user.last_login).toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute:'2-digit' }) : 'Nooit'}
+                                        </div>
+                                    </td>
                                     </tr>
                                 ))}
                             </tbody>

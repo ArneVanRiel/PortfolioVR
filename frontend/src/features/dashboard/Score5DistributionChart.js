@@ -196,7 +196,7 @@ const Score5DistributionChart = () => {
           <option value="actual">Sorteer: Huidig (Hoog → Laag)</option>
         </select>
       </div>
-      <div className="relative flex-grow w-full min-h-[300px]">
+      <div className="relative flex-grow w-full">
         <Bar data={chartData} options={options} />
       </div>
     </div>

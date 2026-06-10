@@ -228,7 +228,7 @@ function App() {
       )}
 
       {/* Zijbalk + Hoofdinhoud Layout */}
-      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
+      <div className="flex flex-col-reverse md:flex-row flex-1 overflow-hidden">
         {/* Sidebar Navigatie */}
         {!isLoginPage && (
           <aside
@@ -264,7 +264,7 @@ function App() {
         )}
 
         {/* Main Content Scroll Area */}
-        <main className="flex-1 overflow-y-auto">
+        <main className="flex-1 overflow-y-auto min-h-0">
           <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
             <Routes>
               <Route path='/login' element={<LoginPageTest/>} />

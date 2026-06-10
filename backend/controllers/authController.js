@@ -142,6 +142,11 @@ const loginStep2 = async (req, res) => {
         // Verwijder de gebruikte OTP zodat deze niet opnieuw gebruikt kan worden
         otpStore.delete(username);
 
+        // Sla de inlogtijd op in de database
+        const updateReq = new sql.Request();
+        updateReq.input('id', sql.Int, userID);
+        await updateReq.query('UPDATE PF_Users SET last_login = GETDATE() WHERE id = @id');
+
         // Stuur het token veilig terug in de JSON response
         res.json({ token, username, userID, role, expiresIn });
     } catch (error) {
@@ -263,7 +268,8 @@ const getAllUsers = async (req, res) => {
             id: u.id || u.Id || u.ID,
             username: u.username || u.Username || u.USERNAME,
             email: u.email || u.Email || u.EMAIL,
-            role: u.role || u.Role || u.Roles || 'user'
+            role: u.role || u.Role || u.Roles || 'user',
+            last_login: u.last_login || u.Last_Login || null
         }));
         
         res.json(mappedUsers);
