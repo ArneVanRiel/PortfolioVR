@@ -22,3 +22,9 @@ yarn-error.log*
 **/.env
 **/.env.*
 !**/.env.example
+
+# Lokale testmappen, ongebruikte scripts en migraties
+nogTeSortrenOfVerwijderen/
+scripts/
+insertDataToDatabaseFromSec20250302*.py
+migrations/
