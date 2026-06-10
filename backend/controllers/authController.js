@@ -142,11 +142,12 @@ const loginStep2 = async (req, res) => {
         // Verwijder de gebruikte OTP zodat deze niet opnieuw gebruikt kan worden
         otpStore.delete(username);
 
+        const isProduction = process.env.NODE_ENV === 'production';
         // Stop het token in een onzichtbare HttpOnly cookie!
         res.cookie('token', token, {
             httpOnly: true, // Javascript kan dit NIET meer uitlezen (Veilig tegen XSS!)
-            secure: true,   // Vereist voor cross-site (Render/Vercel) over HTTPS
-            sameSite: 'none', // Noodzakelijk omdat React (Vercel) en Node (Render) op verschillende domeinen draaien
+            secure: isProduction,   // True op Render (HTTPS), false op localhost (HTTP)
+            sameSite: isProduction ? 'none' : 'lax', // 'none' vereist HTTPS, localhost gebruikt 'lax'
             maxAge: rememberMe ? 30 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000
         });
 
@@ -298,11 +299,12 @@ const updateUserRole = async (req, res) => {
 };
 
 const logout = (req, res) => {
+    const isProduction = process.env.NODE_ENV === 'production';
     // Wis de veilige cookie bij het uitloggen
     res.clearCookie('token', {
         httpOnly: true,
-        secure: true,
-        sameSite: 'none'
+        secure: isProduction,
+        sameSite: isProduction ? 'none' : 'lax'
     });
     res.json({ message: 'Succesvol uitgelogd' });
 };

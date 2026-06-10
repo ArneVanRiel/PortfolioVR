@@ -3,6 +3,7 @@ import { Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-r
 import { Toaster } from 'react-hot-toast';
 
 // Feature-gebaseerde component imports
+import http from './http-common';
 import Dashboard from './features/dashboard/Dashboard.js';
 import Analysis from './features/analysis/Analysis.js';
 import PortfolioManager from './features/portfolio/PortfolioManager.js';
