@@ -4,9 +4,20 @@ const http = axios.create({
   baseURL: process.env.REACT_APP_API_URL || "http://localhost:5000/api",
   headers: {
     "Content-type": "application/json"
-  },
-  withCredentials: true // Dit zorgt ervoor dat de browser zijn beveiligde cookies automatisch meestuurt!
+  }
 });
+
+// Voeg automatisch het JWT token toe aan elke request
+http.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem('token');
+    if (token) {
+      config.headers['Authorization'] = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
 
 // Onderschep antwoorden van de server om fouten (zoals 401) globaal af te handelen
 http.interceptors.response.use(

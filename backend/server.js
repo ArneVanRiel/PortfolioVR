@@ -21,11 +21,7 @@ const verifyToken = require('./middleware/authMiddleware');
 
 const app = express();
 app.use(express.json());
-app.use(cookieParser());
-app.use(cors({
-  origin: ['http://localhost:3000', process.env.FRONTEND_URL], // Enkel jouw domeinen mogen de API aanspreken
-  credentials: true // Cruciaal: Sta toe dat de browser veilige cookies meestuurt
-}));
+app.use(cors());
 
 // Verbind met de database
 connectToDatabase().catch(err => {

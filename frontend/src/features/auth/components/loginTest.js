@@ -53,9 +53,10 @@ const LoginPageTest = () => {
         setLoading(true);
         try {
             const response = await axios.post(`${API_URL}/auth/login-step2`, { username, otp, rememberMe });
-            const { userID, role } = response.data;
+            const { token, userID, role } = response.data;
 
-            // We bewaren géén token meer in localStorage! Dit is nu onzichtbaar en veilig afgehandeld door de cookie.
+            // Bewaar het token in de localStorage
+            localStorage.setItem('token', token);
             localStorage.setItem('userID', userID);
             localStorage.setItem('role', role);
             localStorage.setItem('username', username);

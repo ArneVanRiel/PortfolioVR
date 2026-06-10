@@ -78,7 +78,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
       setError('');
 
       const stocksResponse = await fetch(`${API_URL}/watchlist/watchlist?view=${viewType}`, {
-        credentials: 'include'
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
       });
       if (!stocksResponse.ok) {
         throw new Error(`HTTP error! status: ${stocksResponse.status}`);
@@ -114,7 +116,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   const fetchAvailableStocks = useCallback(async () => {
     try {
       const response = await fetch(`${API_URL}/watchlist/available-stocks`, {
-        credentials: 'include'
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
       });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -130,7 +134,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   const fetchAssetTypes = useCallback(async () => {
     try {
       const response = await fetch(`${API_URL}/watchlist/asset-types`, {
-        credentials: 'include'
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
+        }
       });
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
@@ -227,9 +233,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
       const response = await fetch(`${API_URL}/watchlist/add-stock`, {
         method: 'POST',
         headers: { 
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        credentials: 'include',
         body: JSON.stringify({
           aandeel_id: selectedStockToAdd,
           viewType: viewType,
@@ -265,9 +271,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
       const response = await fetch(`${API_URL}/watchlist/remove-stock/${stockToDelete.aandeel_id}`, {
         method: 'DELETE',
         headers: { 
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        credentials: 'include',
         body: JSON.stringify({ viewType }),
       });
 

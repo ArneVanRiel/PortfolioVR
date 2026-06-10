@@ -142,16 +142,8 @@ const loginStep2 = async (req, res) => {
         // Verwijder de gebruikte OTP zodat deze niet opnieuw gebruikt kan worden
         otpStore.delete(username);
 
-        const isProduction = process.env.NODE_ENV === 'production';
-        // Stop het token in een onzichtbare HttpOnly cookie!
-        res.cookie('token', token, {
-            httpOnly: true, // Javascript kan dit NIET meer uitlezen (Veilig tegen XSS!)
-            secure: isProduction,   // True op Render (HTTPS), false op localhost (HTTP)
-            sameSite: isProduction ? 'none' : 'lax', // 'none' vereist HTTPS, localhost gebruikt 'lax'
-            maxAge: rememberMe ? 30 * 24 * 60 * 60 * 1000 : 60 * 60 * 1000
-        });
-
-        res.json({ username, userID, role, expiresIn }); // We sturen geen 'token' meer mee in de body
+        // Stuur het token veilig terug in de JSON response
+        res.json({ token, username, userID, role, expiresIn });
     } catch (error) {
         console.error('Fout bij inloggen stap 2:', error);
         res.status(500).json({ message: 'Serverfout bij het verifiëren.' });
@@ -299,13 +291,6 @@ const updateUserRole = async (req, res) => {
 };
 
 const logout = (req, res) => {
-    const isProduction = process.env.NODE_ENV === 'production';
-    // Wis de veilige cookie bij het uitloggen
-    res.clearCookie('token', {
-        httpOnly: true,
-        secure: isProduction,
-        sameSite: isProduction ? 'none' : 'lax'
-    });
     res.json({ message: 'Succesvol uitgelogd' });
 };
 

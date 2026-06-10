@@ -1,8 +1,9 @@
 const jwt = require('jsonwebtoken');
 
 const verifyToken = (req, res, next) => {
-  // Lees het token direct en veilig uit de cookies in plaats van de onveilige headers
-  const token = req.cookies.token;
+  // Lees het token uit de Authorization header (Bearer token)
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
 
   if (!token) {
     return res.status(403).json({ message: 'Geen token voorzien. Toegang geweigerd.' });
