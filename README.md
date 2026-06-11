@@ -10,9 +10,9 @@ Deze applicatie is ontworpen om grote datasets (waaronder SEC-filings en live be
 **URL:** [https://portfolio-vr-ten.vercel.app/](https://portfolio-vr-ten.vercel.app/)
 
 Om de applicatie veilig te bekijken zonder data aan te passen, is er een speciaal demo-account beschikbaar:
-- **Gebruikersnaam:** `demo`
-- **Wachtwoord:** `Demo1234!`
-- **OTP (Verificatiecode):** `000000`
+- **Gebruikersnaam:** `op aanvraag`
+- **Wachtwoord:** `op aanvraag`
+- **OTP (Verificatiecode):** `xxxxxx`
 
 ---
 
