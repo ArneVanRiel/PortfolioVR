@@ -155,7 +155,7 @@ function App() {
       {!isLoginPage && (
         /* Header */
         <header className="flex-shrink-0 z-50 w-full bg-white/80 backdrop-blur-md border-b border-gray-200 transition-all duration-300">
-          <div className="container mx-auto flex h-16 items-center justify-between px-4">
+          <div className="container mx-auto flex h-14 items-center justify-between px-4">
             {/* Logo/Merknaam */}
             <Link to="/dashboard" className="flex-shrink-0 flex items-center gap-2">
                 <i className="ph-fill ph-chart-polar text-blue-500 text-3xl"></i>

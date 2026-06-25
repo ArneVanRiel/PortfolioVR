@@ -3,8 +3,13 @@ import http from '../../http-common';
 import * as XLSX from 'xlsx';
 import TransactionForm from './TransactionForm';
 import TaxesTab from './TaxesTab';
-import { useNavigate } from 'react-router-dom';
-import { Doughnut, Line, Bar } from 'react-chartjs-2';
+
+import OverviewTab from './components/OverviewTab';
+import DiversificationTab from './components/DiversificationTab';
+import DividendsTab from './components/DividendsTab';
+import TransactionsTab from './components/TransactionsTab';
+import GrowthTab from './components/GrowthTab';
+
 import { useIncognito } from '../../hooks/useIncognito';
 import {
   Chart as ChartJS,
@@ -25,10 +30,7 @@ ChartJS.register(
 );
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
-
 const PortfolioManager = () => {
-  const navigate = useNavigate();
-
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
   const uid = localStorage.getItem('userID') || 1;
@@ -47,7 +49,6 @@ const PortfolioManager = () => {
   const [transactionToDelete, setTransactionToDelete] = useState(null);
   const [showImportReviewModal, setShowImportReviewModal] = useState(false);
   const [importPreviewData, setImportPreviewData] = useState([]);
-  const [uploadDropdownOpen, setUploadDropdownOpen] = useState(false);
   const [uploadType, setUploadType] = useState('template'); // 'template', 'etoro', 'degiro'
 
   const [chartPeriod, setChartPeriod] = useState('1Y');
@@ -83,6 +84,8 @@ const PortfolioManager = () => {
   const [recalcProgress, setRecalcProgress] = useState(0);
   const [isRepairing, setIsRepairing] = useState(false);
   const [repairProgress, setRepairProgress] = useState(0);
+  const [actionsDropdownOpen, setActionsDropdownOpen] = useState(false);
+  const [toolsDropdownOpen, setToolsDropdownOpen] = useState(false);
   const [logMessages, setLogMessages] = useState([]);
   const [showLogModal, setShowLogModal] = useState(false);
   const [logModalTitle, setLogModalTitle] = useState('');
@@ -718,7 +721,6 @@ const PortfolioManager = () => {
 
   const triggerUpload = (type) => {
       setUploadType(type);
-      setUploadDropdownOpen(false);
       fileInputRef.current.click();
   };
 
@@ -1460,96 +1462,177 @@ const PortfolioManager = () => {
     return Object.values(grouped).sort((a, b) => b.totalNet - a.totalNet);
   }, [filteredDivs]);
 
-  if (loading) return (
-    <div className="flex h-screen items-center justify-center bg-gray-50/50">
-        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
-    </div>
-  );
+  // Global loading screen removed to keep layout stable and tab items interactive
 
   return (
     <div className="space-y-8 font-sans text-gray-900 bg-gray-50/50 min-h-screen">
       {/* Top Card: Hero Header + Tabs (Snowball Stijl) */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="p-6 pb-0">
-          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-end gap-6 mb-6">
-        <div>
-          <h1 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-2">Mijn Portfolio</h1>
-          <div className="flex flex-wrap items-baseline gap-4">
-            <span className="text-5xl lg:text-6xl font-extrabold text-gray-900 tracking-tighter privacy-blur">
-              {formatCurrency(latestPortfolioData?.total_value)}
-            </span>
-            <span className={`text-xl font-bold tracking-tight privacy-blur ${periodStats.periodProfit >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-              {periodStats.periodProfit >= 0 ? '+' : ''}{formatCurrency(periodStats.periodProfit)} 
-              <span className="text-sm font-medium text-gray-400 ml-2 bg-white px-2 py-1 rounded-md border border-gray-200">({chartPeriod})</span>
-            </span>
-          </div>
-        </div>
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-visible">
+        <div className="p-5 pb-0">
+          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-4">
+            <div>
+              <h1 className="text-xs font-bold text-gray-400 uppercase tracking-widest mb-1.5">Mijn Portfolio</h1>
+              <div className="flex flex-wrap items-baseline gap-4">
+                <span className="text-4xl lg:text-5xl font-extrabold text-gray-900 tracking-tighter privacy-blur">
+                  {formatCurrency(latestPortfolioData?.total_value)}
+                </span>
+                <span className={`text-lg font-bold tracking-tight privacy-blur ${periodStats.periodProfit >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {periodStats.periodProfit >= 0 ? '+' : ''}{formatCurrency(periodStats.periodProfit)} 
+                  <span className="text-sm font-medium text-gray-400 ml-2 bg-white px-2 py-1 rounded-md border border-gray-200">({chartPeriod})</span>
+                </span>
+              </div>
+            </div>
 
-        {/* Top Actieknoppen */}
-        {!isDemo && (
-          <div className="flex flex-wrap items-center gap-3">
-            <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
-            <button onClick={handleDownloadTemplate} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
-              <i className="ph ph-download-simple mr-2 text-lg"></i> Template
-            </button>
-            
-            {/* Upload Transacties Dropdown */}
-            <div className="relative inline-block text-left">
-              <button onClick={() => setUploadDropdownOpen(!uploadDropdownOpen)} className="text-sm font-semibold flex items-center bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 transition-colors">
-                <i className="ph ph-upload-simple mr-2 text-lg"></i> Upload <span className="ml-2 text-[10px] text-gray-400">▼</span>
-              </button>
-              {uploadDropdownOpen && (
-                <div className="origin-top-right absolute right-0 mt-2 w-56 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden">
-                  <div className="py-1" role="menu">
-                    <button onClick={() => triggerUpload('template')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">Standaard Excel Template</button>
-                    <div className="border-t border-gray-100"></div>
-                    <button onClick={() => triggerUpload('etoro')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">eToro Afschrift</button>
-                    <button onClick={() => triggerUpload('degiro')} className="block w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium">DeGiro Afschrift</button>
+            {/* Top Actieknoppen */}
+            {!isDemo && (
+              <div className="flex flex-wrap items-center gap-3">
+                <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
+                
+                {/* Actions Dropdown: Template, Upload, Add Transaction (Visible ONLY on transactions or dividends tab) */}
+                {['transactions', 'dividends'].includes(activeTab) && (
+                  <div className="relative inline-block text-left">
+                    <button 
+                      onClick={() => setActionsDropdownOpen(!actionsDropdownOpen)} 
+                      className="text-sm font-bold flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-all gap-2"
+                    >
+                      <i className="ph-fill ph-plus-circle text-lg"></i>
+                      Transacties beheren
+                      <span className="text-[10px] opacity-80">▼</span>
+                    </button>
+                    {actionsDropdownOpen && (
+                      <>
+                        <div className="fixed inset-0 z-40" onClick={() => setActionsDropdownOpen(false)}></div>
+                        <div className="origin-top-right absolute right-0 mt-2 w-64 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden py-1">
+                          <button 
+                            onClick={() => { setIsAddModalOpen(true); setActionsDropdownOpen(false); }} 
+                            className="flex items-center w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-blue-50 font-semibold gap-3"
+                          >
+                            <i className="ph-fill ph-plus-circle text-blue-600 text-lg"></i>
+                            Transactie toevoegen
+                          </button>
+                          
+                          <div className="border-t border-gray-100 my-1"></div>
+                          
+                          <div className="px-4 py-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
+                            Importeren
+                          </div>
+                          <button 
+                            onClick={() => { triggerUpload('template'); setActionsDropdownOpen(false); }} 
+                            className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 pl-6"
+                          >
+                            <i className="ph ph-file-xls text-gray-500 text-lg"></i>
+                            Standaard Excel template
+                          </button>
+                          <button 
+                            onClick={() => { triggerUpload('etoro'); setActionsDropdownOpen(false); }} 
+                            className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 pl-6"
+                          >
+                            <i className="ph ph-file-csv text-gray-500 text-lg"></i>
+                            eToro afschrift
+                          </button>
+                          <button 
+                            onClick={() => { triggerUpload('degiro'); setActionsDropdownOpen(false); }} 
+                            className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 pl-6"
+                          >
+                            <i className="ph ph-file-csv text-gray-500 text-lg"></i>
+                            DeGiro afschrift
+                          </button>
+                          
+                          <div className="border-t border-gray-100 my-1"></div>
+                          
+                          <button 
+                            onClick={() => { handleDownloadTemplate(); setActionsDropdownOpen(false); }} 
+                            className="flex items-center w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3"
+                          >
+                            <i className="ph-fill ph-download-simple text-gray-500 text-lg"></i>
+                            Standaard template downloaden
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
+                )}
+
+                {/* System Tools Dropdown */}
+                <div className="relative inline-block text-left">
+                  <button 
+                    onClick={() => setToolsDropdownOpen(!toolsDropdownOpen)} 
+                    className="p-2 text-gray-500 bg-white hover:bg-gray-100 border border-gray-300 rounded-lg shadow-sm transition-all flex items-center justify-center"
+                    title="Systeemhulpmiddelen"
+                  >
+                    <i className={`ph-fill ph-gear text-xl ${isRecalculating || isRepairing || loading ? 'animate-spin text-blue-600' : ''}`}></i>
+                  </button>
+                  {toolsDropdownOpen && (
+                    <>
+                      <div className="fixed inset-0 z-40" onClick={() => setToolsDropdownOpen(false)}></div>
+                      <div className="origin-top-right absolute right-0 mt-2 w-72 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden py-1">
+                        <div className="px-4 py-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
+                          Systeemonderhoud
+                        </div>
+                        
+                        <button 
+                          onClick={() => { handleRecalculateHistory(false); setToolsDropdownOpen(false); }} 
+                          disabled={isRecalculating}
+                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
+                        >
+                          <i className={`ph-fill ph-calculator text-blue-600 text-lg ${isRecalculating ? 'animate-pulse' : ''}`}></i>
+                          <div>
+                            <div className="font-semibold">Snel herberekenen</div>
+                            <div className="text-xs text-gray-400">Laatste 30 dagen bijwerken</div>
+                          </div>
+                        </button>
+                        
+                        <button 
+                          onClick={() => { handleRecalculateHistory(false, '1970-01-01'); setToolsDropdownOpen(false); }} 
+                          disabled={isRecalculating || isRepairing}
+                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
+                        >
+                          <i className={`ph-fill ph-clock-counter-clockwise text-purple-600 text-lg ${isRecalculating ? 'animate-pulse' : ''}`}></i>
+                          <div>
+                            <div className="font-semibold">Volledige herberekening</div>
+                            <div className="text-xs text-gray-400">Vanaf de allereerste transactie</div>
+                          </div>
+                        </button>
+                        
+                        <button 
+                          onClick={() => { handleCheckAndRepairPrices(); setToolsDropdownOpen(false); }} 
+                          disabled={isRepairing || isRecalculating}
+                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
+                        >
+                          <i className={`ph-fill ph-wrench text-orange-600 text-lg ${isRepairing ? 'animate-spin' : ''}`}></i>
+                          <div>
+                            <div className="font-semibold">Prijsdata controleren & herstellen</div>
+                            <div className="text-xs text-gray-400">Herstel ontbrekende of onjuiste koersen</div>
+                          </div>
+                        </button>
+                        
+                        <button 
+                          onClick={() => { handleUpdateExchangeRates(); setToolsDropdownOpen(false); }} 
+                          disabled={isRepairing || isRecalculating}
+                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
+                        >
+                          <i className="ph-fill ph-currency-dollar text-green-600 text-lg"></i>
+                          <div>
+                            <div className="font-semibold">EUR/USD wisselkoers ophalen</div>
+                            <div className="text-xs text-gray-400">Laad 10 jaar historie van wisselkoersen</div>
+                          </div>
+                        </button>
+                        
+                        <div className="border-t border-gray-100 my-1"></div>
+                        
+                        <button 
+                          onClick={() => { fetchPortfolioData(); setToolsDropdownOpen(false); }} 
+                          className="flex items-center w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3"
+                        >
+                          <i className={`ph-fill ph-arrows-clockwise text-gray-600 text-lg ${loading ? 'animate-spin' : ''}`}></i>
+                          <div className="font-semibold">Data Vernieuwen (Refresh)</div>
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </div>
-              )}
-            </div>
-
-            <button onClick={() => setIsAddModalOpen(true)} className="text-sm font-bold flex items-center bg-blue-600 text-white px-5 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-colors">
-              <i className="ph-fill ph-plus-circle mr-2 text-xl"></i> Transactie
-            </button>
-
-            {/* Extra functies als iconen om de header rustig te houden */}
-            <div className="flex bg-white rounded-lg border border-gray-300 shadow-sm p-1 ml-2">
-              <button 
-                onClick={() => handleRecalculateHistory(false)} 
-                disabled={isRecalculating}
-                className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors disabled:opacity-50"
-              title="Snel Herberekenen (Laatste dagen)">
-                <i className={`ph-fill ph-calculator text-xl ${isRecalculating ? 'animate-pulse text-blue-600' : ''}`}></i>
-              </button>
-              <button 
-                onClick={() => handleRecalculateHistory(false, '1970-01-01')} 
-                disabled={isRecalculating || isRepairing}
-                className="p-1.5 text-gray-500 hover:text-purple-600 hover:bg-purple-50 rounded-md transition-colors disabled:opacity-50"
-                title="Volledige Historie Herberekenen (Vanaf de eerste transactie)">
-                <i className={`ph-fill ph-clock-counter-clockwise text-xl ${isRecalculating ? 'animate-pulse text-purple-600' : ''}`}></i>
-              </button>
-              <button 
-                onClick={handleCheckAndRepairPrices} 
-                disabled={isRepairing || isRecalculating}
-                className="p-1.5 text-gray-500 hover:text-orange-600 hover:bg-orange-50 rounded-md transition-colors disabled:opacity-50"
-                title="Controleer Prijsdata">
-                <i className={`ph-fill ph-wrench text-xl ${isRepairing ? 'animate-spin text-orange-600' : ''}`}></i>
-              </button>
-              <button 
-                onClick={handleUpdateExchangeRates} 
-                disabled={isRepairing || isRecalculating}
-                className="p-1.5 text-gray-500 hover:text-green-600 hover:bg-green-50 rounded-md transition-colors disabled:opacity-50"
-                title="Haal EUR/USD Historie op (10 Jaar)">
-                <i className={`ph-fill ph-currency-dollar text-xl ${isRecalculating ? 'animate-pulse text-green-600' : ''}`}></i>
-              </button>
-              <button onClick={fetchPortfolioData} className="p-1.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors" title="Refresh">
-                <i className="ph-fill ph-arrows-clockwise text-xl"></i>
-              </button>
-            </div>
-          </div>
-        )}
+              </div>
+            )}
           </div>
 
           {/* Tab Navigatie */}
@@ -1558,7 +1641,7 @@ const PortfolioManager = () => {
               <button
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
-                className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+                className={`whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
                   activeTab === tab.id 
                     ? 'border-blue-600 text-blue-600' 
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
@@ -1653,705 +1736,151 @@ const PortfolioManager = () => {
 
       {/* --- TAB CONTENT: COMMON --- */}
       {activeTab === 'common' && (
-        <div className="space-y-6">
-          {/* Performance Chart */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[500px]">
-          <div className="flex justify-between items-center mb-4">
-            <h3 className="text-base font-bold text-gray-900">Portfolio Performance</h3>
-            <div className="flex items-center space-x-3">
-              <label className="flex items-center cursor-pointer text-xs font-bold text-gray-500 uppercase tracking-wide bg-gray-50 px-3 py-1.5 rounded-lg hover:bg-gray-100 transition-colors">
-                <input 
-                  type="checkbox" 
-                  className="mr-2 rounded border-gray-300 text-blue-600 focus:ring-blue-500 h-4 w-4"
-                  checked={showTransOnChart}
-                  onChange={(e) => setShowTransOnChart(e.target.checked)}
-                />
-                Toon Transacties
-              </label>
-            </div>
-          </div>
-          <div className={`flex-grow relative min-h-0 ${chartView === 'value' ? 'incognito-hide' : ''}`}>
-            {history.length > 0 ? (
-              <Line data={lineData} options={lineOptions} />
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
-                <i className="ph-fill ph-chart-line-up text-4xl mb-2 opacity-30"></i>
-                Bereken eerst je portfolio waarden
-              </div>
-            )}
-          </div>
-          {chartView === 'value' && (
-            <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-              <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-              Waardegrafiek verborgen in privacymodus
-            </div>
-          )}
-        </div>
-
-          {/* Holdings Tabel */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="flex flex-col sm:flex-row justify-between items-center p-6 border-b border-gray-100">
-              <div className="flex items-center gap-4 mb-4 sm:mb-0">
-                <h3 className="text-lg font-bold text-gray-900">Holdings</h3>
-                <span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">{processedHoldings.length} Assets</span>
-              </div>
-              <div className="relative">
-                <i className="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-                <input 
-                  type="text" 
-                  placeholder="Zoek in holdings..." 
-                  value={holdingsSearch} 
-                  onChange={(e) => setHoldingsSearch(e.target.value)} 
-                  className="pl-9 pr-4 py-2 bg-gray-50 border-none rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64 transition-all"
-                />
-              </div>
-            </div>
-          
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none transition-colors" onClick={() => handleHoldingsSort('ticker')}>Asset{getSortIcon(holdingsSort, 'ticker')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('price')}>Prijs{getSortIcon(holdingsSort, 'price')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('quantity')}>Holdings{getSortIcon(holdingsSort, 'quantity')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('total_invested')}>Cost Basis{getSortIcon(holdingsSort, 'total_invested')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('gainLoss')}>Winst / Verlies{getSortIcon(holdingsSort, 'gainLoss')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                 {processedHoldings.map((holding) => (
-                    <tr key={holding.ticker} className="hover:bg-gray-50/80 transition-colors group">
-                      <td className="px-6 py-4 border-b border-gray-100">
-                        <div 
-                          className="flex flex-col cursor-pointer group-hover:bg-gray-100 p-1 -ml-1 rounded transition-colors"
-                          onClick={() => navigate(`/analysis?ticker=${holding.ticker}`)}
-                          title="Bekijk analyse voor dit aandeel"
-                        >
-                          <span className="text-sm font-bold text-blue-600 hover:text-blue-800 transition-colors">{holding.ticker}</span>
-                          <span className="text-xs font-medium text-gray-500 truncate max-w-[200px]" title={holding.name}>{holding.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.price)}</span>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <div className="flex flex-col">
-                          <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.value)}</span>
-                          <span className="text-xs font-medium text-gray-500 privacy-blur">{isIncognito ? '••••••' : parseFloat(holding.quantity).toFixed(4)} stuks</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.total_invested)}</span>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <div className="flex flex-col items-end">
-                          <span className={`text-sm font-bold privacy-blur ${holding.gainLoss >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                            {holding.gainLoss >= 0 ? '+' : ''}{formatCurrency(holding.gainLoss)}
-                          </span>
-                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded-md mt-1 ${holding.gainLoss >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                            {formatPercentage(holding.total_invested > 0 ? (holding.gainLoss / holding.total_invested) * 100 : 0)}
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                 {processedHoldings.length === 0 && (
-                    <tr><td colSpan="5" className="px-6 py-8 text-center text-sm text-gray-500">Geen holdings gevonden voor de huidige filter.</td></tr>
-                 )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <OverviewTab
+          history={history}
+          lineData={lineData}
+          lineOptions={lineOptions}
+          processedHoldings={processedHoldings}
+          holdingsSort={holdingsSort}
+          handleHoldingsSort={handleHoldingsSort}
+          getSortIcon={getSortIcon}
+          formatCurrency={formatCurrency}
+          formatPercentage={formatPercentage}
+          isIncognito={isIncognito}
+          chartView={chartView}
+          showTransOnChart={showTransOnChart}
+          setShowTransOnChart={setShowTransOnChart}
+          holdingsSearch={holdingsSearch}
+          setHoldingsSearch={setHoldingsSearch}
+          loading={loading}
+        />
       )}
 
       {/* --- TAB CONTENT: DIVERSIFICATION --- */}
       {activeTab === 'diversification' && (
-        <div className="bg-white p-8 rounded-xl shadow-sm border border-gray-200 grid grid-cols-1 lg:grid-cols-3 gap-8 items-center h-[550px]">
-          <div className="lg:col-span-2 relative h-full w-full min-h-0">
-            {filteredHoldings.length > 0 ? (
-              <Doughnut data={donutData} options={donutOptions} />
-            ) : (
-              <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
-                 <i className="ph-fill ph-chart-donut text-4xl mb-2 opacity-30"></i> Geen allocatiedata
-              </div>
-            )}
-          </div>
-          <div className="lg:col-span-1 h-full overflow-y-auto hide-scrollbar pl-4 border-l border-gray-100">
-             <h3 className="text-base font-bold text-gray-900 mb-6">Allocatie Verdeling</h3>
-             {filteredHoldings.length > 0 && donutData.labels.map((label, idx) => {
-               const val = donutData.datasets[0].data[idx];
-               const pct = ((val / donutData.datasets[0].data.reduce((a,b)=>a+b,0))*100).toFixed(1);
-               return (
-                 <div key={label} className="flex justify-between items-center text-sm py-2 border-b border-gray-50 last:border-0">
-                    <div className="flex items-center gap-3">
-                      <span className="w-3 h-3 rounded-full shadow-sm" style={{backgroundColor: donutData.datasets[0].backgroundColor[idx]}}></span>
-                      <span className="font-bold text-gray-800">{label}</span>
-                    </div>
-                    <div className="flex flex-col items-end">
-                      <span className="font-semibold text-gray-900">{pct}%</span>
-                      <span className="text-xs text-gray-400 privacy-blur">{formatCurrency(val)}</span>
-                    </div>
-                 </div>
-               )
-             })}
-          </div>
-        </div>
+        <DiversificationTab
+          filteredHoldings={filteredHoldings}
+          donutData={donutData}
+          donutOptions={donutOptions}
+          isIncognito={isIncognito}
+          formatCurrency={formatCurrency}
+          loading={loading}
+        />
       )}
 
       {/* --- TAB CONTENT: TRANSACTIONS --- */}
       {activeTab === 'transactions' && (
-        <div className="space-y-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="flex flex-col sm:flex-row justify-between items-center p-6 border-b border-gray-100">
-              <h3 className="text-lg font-bold text-gray-900 mb-4 sm:mb-0">Transactie Historiek</h3>
-              <div className="flex items-center gap-2 w-full sm:w-auto">
-                <select
-                  value={transTypeFilter}
-                  onChange={(e) => setTransTypeFilter(e.target.value)}
-                  className="px-3 py-2 bg-gray-50 border-none rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  <option value="">Alle Types</option>
-                  <option value="BUY">BUY</option>
-                  <option value="SELL">SELL</option>
-                  <option value="DIVIDEND">DIVIDEND</option>
-                  <option value="DEPOSIT">DEPOSIT</option>
-                  <option value="WITHDRAWAL">WITHDRAWAL</option>
-                </select>
-                <div className="relative flex-grow sm:flex-grow-0">
-                  <i className="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
-                  <input 
-                    type="text" 
-                    placeholder="Zoek transactie..." 
-                    value={transSearch} 
-                    onChange={(e) => setTransSearch(e.target.value)} 
-                    className="pl-9 pr-4 py-2 bg-gray-50 border-none rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 w-full"
-                  />
-                </div>
-              </div>
-            </div>
-            
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                 <tr>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none" onClick={() => handleTransSort('purchase_time')}>Datum{getSortIcon(transSort, 'purchase_time')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none" onClick={() => handleTransSort('transaction_type')}>Type{getSortIcon(transSort, 'transaction_type')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none" onClick={() => handleTransSort('ticker_symbol')}>Asset{getSortIcon(transSort, 'ticker_symbol')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right" onClick={() => handleTransSort('quantity')}>Aantal{getSortIcon(transSort, 'quantity')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right" onClick={() => handleTransSort('price')}>Prijs{getSortIcon(transSort, 'price')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right" onClick={() => handleTransSort('total_value')}>Totaal{getSortIcon(transSort, 'total_value')}</th>
-                    {!isDemo && <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">Acties</th>}
-                  </tr>
-                </thead>
-                <tbody>
-                 {currentTransactions.map((t, idx) => (
-                    <tr key={idx} className="hover:bg-gray-50/80 transition-colors border-b border-gray-100">
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600">{new Date(t.purchase_time).toLocaleDateString('nl-BE')}</td>
-                      <td className="px-6 py-4 whitespace-nowrap">
-                        <span className={`px-2.5 py-1 inline-flex text-xs font-bold rounded-md ${
-                          t.transaction_type === 'BUY' ? 'bg-emerald-50 text-emerald-600' :
-                          t.transaction_type === 'SELL' ? 'bg-rose-50 text-rose-600' :
-                          t.transaction_type === 'DEPOSIT' ? 'bg-blue-50 text-blue-600' :
-                          t.transaction_type === 'WITHDRAWAL' ? 'bg-purple-50 text-purple-600' :
-                          'bg-gray-100 text-gray-600'
-                       }`}>
-                         {t.transaction_type}
-                       </span>
-                     </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800">
-                        {['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type) ? (
-                            <span className="text-gray-400 font-medium">CASH</span>
-                        ) : (
-                            <span 
-                                className="cursor-pointer text-blue-600 hover:text-blue-800 transition-colors hover:underline"
-                                onClick={() => navigate(`/analysis?ticker=${t.ticker_symbol}`)}
-                                title="Bekijk analyse voor dit aandeel"
-                            >
-                                {t.ticker_symbol || `ID: ${t.aandeel_id}`}
-                            </span>
-                        )}
-                     </td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{isIncognito ? '••••••' : t.quantity}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-600 text-right privacy-blur">{formatCurrency(t.price)}</td>
-                      <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-800 text-right privacy-blur">{formatCurrency(t.quantity * t.price)}</td>
-                      {!isDemo && (
-                        <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
-                          <button onClick={() => { setTransactionToEdit(t); setIsEditModalOpen(true); }} className="text-gray-400 hover:text-blue-600 transition-colors focus:outline-none mr-3" title="Bewerken">
-                            <i className="ph-fill ph-pencil-simple text-lg"></i>
-                          </button>
-                          <button onClick={() => setTransactionToDelete(t)} className="text-gray-400 hover:text-rose-600 transition-colors focus:outline-none" title="Verwijderen">
-                            <i className="ph-fill ph-trash text-lg"></i>
-                          </button>
-                        </td>
-                      )}
-                   </tr>
-                 ))}
-                 {processedTransactions.length === 0 && (
-                    <tr><td colSpan="7" className="px-6 py-8 text-center text-sm text-gray-500">Geen transacties gevonden voor de huidige filter.</td></tr>
-                 )}
-                </tbody>
-              </table>
-            </div>
-
-            {/* Paginatie Navigatie */}
-            {processedTransactions.length > 0 && (
-              <div className="flex justify-between items-center p-4 border-t border-gray-100 bg-gray-50 text-sm text-gray-500 font-medium">
-                <div>
-                  Toont {(transCurrentPage - 1) * transPerPage + 1} tot {Math.min(transCurrentPage * transPerPage, processedTransactions.length)} van de {processedTransactions.length} transacties
-                </div>
-                <div className="flex space-x-2">
-                  <button 
-                    onClick={() => setTransCurrentPage(p => Math.max(1, p - 1))} 
-                    disabled={transCurrentPage === 1}
-                    className="px-3 py-1 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50 transition-colors shadow-sm"
-                  >Vorige</button>
-                  <span className="px-3 py-1 bg-gray-200 text-gray-700 rounded-md">P {transCurrentPage} / {totalTransPages}</span>
-                  <button 
-                    onClick={() => setTransCurrentPage(p => Math.min(totalTransPages, p + 1))} 
-                    disabled={transCurrentPage === totalTransPages}
-                    className="px-3 py-1 bg-white border border-gray-200 rounded-md hover:bg-gray-50 disabled:opacity-50 transition-colors shadow-sm"
-                  >Volgende</button>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Mogelijke Duplicaten Sectie */}
-          {potentialDuplicates.length > 0 && (
-            <div className="bg-orange-50 border border-orange-200 p-6 rounded-lg shadow-sm overflow-x-auto mt-6">
-              <h3 className="text-lg font-bold text-orange-800 mb-2 flex items-center">
-                <i className="ph-fill ph-warning-circle mr-2 text-xl"></i>
-                Mogelijke Duplicaten Gevonden
-              </h3>
-              <p className="text-sm text-orange-700 mb-4">De onderstaande transacties lijken sterk op elkaar (zelfde datum, aandeel en totale inlegwaarde). Dit kan wijzen op een per ongeluk dubbel ingevoerde transactie of een <strong>Stock Split</strong>. Controleer en verwijder de onjuiste/oude rij.</p>
-              
-              <table className="min-w-full divide-y divide-orange-200 bg-white rounded-md shadow-sm">
-                <thead className="bg-orange-100">
-                  <tr>
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Datum</th>
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Aandeel</th>
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Type</th>
-                    <th className="px-4 py-2 text-left text-xs font-semibold text-orange-800 uppercase">Aantal / Prijs</th>
-                    {!isDemo && <th className="px-4 py-2 text-right text-xs font-semibold text-orange-800 uppercase">Acties</th>}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-orange-100">
-                  {potentialDuplicates.map((t, idx) => (
-                    <tr key={idx} className="hover:bg-orange-50">
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{new Date(t.purchase_time).toLocaleDateString('nl-BE')} {new Date(t.purchase_time).toLocaleTimeString('nl-BE', {hour: '2-digit', minute:'2-digit'})}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-semibold text-gray-800">{['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type) ? 'Cash' : t.ticker_symbol}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm font-bold text-gray-700">{t.transaction_type}</td>
-                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                        <span className="privacy-blur">{isIncognito ? '••••••' : t.quantity}</span> <span className="text-gray-400 mx-1">@</span> <span className="privacy-blur">{formatCurrency(t.price)}</span>
-                        {t._hasVariance && !t._isPossibleSplit && (
-                          <span className="ml-2 px-2 py-0.5 rounded text-xs font-semibold bg-red-100 text-red-600" title="Prijs wijkt af van de andere duplicaten in deze groep">
-                            Δ {formatCurrency(t._varianceAmount)}
-                          </span>
-                        )}
-                        {t._isPossibleSplit && (
-                          <span className="ml-2 px-2 py-0.5 rounded text-xs font-semibold bg-purple-100 text-purple-700" title="Let op: Dit lijkt op een dubbele boeking door een stock split! Verwijder de transactie met de oude (hoge) prijs.">
-                            Mogelijke Stock Split
-                          </span>
-                        )}
-                      </td>
-                      {!isDemo && (
-                        <td className="px-4 py-3 whitespace-nowrap text-right text-sm">
-                          <button onClick={() => setTransactionToDelete(t)} className="text-red-500 hover:text-red-700 focus:outline-none bg-red-50 px-3 py-1 rounded" title="Verwijderen">Verwijderen</button>
-                        </td>
-                      )}
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <TransactionsTab
+          transTypeFilter={transTypeFilter}
+          setTransTypeFilter={setTransTypeFilter}
+          transSearch={transSearch}
+          setTransSearch={setTransSearch}
+          transSort={transSort}
+          handleTransSort={handleTransSort}
+          getSortIcon={getSortIcon}
+          currentTransactions={currentTransactions}
+          processedTransactions={processedTransactions}
+          transCurrentPage={transCurrentPage}
+          setTransCurrentPage={setTransCurrentPage}
+          totalTransPages={totalTransPages}
+          transPerPage={transPerPage}
+          potentialDuplicates={potentialDuplicates}
+          setTransactionToDelete={setTransactionToDelete}
+          setTransactionToEdit={setTransactionToEdit}
+          setIsEditModalOpen={setIsEditModalOpen}
+          isIncognito={isIncognito}
+          formatCurrency={formatCurrency}
+          isDemo={isDemo}
+          loading={loading}
+        />
       )}
 
-      {/* --- TAB CONTENT: GROWTH --- OLD */}
+      {/* --- TAB CONTENT: GROWTH --- */}
       {activeTab === 'growth' && (
-        <div className="space-y-6">
-          {/* GROWTH SPECIFIC CONTROL BAR */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 flex flex-col lg:flex-row justify-between items-center p-1.5 mb-6">
-            <div className="flex overflow-x-auto w-full lg:w-auto hide-scrollbar">
-              <button onClick={() => setSelectedTypes([])} className={`whitespace-nowrap px-5 py-2 rounded-lg text-sm font-semibold transition-all ${selectedTypes.length === 0 ? 'bg-gray-100 text-gray-900' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}>
-                Overview
-              </button>
-              {availableAssetTypes.map(type => (
-                <button
-                  key={type}
-                  onClick={() => toggleType(type)}
-                  className={`whitespace-nowrap px-5 py-2 rounded-lg text-sm font-semibold transition-all ${selectedTypes.includes(type) ? 'bg-gray-100 text-gray-900' : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'}`}
-                >
-                  {type}
-                </button>
-              ))}
-            </div>
-
-            <div className="flex items-center gap-2 p-1 w-full lg:w-auto overflow-x-auto hide-scrollbar">
-              <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
-                <button type="button" onClick={() => setDisplayCurrency('USD')}
-                  className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                  USD ($)
-                </button>
-                <button type="button" onClick={() => setDisplayCurrency('EUR')}
-                  className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                  EUR (€)
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="flex flex-col gap-6">
-            {/* Portfolio Value Chart */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[500px]">
-              <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
-                <h3 className="text-lg font-bold text-gray-900">Portfolio value</h3>
-                <div className="flex flex-wrap items-center gap-4 text-sm">
-                  {renderTimeframeSelector(valPeriod, setValPeriod, valStart, setValStart, valEnd, setValEnd)}
-                  <select className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium">
-                    <option>Portfolio value considering trades</option>
-                  </select>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-500 font-medium">Group by</span>
-                    <select className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium">
-                      <option>no</option>
-                    </select>
-                  </div>
-                  <label className="flex items-center cursor-pointer text-gray-700 font-medium hover:text-gray-900">
-                    <input type="checkbox" className="mr-2 rounded text-blue-600 focus:ring-blue-500 w-4 h-4 border-gray-300" checked={growthShowCostBasis} onChange={e => setGrowthShowCostBasis(e.target.checked)} /> Show cost basis
-                  </label>
-                  <label className="flex items-center cursor-pointer text-gray-700 font-medium hover:text-gray-900">
-                    <input type="checkbox" className="mr-2 rounded text-blue-600 focus:ring-blue-500 w-4 h-4 border-gray-300" checked={growthShowTrades} onChange={e => setGrowthShowTrades(e.target.checked)} /> Show trades
-                  </label>
-                </div>
-              </div>
-              <div className="flex-grow relative min-h-0 incognito-hide">
-                {filteredHistVal.length > 0 && filteredHistVal[0].net_invested !== undefined ? (
-                  <Line data={growthChart1Data} options={growthChart1Options} />
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
-                    <i className="ph-fill ph-chart-line-up text-4xl mb-2 opacity-30"></i>
-                    {filteredHistVal.length === 0 ? "Geen data beschikbaar voor deze periode" : "Voeg 'net_invested' toe aan je database en klik op Herbereken Historie."}
-                  </div>
-                )}
-              </div>
-              <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-                <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-                Waardegrafiek verborgen in privacymodus
-              </div>
-            </div>
-
-            {/* Portfolio Performance Chart */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[500px]">
-              <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
-                <h3 className="text-lg font-bold text-gray-900">Portfolio performance</h3>
-                <div className="flex flex-wrap items-center gap-4 text-sm">
-                  {renderTimeframeSelector(perfPeriod, setPerfPeriod, perfStart, setPerfStart, perfEnd, setPerfEnd)}
-                  <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
-                    <button onClick={() => setGrowthPerfType('percent')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${growthPerfType === 'percent' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>%</button>
-                    <button onClick={() => setGrowthPerfType('value')} className={`px-4 py-1.5 text-xs font-bold rounded-md transition-all ${growthPerfType === 'value' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{displayCurrency}</button>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <span className="text-gray-500 font-medium">Group by</span>
-                    <select className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium">
-                      <option>no</option>
-                    </select>
-                  </div>
-                  <label className="flex items-center cursor-pointer text-gray-700 font-medium hover:text-gray-900">
-                    <input type="checkbox" className="mr-2 rounded text-blue-600 focus:ring-blue-500 w-4 h-4 border-gray-300" checked={growthPerfGroupBySource} onChange={e => setGrowthPerfGroupBySource(e.target.checked)} /> Group by the profit source
-                  </label>
-                  <div className="flex items-center gap-2 group relative">
-                    <span className="text-gray-500 font-medium">Calculate PL for:</span>
-                    <select value={growthPerfCalcFor} onChange={e => setGrowthPerfCalcFor(e.target.value)} className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium cursor-help">
-                      <option value="period">Selected period</option>
-                      <option value="all_time">All time</option>
-                    </select>
-                    <div className="absolute top-full mt-2 right-0 w-80 p-3 bg-gray-900 text-white text-xs rounded-lg shadow-xl opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50">
-                      {growthPerfCalcFor === 'period' 
-                        ? "PL is calculated relative to the portfolio value at the beginning of the period. Realized PL is calculated relative to the price of the asset at the beginning of the selected period (NOT the purchase price)." 
-                        : "PL is always calculated from the date of the first transaction, and then the chart is 'zoomed' to the selected period. Total values are calculated as the difference between PL values at the beginning and PL values at the end of the selected period."}
-                    </div>
-                  </div>
-                </div>
-              </div>
-              <div className={`flex-grow relative min-h-0 ${growthPerfType === 'value' ? 'incognito-hide' : ''}`}>
-                {filteredHistPerf.length > 0 && filteredHistPerf[0].cumulative_dividends !== undefined ? (
-                  <Line data={growthChart2Data} options={growthChart2Options} />
-                ) : (
-                  <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
-                    <i className="ph-fill ph-chart-bar text-4xl mb-2 opacity-30"></i>
-                    {filteredHistPerf.length === 0 ? "Geen data beschikbaar voor deze periode" : "Bereken historie opnieuw."}
-                  </div>
-                )}
-              </div>
-              {growthPerfType === 'value' && (
-                <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-                  <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-                  Waardegrafiek verborgen in privacymodus
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Dynamics of Portfolio Returns Chart */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[500px]">
-            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
-              <h3 className="text-lg font-bold text-gray-900">Dynamics of portfolio returns</h3>
-              <div className="flex flex-wrap items-center gap-4 text-sm">
-                {renderTimeframeSelector(dynPeriod, setDynPeriod, dynStart, setDynStart, dynEnd, setDynEnd)}
-                <button onClick={() => setDynamicsView(dynamicsView === 'chart' ? 'table' : 'chart')} className="p-2 bg-gray-100 rounded-md text-gray-600 hover:bg-gray-200">
-                  <i className={`ph-fill ${dynamicsView === 'chart' ? 'ph-table' : 'ph-chart-bar'} text-lg`}></i>
-                </button>
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500 font-medium">Period</span>
-                  <select value={dynamicsPeriod} onChange={e => setDynamicsPeriod(e.target.value)} className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium">
-                    <option value="monthly">Month</option>
-                    <option value="quarterly">Quarter</option>
-                    <option value="annually">Year</option>
-                    <option value="weekly">Week</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500 font-medium">Display values</span>
-                  <select value={dynamicsDisplay} onChange={e => setDynamicsDisplay(e.target.value)} className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium">
-                    <option value="percent">Percent</option>
-                    <option value="value">Value</option>
-                    <option value="irr" disabled>IRR</option>
-                  </select>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500 font-medium">Group by</span>
-                  <select className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium" disabled>
-                    <option>no</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div className={`flex-grow relative min-h-0 ${dynamicsDisplay === 'value' ? 'incognito-hide' : ''}`}>
-              {dynamicsLoading ? (
-                  <div className="flex h-full items-center justify-center"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div></div>
-              ) : dynamicsData.length > 0 ? (
-                dynamicsView === 'chart' ? (
-                  <Bar data={dynamicsChartData} options={dynamicsChartOptions} />
-                ) : (
-                  <div className="overflow-y-auto h-full">
-                    <table className="w-full text-sm text-left">
-                      <thead className="text-xs text-gray-500 uppercase bg-gray-50 sticky top-0">
-                        <tr>
-                          <th className="px-4 py-2">Period</th>
-                          <th className="px-4 py-2 text-right">Return ({dynamicsDisplay === 'percent' ? '%' : displayCurrency})</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {dynamicsData.map(d => (
-                          <tr key={d.period} className="border-b border-gray-100">
-                            <td className="px-4 py-2 font-medium text-gray-800">{d.period}</td>
-                            <td className={`px-4 py-2 text-right font-semibold ${d.returnValue >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                              {dynamicsDisplay === 'percent' ? `${d.returnPercent.toFixed(2)}%` : formatCurrency(d.returnValue)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )
-              ) : (
-                <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
-                  <i className="ph-fill ph-chart-bar-horizontal text-4xl mb-2 opacity-30"></i>
-                  Geen data beschikbaar voor de geselecteerde periode.
-                </div>
-              )}
-            </div>
-            {dynamicsDisplay === 'value' && (
-              <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-                <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-                Waardegrafiek verborgen in privacymodus
-              </div>
-            )}
-          </div>
-
-          {/* Holdings Performance Tabel */}
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-            <div className="flex justify-between items-center p-6 border-b border-gray-100">
-              <h3 className="text-lg font-bold text-gray-900">Holdings Performance</h3>
-            </div>
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none transition-colors" onClick={() => handleHoldingsSort('ticker')}>Asset{getSortIcon(holdingsSort, 'ticker')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('price')}>Huidige Prijs{getSortIcon(holdingsSort, 'price')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('average_price')}>Gem. Aankoopprijs{getSortIcon(holdingsSort, 'average_price')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('total_invested')}>Geïnvesteerd{getSortIcon(holdingsSort, 'total_invested')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('value')}>Huidige Waarde{getSortIcon(holdingsSort, 'value')}</th>
-                    <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider cursor-pointer hover:text-gray-700 select-none text-right transition-colors" onClick={() => handleHoldingsSort('gainLoss')}>Winst / Verlies{getSortIcon(holdingsSort, 'gainLoss')}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                 {processedHoldings.map((holding) => (
-                    <tr key={holding.ticker} className="hover:bg-gray-50/80 transition-colors group">
-                      <td className="px-6 py-4 border-b border-gray-100">
-                        <div 
-                          className="flex flex-col cursor-pointer group-hover:bg-gray-100 p-1 -ml-1 rounded transition-colors"
-                          onClick={() => navigate(`/analysis?ticker=${holding.ticker}`)}
-                          title="Bekijk analyse voor dit aandeel"
-                        >
-                          <span className="text-sm font-bold text-blue-600 hover:text-blue-800 transition-colors">{holding.ticker}</span>
-                          <span className="text-xs font-medium text-gray-500 truncate max-w-[200px]" title={holding.name}>{holding.name}</span>
-                        </div>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.price)}</span>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.average_price)}</span>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.total_invested)}</span>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <span className="text-sm font-semibold text-gray-800 privacy-blur">{formatCurrency(holding.value)}</span>
-                      </td>
-                      <td className="px-6 py-4 border-b border-gray-100 text-right">
-                        <div className="flex flex-col items-end">
-                          <span className={`text-sm font-bold privacy-blur ${holding.gainLoss >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                            {holding.gainLoss >= 0 ? '+' : ''}{formatCurrency(holding.gainLoss)}
-                          </span>
-                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded-md mt-1 ${holding.gainLoss >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                            {formatPercentage(holding.total_invested > 0 ? (holding.gainLoss / holding.total_invested) * 100 : 0)}
-                          </span>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                 {processedHoldings.length === 0 && (
-                    <tr><td colSpan="6" className="px-6 py-8 text-center text-sm text-gray-500">Geen holdings gevonden voor de huidige filter.</td></tr>
-                 )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <GrowthTab
+          selectedTypes={selectedTypes}
+          setSelectedTypes={setSelectedTypes}
+          availableAssetTypes={availableAssetTypes}
+          toggleType={toggleType}
+          displayCurrency={displayCurrency}
+          setDisplayCurrency={setDisplayCurrency}
+          filteredHistVal={filteredHistVal}
+          filteredHistPerf={filteredHistPerf}
+          growthChart1Data={growthChart1Data}
+          growthChart1Options={growthChart1Options}
+          growthShowCostBasis={growthShowCostBasis}
+          setGrowthShowCostBasis={setGrowthShowCostBasis}
+          growthShowTrades={growthShowTrades}
+          setGrowthShowTrades={setGrowthShowTrades}
+          valPeriod={valPeriod}
+          setValPeriod={setValPeriod}
+          valStart={valStart}
+          setValStart={setValStart}
+          valEnd={valEnd}
+          setValEnd={setValEnd}
+          perfPeriod={perfPeriod}
+          setPerfPeriod={setPerfPeriod}
+          perfStart={perfStart}
+          setPerfStart={setPerfStart}
+          perfEnd={perfEnd}
+          setPerfEnd={setPerfEnd}
+          growthPerfType={growthPerfType}
+          setGrowthPerfType={setGrowthPerfType}
+          growthPerfCalcFor={growthPerfCalcFor}
+          setGrowthPerfCalcFor={setGrowthPerfCalcFor}
+          growthPerfGroupBySource={growthPerfGroupBySource}
+          setGrowthPerfGroupBySource={setGrowthPerfGroupBySource}
+          growthChart2Data={growthChart2Data}
+          growthChart2Options={growthChart2Options}
+          dynamicsPeriod={dynamicsPeriod}
+          setDynamicsPeriod={setDynamicsPeriod}
+          dynamicsDisplay={dynamicsDisplay}
+          setDynamicsDisplay={setDynamicsDisplay}
+          dynamicsData={dynamicsData}
+          dynamicsLoading={dynamicsLoading}
+          dynamicsView={dynamicsView}
+          setDynamicsView={setDynamicsView}
+          dynamicsChartData={dynamicsChartData}
+          dynamicsChartOptions={dynamicsChartOptions}
+          dynPeriod={dynPeriod}
+          setDynPeriod={setDynPeriod}
+          dynStart={dynStart}
+          setDynStart={setDynStart}
+          dynEnd={dynEnd}
+          setDynEnd={setDynEnd}
+          renderTimeframeSelector={renderTimeframeSelector}
+          formatCurrency={formatCurrency}
+          isIncognito={isIncognito}
+          processedHoldings={processedHoldings}
+          handleHoldingsSort={handleHoldingsSort}
+          getSortIcon={getSortIcon}
+          holdingsSort={holdingsSort}
+          formatPercentage={formatPercentage}
+          loading={loading}
+        />
       )}
 
       {/* --- TAB CONTENT: DIVIDENDS --- */}
       {activeTab === 'dividends' && (
-        <div className="space-y-6">
-          {/* Stats Row */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex items-center">
-                <div className="p-4 bg-purple-50 text-purple-600 rounded-full mr-4">
-                    <i className="ph-fill ph-money text-3xl"></i>
-                </div>
-                <div>
-                    <h4 className="text-sm font-medium text-gray-500 mb-1">Total Netto Dividends ({divTimeframe})</h4>
-                    <div className="text-3xl font-bold text-gray-900 privacy-blur">{formatCurrency(totalDivsPeriod)}</div>
-                </div>
-             </div>
-             <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex items-center">
-                <div className="p-4 bg-blue-50 text-blue-600 rounded-full mr-4">
-                    <i className="ph-fill ph-chart-line-up text-3xl"></i>
-                </div>
-                <div>
-                    <h4 className="text-sm font-medium text-gray-500 mb-1">Gemiddeld Per Maand</h4>
-                    <div className="text-3xl font-bold text-gray-900 privacy-blur">{formatCurrency(divTimeframe === '1M' ? totalDivsPeriod : divTimeframe === 'YTD' ? (totalDivsPeriod / (new Date().getMonth() + 1)) : divTimeframe === '1Y' ? (totalDivsPeriod / 12) : 0)}</div>
-                    <div className="text-xs text-gray-400">Gebaseerd op gekozen periode</div>
-                </div>
-             </div>
-          </div>
-
-          {/* Dividend Chart */}
-          <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[500px]">
-            <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
-              <h3 className="text-lg font-bold text-gray-900">Dividend Historiek</h3>
-              <div className="flex flex-wrap items-center gap-4 text-sm">
-                {renderTimeframeSelector(divTimeframe, setDivTimeframe, divStart, setDivStart, divEnd, setDivEnd)}
-                <div className="flex items-center gap-2">
-                  <span className="text-gray-500 font-medium">Group by</span>
-                  <select value={divGrouping} onChange={e => setDivGrouping(e.target.value)} className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-3 py-1.5 outline-none font-medium">
-                    <option value="monthly">Month</option>
-                    <option value="quarterly">Quarter</option>
-                    <option value="annually">Year</option>
-                  </select>
-                </div>
-              </div>
-            </div>
-            <div className="flex-grow relative min-h-0 incognito-hide">
-               {filteredDivs.length > 0 ? (
-                 <Bar data={divChartData} options={divChartOptions} />
-               ) : (
-                 <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
-                   <i className="ph-fill ph-money text-4xl mb-2 opacity-30"></i>
-                   Geen dividend data beschikbaar voor deze periode.
-                 </div>
-               )}
-            </div>
-            <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-              <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-              Waardegrafiek verborgen in privacymodus
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-              {/* Table: Dividends Per Asset */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
-                <div className="flex justify-between items-center p-6 border-b border-gray-100">
-                  <h3 className="text-lg font-bold text-gray-900">Top Betalers ({divTimeframe})</h3>
-                </div>
-                <div className="overflow-x-auto overflow-y-auto max-h-[400px]">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-gray-50 sticky top-0 z-10">
-                      <tr>
-                        <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider">Asset</th>
-                        <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">Uitbetalingen</th>
-                        <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">Netto Totaal</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                     {divByAssetData.map((d, idx) => (
-                        <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">{d.ticker}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-600 text-right">{d.count}x</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-emerald-600 text-right privacy-blur">{formatCurrency(d.totalNet)}</td>
-                        </tr>
-                     ))}
-                     {divByAssetData.length === 0 && <tr><td colSpan="3" className="px-6 py-8 text-center text-sm text-gray-500">Geen data</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-
-              {/* Table: Recent Dividend Payouts */}
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden flex flex-col">
-                <div className="flex justify-between items-center p-6 border-b border-gray-100">
-                  <h3 className="text-lg font-bold text-gray-900">Recente Uitbetalingen</h3>
-                </div>
-                <div className="overflow-x-auto overflow-y-auto max-h-[400px]">
-                  <table className="w-full text-left border-collapse">
-                    <thead className="bg-gray-50 sticky top-0 z-10">
-                      <tr>
-                        <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider">Datum</th>
-                        <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider">Asset</th>
-                        <th className="px-6 py-3 border-b-2 border-gray-100 text-xs font-bold text-gray-400 uppercase tracking-wider text-right">Netto</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-gray-100">
-                     {filteredDivs.sort((a,b) => new Date(b.purchase_time) - new Date(a.purchase_time)).map((div, idx) => (
-                        <tr key={idx} className="hover:bg-gray-50 transition-colors">
-                          <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-700">{new Date(div.purchase_time).toLocaleDateString('nl-BE')}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-gray-900">{div.ticker_symbol || `ID: ${div.aandeel_id}`}</td>
-                          <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-emerald-600 text-right privacy-blur">{formatCurrency((div.quantity * div.price) - (div.taxes || 0))}</td>
-                        </tr>
-                     ))}
-                     {filteredDivs.length === 0 && <tr><td colSpan="3" className="px-6 py-8 text-center text-sm text-gray-500">Geen data</td></tr>}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-          </div>
-        </div>
+        <DividendsTab
+          divTimeframe={divTimeframe}
+          setDivTimeframe={setDivTimeframe}
+          divStart={divStart}
+          setDivStart={setDivStart}
+          divEnd={divEnd}
+          setDivEnd={setDivEnd}
+          divGrouping={divGrouping}
+          setDivGrouping={setDivGrouping}
+          filteredDivs={filteredDivs}
+          divChartData={divChartData}
+          divChartOptions={divChartOptions}
+          divByAssetData={divByAssetData}
+          totalDivsPeriod={totalDivsPeriod}
+          renderTimeframeSelector={renderTimeframeSelector}
+          formatCurrency={formatCurrency}
+          isIncognito={isIncognito}
+          loading={loading}
+        />
       )}
 
       {/* --- TAB CONTENT: UNDER CONSTRUCTION (Metrics, Income) --- */}

@@ -41,5 +41,3 @@ Om de applicatie veilig te bekijken zonder data aan te passen, is er een speciaa
 
 ### Database
 - **Database Engine:** Microsoft SQL Server (Azure SQL)
-
----

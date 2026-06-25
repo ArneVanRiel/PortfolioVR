@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
-import axios from 'axios';
+import http from '../../http-common';
 import TransactionForm from '../portfolio/TransactionForm';
 import { Line } from 'react-chartjs-2';
 import {
@@ -49,7 +49,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
   const isIncognito = useIncognito();
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
-
+  const uid = localStorage.getItem('userID') || 1;
 
   const fetchData = useCallback(async () => {
     if (!selectedStock) return;
@@ -57,8 +57,8 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
     try {
       const stockId = selectedStock.stock_id || selectedStock.aandeel_id;
       const [transRes, priceRes] = await Promise.all([
-        axios.get('/api/portfolio/transactions?userId=1&period=All'),
-        axios.get(`/api/calculations/${stockId}/price-history`)
+        http.get(`/portfolio/transactions?userId=${uid}&period=All`),
+        http.get(`/calculations/${stockId}/price-history`)
       ]);
 
       const stockTrans = transRes.data.filter(t => t.aandeel_id === stockId).sort((a, b) => new Date(a.purchase_time) - new Date(b.purchase_time));
@@ -69,7 +69,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
     } finally {
       setLoading(false);
     }
-  }, [selectedStock]);
+  }, [selectedStock, uid]);
 
   useEffect(() => {
     fetchData();
@@ -261,7 +261,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
   const confirmDeleteTransaction = async () => {
     if (!transactionToDelete) return;
     try {
-      await axios.delete(`/api/portfolio/transactions/${transactionToDelete.id}`);
+      await http.delete(`/portfolio/transactions/${transactionToDelete.id}`);
       setTransactionToDelete(null);
       fetchData();
       alert('Transactie verwijderd. Vergeet niet in je dashboard de "Volledige Historie Herberekenen" uit te voeren als dit impact heeft op je historische grafieken.');
@@ -276,7 +276,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
       setIsSplitting(true);
       try {
           const stockId = selectedStock.stock_id || selectedStock.aandeel_id;
-          await axios.post('/api/portfolio/apply-stock-split', {
+          await http.post('/portfolio/apply-stock-split', {
               stockId,
               splitDate,
               splitRatio
@@ -284,7 +284,7 @@ const AnalysisPortfolioTab = ({ selectedStock }) => {
           alert('Stock split succesvol toegepast! Ga hierna naar het Dashboard en klik op "Volledige Historie Herberekenen" om je rendementsgrafieken te updaten.');
           setShowSplitModal(false);
           // Herlaad transacties voor dit specifieke aandeel
-          const transRes = await axios.get('/api/portfolio/transactions?userId=1&period=All');
+          const transRes = await http.get(`/portfolio/transactions?userId=${uid}&period=All`);
           const stockTrans = transRes.data.filter(t => t.aandeel_id === stockId).sort((a, b) => new Date(a.purchase_time) - new Date(b.purchase_time));
           setTransactions(stockTrans);
       } catch (err) {

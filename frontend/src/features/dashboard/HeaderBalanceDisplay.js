@@ -12,6 +12,8 @@ const HeaderBalanceDisplay = () => {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const isIncognito = useIncognito();
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
 
   const fetchLatestBalance = useCallback(async () => {
     try {
@@ -51,6 +53,7 @@ const HeaderBalanceDisplay = () => {
   }, [fetchLatestBalance]); // Fetch balance when types are loaded or component mounts
 
   const handleDoubleClick = () => {
+    if (isDemo) return;
     setShowUpdateModal(true);
   };
 
@@ -88,7 +91,7 @@ const HeaderBalanceDisplay = () => {
 
   return (
     <>
-      <div onDoubleClick={handleDoubleClick} className="cursor-pointer select-none" title="Dubbelklik om aan te passen">
+      <div onDoubleClick={handleDoubleClick} className={`${isDemo ? '' : 'cursor-pointer'} select-none`} title={isDemo ? '' : 'Dubbelklik om aan te passen'}>
         <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Beschikbaar</span>
         <p className="text-lg font-bold text-green-600 privacy-blur">
           {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}

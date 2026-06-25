@@ -14,44 +14,43 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 const StatCard = ({ title, value, trend, trendUp }) => {
   const isIncognito = useIncognito();
   return (
-  <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300">
-    <div className="flex justify-between items-start">
-      <div>
-        <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
-        <h3 className="text-2xl font-bold text-gray-900 mt-2 privacy-blur">{isIncognito ? '€ ••••••' : value}</h3>
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300">
+      <div className="flex justify-between items-start">
+        <div>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
+          <h3 className="text-2xl font-bold text-gray-900 mt-2 privacy-blur">{isIncognito ? '€ ••••••' : value}</h3>
+        </div>
+        {trend && (
+          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${trendUp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
+            {trend}
+          </span>
+        )}
       </div>
-      {trend && (
-        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${trendUp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-          {trend}
-        </span>
-      )}
     </div>
-  </div>
   );
 };
 
 const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
-  <div 
-    className={`bg-white rounded-xl shadow-sm border border-gray-100 transition-all duration-300 flex flex-col ${
-      isExpanded ? 'fixed inset-4 z-50 h-auto shadow-2xl' : 'h-full p-6'
-    }`}
+  <div
+    className={`bg-white rounded-xl shadow-sm border border-gray-100 transition-all duration-300 flex flex-col ${isExpanded ? 'fixed inset-4 z-50 h-auto shadow-2xl' : 'h-full p-6'
+      }`}
   >
     <div className={`flex justify-between items-center mb-4 ${isExpanded ? 'p-6 border-b border-gray-100' : ''}`}>
       <h3 className="text-lg font-semibold text-gray-800">{title}</h3>
-      <button 
-          onClick={onToggleExpand} 
-          className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-blue-600"
-          title={isExpanded ? "Minimaliseren" : "Maximaliseren"}
+      <button
+        onClick={onToggleExpand}
+        className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500 hover:text-blue-600"
+        title={isExpanded ? "Minimaliseren" : "Maximaliseren"}
       >
-          {isExpanded ? (
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"/>
-              </svg>
-          ) : (
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
-              </svg>
-          )}
+        {isExpanded ? (
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3" />
+          </svg>
+        ) : (
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
+        )}
       </button>
     </div>
     <div className={`flex-grow overflow-auto ${isExpanded ? 'p-6' : 'h-72'}`}>
@@ -135,13 +134,13 @@ const Dashboard = () => {
         ? Math.max(0, 30000 * (1 + (-item.current_signal_line / item.current_price) * 4)) * (percentage / 100) * (koopmargefactor / 10) * weight_factor
         : 0;
 
-      const latestTradeAmountProcessed = item.latest_trade_amount != null 
-        ? (item.latest_trade_amount * (percentage / 100) / 10 * weight_factor) 
+      const latestTradeAmountProcessed = item.latest_trade_amount != null
+        ? (item.latest_trade_amount * (percentage / 100) / 10 * weight_factor)
         : null;
 
       const priceToIntrinsic = (item.current_price && item.intrinsieke_waarde > 0)
-          ? (item.current_price / item.intrinsieke_waarde) - 1
-          : null;
+        ? (item.current_price / item.intrinsieke_waarde) - 1
+        : null;
 
       return {
         'Aandeel': `${item.name} (${item.ticker_symbol})`,
@@ -205,7 +204,7 @@ const Dashboard = () => {
         alert("Geen data gevonden voor de geselecteerde datum.");
         return;
       }
-      
+
       const printWindow = window.open('', '_blank');
       let html = `<html><head><title>Rapport ${exportDate}</title><style>table { border-collapse: collapse; width: 100%; font-family: Arial, sans-serif; font-size: 12px; } th, td { border: 1px solid #ddd; padding: 8px; text-align: left; } th { background-color: #f2f2f2; } h1 { font-family: Arial, sans-serif; }</style></head><body>`;
       html += `<h1>Calculations Summary Rapport - ${exportDate}</h1>`;
@@ -214,7 +213,7 @@ const Dashboard = () => {
         html += `<tr>${Object.values(row).map(val => `<td>${val !== null ? val : ''}</td>`).join('')}</tr>`;
       });
       html += `</tbody></table></body></html>`;
-      
+
       printWindow.document.write(html);
       printWindow.document.close();
       printWindow.print();
@@ -233,7 +232,7 @@ const Dashboard = () => {
     try {
       const response = await fetch(`${API_URL}/watchlist/update-data`, {
         method: 'POST',
-        headers: { 
+        headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
@@ -257,23 +256,23 @@ const Dashboard = () => {
           if (!line.trim()) continue;
           try {
             const data = JSON.parse(line);
-            
+
             if (data.type === 'progress') {
-               setUpdateProgress(data.progress);
-               toast.loading(`${data.message} - ${data.progress}%`, { id: toastId });
+              setUpdateProgress(data.progress);
+              toast.loading(`${data.message} - ${data.progress}%`, { id: toastId });
             } else if (data.type === 'stock_update') {
-               // Update de tabel direct via de ref
-               if (watchlistTableRef.current) {
-                 watchlistTableRef.current.updateStockLocal(data);
-               }
-               if (calculationsTableRef.current) {
-                 calculationsTableRef.current.updateStockLocal(data);
-               }
-               toast.success(`Updated: Aandeel ID ${data.aandeel_id}`, { id: toastId, duration: 1000 });
+              // Update de tabel direct via de ref
+              if (watchlistTableRef.current) {
+                watchlistTableRef.current.updateStockLocal(data);
+              }
+              if (calculationsTableRef.current) {
+                calculationsTableRef.current.updateStockLocal(data);
+              }
+              toast.success(`Updated: Aandeel ID ${data.aandeel_id}`, { id: toastId, duration: 1000 });
             } else if (data.type === 'complete') {
-               toast.success(data.message, { id: toastId });
+              toast.success(data.message, { id: toastId });
             } else if (data.type === 'error') {
-               toast.error(data.message, { id: toastId });
+              toast.error(data.message, { id: toastId });
             }
           } catch (e) {
             console.error("Error parsing JSON chunk", e);
@@ -313,21 +312,21 @@ const Dashboard = () => {
               >
                 Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
               </button>
-              <button 
+              <button
                 onClick={handleUpdateData}
                 disabled={isUpdatingData}
                 className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {isUpdatingData ? `Bezig... (${updateProgress}%)` : 'Update Prijzen & Meldingen'}
               </button>
+              <button
+                onClick={handleOpenExportModal}
+                className="bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"
+              >
+                Generate Report
+              </button>
             </>
           )}
-          <button 
-            onClick={handleOpenExportModal}
-            className="bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"
-          >
-            Generate Report
-          </button>
         </div>
       </div>
 
@@ -341,21 +340,21 @@ const Dashboard = () => {
 
       {/* Charts Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <ChartCard 
+        <ChartCard
           title="Portfolio Performance"
           isExpanded={expandedCard === 'performance'}
           onToggleExpand={() => toggleExpand('performance')}
         >
-        <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg incognito-hide">
+          <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg incognito-hide">
             <p className="text-gray-500">Portfolio Performance Chart</p>
-        </div>
-        <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-          <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-          Waardegrafiek verborgen in privacymodus
+          </div>
+          <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
+            <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
+            Waardegrafiek verborgen in privacymodus
           </div>
         </ChartCard>
-        
-        <ChartCard 
+
+        <ChartCard
           title="Ideale vs Huidige Portfolio (%)"
           isExpanded={expandedCard === 'distribution'}
           onToggleExpand={() => toggleExpand('distribution')}
@@ -363,13 +362,13 @@ const Dashboard = () => {
           <Score5DistributionChart />
         </ChartCard>
 
-        <ChartCard 
+        <ChartCard
           title="Meldingen"
           isExpanded={expandedCard === 'alerts'}
           onToggleExpand={() => toggleExpand('alerts')}
         >
-          <AlertsSummaryTable 
-            ref={alertsTableRef} 
+          <AlertsSummaryTable
+            ref={alertsTableRef}
             isCompact={expandedCard !== 'alerts'}
           />
         </ChartCard>
@@ -419,9 +418,9 @@ const Dashboard = () => {
           <h3 className="text-lg font-semibold text-gray-800 mb-4">Rapport Exporteren</h3>
           <div className="mb-4">
             <label className="block text-sm font-medium text-gray-700 mb-2">Selecteer Datum:</label>
-            <input 
-              type="date" 
-              value={exportDate} 
+            <input
+              type="date"
+              value={exportDate}
               onChange={(e) => setExportDate(e.target.value)}
               className="w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm border p-2"
             />

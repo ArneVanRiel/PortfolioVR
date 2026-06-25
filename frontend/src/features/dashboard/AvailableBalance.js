@@ -11,6 +11,8 @@ const AvailableBalance = () => {
   const [balanceTypes, setBalanceTypes] = useState([]);
   const [currentInputBalances, setCurrentInputBalances] = useState({}); // Voor de input velden in de modal
   const [showReminderPopup, setShowReminderPopup] = useState(false);
+  const userRole = localStorage.getItem('role') || 'user';
+  const isDemo = userRole === 'demo';
 
   // Functie om de laatste saldo's op te halen
   const fetchLatestBalance = useCallback(async () => {
@@ -34,12 +36,12 @@ const AvailableBalance = () => {
         const now = new Date();
         const diffTime = Math.abs(now - lastUpdate);
         const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-        if (diffDays > 30) {
+        if (diffDays > 30 && !isDemo) {
           setShowReminderPopup(true);
         }
       } else {
         // Als er nog geen data is, toon ook een herinnering om data in te voeren
-        setShowReminderPopup(true);
+        if (!isDemo) setShowReminderPopup(true);
       }
 
     } catch (err) {
@@ -136,9 +138,11 @@ const AvailableBalance = () => {
           <p className="fw-bold">{getDaysSinceLastUpdate()}</p>
         </div>
       </div>
-      <button className="btn btn-primary w-100" onClick={handleOpenUpdateModal}>
-        Vermogen Bewerken
-      </button>
+      {!isDemo && (
+        <button className="btn btn-primary w-100" onClick={handleOpenUpdateModal}>
+          Vermogen Bewerken
+        </button>
+      )}
 
       {/* Reminder Pop-up */}
       {showReminderPopup && (
