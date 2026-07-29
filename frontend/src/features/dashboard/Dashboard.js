@@ -316,22 +316,22 @@ const Dashboard = () => {
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
         <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
-        <div className="flex space-x-4">
+        <div className="flex flex-wrap gap-2 sm:gap-3 w-full md:w-auto">
           {/* Knoppen */}
           {!isDemo && (
             <>
               <button
                 onClick={handleAddStock}
-                className="bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                className="w-full sm:w-auto bg-blue-600 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-blue-700 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 text-sm sm:text-base"
               >
                 Voeg Aandelen Toe aan {viewType === 'watchlist' ? 'Watchlist' : 'Ideale Portfolio'}
               </button>
               <button
                 onClick={handleUpdateData}
                 disabled={isUpdatingData || (isUpdatedToday && !isUpdatingData)}
-                className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                className="w-full sm:w-auto bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm sm:text-base"
               >
                 {isUpdatingData ? `Bezig... (${updateProgress}%)` : isUpdatedToday ? 'Prijzen & Meldingen Up-to-date' : 'Update Prijzen & Meldingen'}
               </button>
@@ -343,14 +343,14 @@ const Dashboard = () => {
                       setTimeout(() => handleUpdateData(), 100);
                     }
                   }}
-                  className="text-xs text-blue-500 hover:text-blue-700 underline font-medium self-center"
+                  className="text-xs text-blue-500 hover:text-blue-700 underline font-medium self-center py-1 sm:py-0"
                 >
                   Forceer update
                 </button>
               )}
               <button
                 onClick={handleOpenExportModal}
-                className="bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"
+                className="w-full sm:w-auto bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200 text-sm sm:text-base"
               >
                 Generate Report
               </button>

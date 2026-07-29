@@ -92,8 +92,8 @@ const HeaderBalanceDisplay = () => {
   return (
     <>
       <div onDoubleClick={handleDoubleClick} className={`${isDemo ? '' : 'cursor-pointer'} select-none`} title={isDemo ? '' : 'Dubbelklik om aan te passen'}>
-        <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Beschikbaar</span>
-        <p className="text-lg font-bold text-green-600 privacy-blur">
+        <span className="text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider block">Beschikbaar</span>
+        <p className="text-sm sm:text-lg font-bold text-green-600 privacy-blur leading-tight">
           {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
         </p>
       </div>

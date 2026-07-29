@@ -161,14 +161,14 @@ function App() {
             {/* Logo/Merknaam */}
             <Link to="/dashboard" className="flex-shrink-0 flex items-center gap-2">
                 <i className="ph-fill ph-chart-polar text-blue-500 text-3xl"></i>
-                <span className="text-gray-800 font-bold text-xl tracking-tight">Portfolio<span className="text-blue-500">VR</span></span>
+                <span className="hidden sm:inline text-gray-800 font-bold text-xl tracking-tight">Portfolio<span className="text-blue-500">VR</span></span>
             </Link>
 
             {/* Filler in het midden */}
             <div className="flex-grow"></div>
 
             {/* Rechtergroep: Zoekveld, Vermogensdisplays, Gebruikersprofiel */}
-            <div className="flex items-center gap-3 md:gap-6">
+            <div className="flex items-center gap-1.5 sm:gap-3 md:gap-6">
               {/* Klein zoekveld dat de modal opent */}
               <input
                 type="text"
@@ -182,17 +182,17 @@ function App() {
               {!isDemo && (
                 <button
                   onClick={toggleIncognito}
-                  className={`p-2 rounded-full transition-colors duration-200 ${
+                  className={`p-1.5 sm:p-2 rounded-full transition-colors duration-200 ${
                     isIncognito ? 'bg-blue-100 text-blue-600 shadow-inner' : 'text-gray-400 hover:bg-gray-100 hover:text-gray-600'
                   }`}
                   title={isIncognito ? "Privacy modus uitschakelen" : "Privacy modus inschakelen"}
                 >
-                  <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-xl`}></i>
+                  <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-lg sm:text-xl`}></i>
                 </button>
               )}
 
               {/* Beschikbaar en Geïnvesteerd Vermogen Displays */}
-              <div className="flex items-center space-x-4 divide-x divide-gray-200">
+              <div className="flex items-center space-x-2 sm:space-x-4 divide-x divide-gray-200">
                 <HeaderBalanceDisplay />
                 <InvestedBalanceDisplay />
               </div>

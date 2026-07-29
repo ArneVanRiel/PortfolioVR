@@ -38,7 +38,7 @@ const getSecFields = async (req, res) => {
         // 2. Haal alle company facts op
         const url = `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
         const response = await axios.get(url, { headers: HEADERS });
-        
+
         const facts = response.data.facts;
         const availableFields = [];
 
