@@ -348,7 +348,7 @@ const importSecData = async (req, res) => {
                     await updateReq
                         .input('period_start_date', sql.Date, row.period_start_date)
                         .input('value', sql.Decimal(20, 4), row.value)
-                        .input('how_added', sql.NVarChar, row.how_added)
+                        .input('how_added', sql.NVarChar, row.how_added ? row.how_added.substring(0, 100) : '')
                         .input('fy', sql.Int, row.fy)
                         .input('fp_id', sql.Int, fpId)
                         .input('form_id', sql.Int, formId)
@@ -373,7 +373,7 @@ const importSecData = async (req, res) => {
                     .input('stock_id', sql.Int, stockId)
                     .input('data_type', sql.NVarChar, row.metric)
                     .input('value', sql.Decimal(20, 4), row.value)
-                    .input('how_added', sql.NVarChar, row.how_added)
+                    .input('how_added', sql.NVarChar, row.how_added ? row.how_added.substring(0, 100) : '')
                     .query("INSERT INTO fundamental_data (period_start_date, period_end_date, fy, fp_id, form_id, report_date, stock_id, data_type, value, how_added, created_at, updated_at) VALUES (@period_start_date, @period_end_date, @fy, @fp_id, @form_id, @report_date, @stock_id, @data_type, @value, @how_added, SYSDATETIME(), SYSDATETIME())");
                 write(`✅ Inserted: ${row.ticker} ${row.period_end_date.split('T')[0]} ${row.metric}`);
             }
