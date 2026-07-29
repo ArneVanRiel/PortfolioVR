@@ -33,9 +33,12 @@ connectToDatabase().catch(err => {
 app.use('/api/auth', authRoutes); // Auth is publiek toegankelijk
 
 // Publieke cron route om wisselkoersen, closing prices en alerts te herberekenen (Render sleep wake-up)
-app.post('/public/cron/update-data', async (req, res, next) => {
+app.all('/public/cron/update-data', async (req, res, next) => {
   const cronSecret = req.query.cron_secret || req.body.cron_secret;
+  console.log(`[Cron Trigger] Ontvangen secret: "${cronSecret}". Verwacht: "${process.env.CRON_SECRET}"`);
+  
   if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {
+    console.warn('[Cron Trigger] Niet geautoriseerd. Ontvangen secret komt niet overeen met CRON_SECRET.');
     return res.status(401).json({ message: 'Niet geautoriseerd. Ongeldige cron_secret.' });
   }
   try {
