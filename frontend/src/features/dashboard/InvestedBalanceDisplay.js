@@ -17,7 +17,7 @@ const InvestedBalanceDisplay = () => {
     <div className="pl-4">
       <span className="text-xs font-medium text-gray-500 uppercase tracking-wider">Geïnvesteerd</span>
       <p className="text-lg font-bold text-blue-600 privacy-blur">
-        {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+        {isIncognito ? '€ ••••••' : `€${(balance ?? 0).toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
       </p>
     </div>
   );

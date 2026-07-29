@@ -32,6 +32,28 @@ connectToDatabase().catch(err => {
 // Gebruik de routes
 app.use('/api/auth', authRoutes); // Auth is publiek toegankelijk
 
+// Publieke cron route om wisselkoersen, closing prices en alerts te herberekenen (Render sleep wake-up)
+app.post('/api/public/cron/update-data', async (req, res, next) => {
+  const cronSecret = req.query.cron_secret || req.body.cron_secret;
+  if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {
+    return res.status(401).json({ message: 'Niet geautoriseerd. Ongeldige cron_secret.' });
+  }
+  try {
+    const watchlistController = require('./controllers/watchlistController');
+    const notificationController = require('./controllers/notificationController');
+    
+    // 1. Voer de standaard update uit van koersen en prijs-alerts
+    await watchlistController.updateAndProcessStocks(req, res, true);
+    
+    // 2. Start de SEC controle op de achtergrond
+    notificationController.checkNewSecQuarters().catch(secErr => {
+      console.error('Fout bij automatische SEC checks in cron:', secErr);
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Beveilig alle andere routes met verifyToken
 app.use('/api', verifyToken, secRoutes);
 app.use('/api/watchlist', verifyToken, watchlistRoutes); 
@@ -46,6 +68,10 @@ app.use('/api/portfolio', verifyToken, portfolioRoutes);
 app.use('/api/brokers', verifyToken, brokerRoutes);
 app.use('/api/stockexchange', verifyToken, stockExchangeRoutes);
 
+const notificationController = require('./controllers/notificationController');
+app.get('/api/notifications', verifyToken, notificationController.getNotifications);
+app.put('/api/notifications/read', verifyToken, notificationController.markAsRead);
+
 
 // Algemene foutafhandeling
 app.use((err, req, res, next) => {
@@ -56,7 +82,11 @@ app.use((err, req, res, next) => {
 // Sluit de database pool af wanneer de applicatie stopt
 process.on('SIGINT', async () => {
     console.log('SIGINT signaal ontvangen, sluiten database pool...');
-    await closePool();
+    try {
+        await sql.close();
+    } catch (err) {
+        console.error('Fout bij sluiten database pool:', err);
+    }
     process.exit(0);
 });
 

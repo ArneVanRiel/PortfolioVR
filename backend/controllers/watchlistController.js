@@ -234,23 +234,57 @@ const getDailyUpdateStatus = async (req, res) => {
         const pool = await sql.connect(config);
         const todayFormatted = new Date().toISOString().split("T")[0];
 
-        // Controleer of de update VANDAAG is gedraaid, niet of er prijzen VAN vandaag zijn.
-        const query = `
+        // 1. Controleer of de update in het algemeen vandaag is gedraaid
+        const generalQuery = `
             SELECT COUNT(*) AS count
             FROM [dbo].[MACDValues]
             WHERE CAST(last_updated_at AS DATE) = CAST(@todayFormatted AS DATE);
         `;
-        const result = (await pool.request()
+        const generalResult = (await pool.request()
             .input('todayFormatted', sql.VarChar, todayFormatted)
-            .query(query)).recordset[0].count;
+            .query(generalQuery)).recordset[0].count;
 
-        const isUpdatedToday = result > 0;
+        let isUpdatedToday = generalResult > 0;
+
+        if (isUpdatedToday) {
+            // 2. Controleer of er nieuwe of aangepaste actieve stocks zijn die vandaag nog geen updates hebben gehad
+            const activeStockQuery = `
+                SELECT COUNT(*) AS count
+                FROM [dbo].[Stocks] s
+                WHERE (s.inWatchlist = 1 OR s.inIdealePortfolio = 1)
+                  AND s.aandeel_id NOT IN (
+                      SELECT DISTINCT aandeel_id 
+                      FROM [dbo].[MACDValues] 
+                      WHERE CAST(last_updated_at AS DATE) = CAST(@todayFormatted AS DATE)
+                  )
+            `;
+            const activeStockResult = (await pool.request()
+                .input('todayFormatted', sql.VarChar, todayFormatted)
+                .query(activeStockQuery)).recordset[0].count;
+
+            if (activeStockResult > 0) {
+                isUpdatedToday = false;
+            } else {
+                // 3. Controleer of er transacties of splits zijn gewijzigd na de laatste update
+                const modificationQuery = `
+                    SELECT 
+                      (SELECT COUNT(*) FROM [dbo].[PF_transactions] WHERE updated_at > (SELECT ISNULL(MAX(last_updated_at), '1970-01-01') FROM [dbo].[MACDValues])) AS trans_count,
+                      (SELECT COUNT(*) FROM [dbo].[PF_StockSplits] WHERE applied_at > (SELECT ISNULL(MAX(last_updated_at), '1970-01-01') FROM [dbo].[MACDValues])) AS split_count
+                `;
+                const modificationResult = (await pool.request().query(modificationQuery)).recordset[0];
+                if (modificationResult.trans_count > 0 || modificationResult.split_count > 0) {
+                    isUpdatedToday = false;
+                }
+            }
+        }
+
         res.json({ isUpdatedToday });
     } catch (err) {
         console.error('Fout bij controleren dagelijkse update status:', err.message);
         res.status(500).json({ message: 'Fout bij controleren status.' });
     }
 };
+
 
 /**
  * Voegt een stock toe aan de database en markeert deze voor watchlist of ideale portfolio.

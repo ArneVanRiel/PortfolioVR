@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
 import AlertsSummaryTable from '../analysis/AlertsSummaryTable';
 import Modal from '../../components/ui/modal';
@@ -70,6 +70,20 @@ const Dashboard = () => {
   const [isUpdatingData, setIsUpdatingData] = useState(false);
   const [updateProgress, setUpdateProgress] = useState(0);
   const [expandedCard, setExpandedCard] = useState(null);
+  const [isUpdatedToday, setIsUpdatedToday] = useState(false);
+
+  const checkUpdateStatus = async () => {
+    try {
+      const response = await http.get('/watchlist/update-status');
+      setIsUpdatedToday(response.data.isUpdatedToday);
+    } catch (error) {
+      console.error("Fout bij ophalen update status:", error);
+    }
+  };
+
+  useEffect(() => {
+    checkUpdateStatus();
+  }, []);
 
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
@@ -271,8 +285,10 @@ const Dashboard = () => {
               toast.success(`Updated: Aandeel ID ${data.aandeel_id}`, { id: toastId, duration: 1000 });
             } else if (data.type === 'complete') {
               toast.success(data.message, { id: toastId });
+              checkUpdateStatus();
             } else if (data.type === 'error') {
               toast.error(data.message, { id: toastId });
+              checkUpdateStatus();
             }
           } catch (e) {
             console.error("Error parsing JSON chunk", e);
@@ -314,11 +330,24 @@ const Dashboard = () => {
               </button>
               <button
                 onClick={handleUpdateData}
-                disabled={isUpdatingData}
+                disabled={isUpdatingData || (isUpdatedToday && !isUpdatingData)}
                 className="bg-emerald-500 text-white font-medium py-2 px-4 rounded-lg shadow-sm hover:bg-emerald-600 hover:shadow-md transition-all duration-200 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
-                {isUpdatingData ? `Bezig... (${updateProgress}%)` : 'Update Prijzen & Meldingen'}
+                {isUpdatingData ? `Bezig... (${updateProgress}%)` : isUpdatedToday ? 'Prijzen & Meldingen Up-to-date' : 'Update Prijzen & Meldingen'}
               </button>
+              {isUpdatedToday && !isUpdatingData && (
+                <button
+                  onClick={() => {
+                    if (window.confirm("Weet je zeker dat je de update opnieuw wilt forceren?")) {
+                      setIsUpdatedToday(false);
+                      setTimeout(() => handleUpdateData(), 100);
+                    }
+                  }}
+                  className="text-xs text-blue-500 hover:text-blue-700 underline font-medium self-center"
+                >
+                  Forceer update
+                </button>
+              )}
               <button
                 onClick={handleOpenExportModal}
                 className="bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200"

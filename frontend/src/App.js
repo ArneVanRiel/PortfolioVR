@@ -10,10 +10,12 @@ import PortfolioManager from './features/portfolio/PortfolioManager.js';
 import Settings from './features/settings/settings.js';
 import Profile from './features/profile/Profile.js';
 import LoginPageTest from './features/auth/components/loginTest.js';
+import MicrosoftCallback from './features/auth/components/MicrosoftCallback.js';
 
 import SearchModal from './components/ui/SearchModal.js';
 import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
 import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.js';
+import NotificationBell from './components/ui/NotificationBell.js';
 
 // Protected Route Component om onbevoegde toegang te blokkeren
 const ProtectedRoute = ({ children }) => {
@@ -195,6 +197,9 @@ function App() {
                 <InvestedBalanceDisplay />
               </div>
 
+              {/* Meldingen element */}
+              {!isDemo && <NotificationBell />}
+
               {/* Gebruikersprofiel en dropdown */}
               <div
                 className="relative"
@@ -268,6 +273,7 @@ function App() {
           <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
             <Routes>
               <Route path='/login' element={<LoginPageTest/>} />
+              <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
               <Route path='/dashboard' element={<ProtectedRoute><Dashboard/></ProtectedRoute>} />
               <Route path='/analysis/*' element={<ProtectedRoute><Analysis /></ProtectedRoute>} />
               <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager/></ProtectedRoute>} />
