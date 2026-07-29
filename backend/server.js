@@ -33,7 +33,7 @@ connectToDatabase().catch(err => {
 app.use('/api/auth', authRoutes); // Auth is publiek toegankelijk
 
 // Publieke cron route om wisselkoersen, closing prices en alerts te herberekenen (Render sleep wake-up)
-app.post('/api/public/cron/update-data', async (req, res, next) => {
+app.post('/public/cron/update-data', async (req, res, next) => {
   const cronSecret = req.query.cron_secret || req.body.cron_secret;
   if (!process.env.CRON_SECRET || cronSecret !== process.env.CRON_SECRET) {
     return res.status(401).json({ message: 'Niet geautoriseerd. Ongeldige cron_secret.' });
