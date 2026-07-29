@@ -63,15 +63,23 @@ const checkNewSecQuarters = async () => {
                     for (let i = 0; i < filings.form.length; i++) {
                         const form = filings.form[i];
                         if (form === '10-Q' || form === '10-K') {
-                            const reportDate = filings.reportDate[i];
-                            const filingPeriodEndDate = filings.period[i];
-                            const fy = filings.fy[i];
-                            const fp = filings.fp[i];
+                            const reportDate = filings.reportDate[i]; // Dit is de periode einddatum in SEC submissions
                             
                             // Check of de filing datum nieuwer is dan onze database
-                            if (!lastPeriodEndDate || new Date(filingPeriodEndDate) > new Date(lastPeriodEndDate)) {
-                                const quarterLabel = form === '10-K' ? 'FY' : fp;
-                                const alertMessage = `Nieuwe cijfers (${quarterLabel} ${fy}) zijn beschikbaar op SEC voor ${ticker_symbol}!`;
+                            if (!lastPeriodEndDate || new Date(reportDate) > new Date(lastPeriodEndDate)) {
+                                const reportDateObj = new Date(reportDate);
+                                const fy = reportDateObj.getFullYear();
+                                const month = reportDateObj.getMonth() + 1; // 1-12
+                                
+                                let quarterLabel = 'FY';
+                                if (form === '10-Q') {
+                                    if (month >= 2 && month <= 4) quarterLabel = 'Q1';
+                                    else if (month >= 5 && month <= 7) quarterLabel = 'Q2';
+                                    else if (month >= 8 && month <= 10) quarterLabel = 'Q3';
+                                    else quarterLabel = 'Q4';
+                                }
+                                
+                                const alertMessage = `Nieuwe cijfers (${quarterLabel} ${fy}, eindigend op ${reportDate}) zijn beschikbaar op SEC voor ${ticker_symbol}!`;
                                 
                                 // Controleer of we deze melding al hebben aangemaakt
                                 const checkAlertQuery = await pool.request()
