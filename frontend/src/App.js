@@ -133,7 +133,7 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-50/50 font-sans text-gray-900 overflow-hidden">
-      {/* Globale CSS voor de incognito modus */}
+      {/* Globale CSS voor de incognito modus en scrollbars */}
       <style>{`
         .incognito-active .privacy-blur {
           opacity: 0.6;
@@ -149,6 +149,13 @@ function App() {
         }
         .incognito-show {
           display: none;
+        }
+        .no-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .no-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
         }
       `}</style>
 
@@ -233,7 +240,7 @@ function App() {
       )}
 
       {/* Zijbalk + Hoofdinhoud Layout */}
-      <div className="flex flex-col-reverse md:flex-row flex-1 overflow-hidden">
+      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
         {/* Sidebar Navigatie */}
         {!isLoginPage && (
           <aside

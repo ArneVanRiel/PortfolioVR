@@ -14,7 +14,7 @@ const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 const StatCard = ({ title, value, trend, trendUp }) => {
   const isIncognito = useIncognito();
   return (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300">
+    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 w-[85vw] sm:w-[48%] md:w-full flex-shrink-0 snap-start">
       <div className="flex justify-between items-start">
         <div>
           <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
@@ -360,7 +360,7 @@ const Dashboard = () => {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="flex md:grid md:grid-cols-2 lg:grid-cols-4 gap-6 overflow-x-auto md:overflow-x-visible snap-x snap-mandatory pb-4 md:pb-0 scroll-smooth no-scrollbar">
         <StatCard title="Total Portfolio Value" value="$125,680.50" trend="+2.5%" trendUp={true} />
         <StatCard title="Available Cash" value="$15,230.00" />
         <StatCard title="Today's Gain/Loss" value="+$542.30" trend="+0.4%" trendUp={true} />

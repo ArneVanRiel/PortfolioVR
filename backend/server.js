@@ -45,15 +45,27 @@ app.all('/public/cron/update-data', async (req, res, next) => {
     const watchlistController = require('./controllers/watchlistController');
     const notificationController = require('./controllers/notificationController');
     
-    // 1. Voer de standaard update uit van koersen en prijs-alerts
-    await watchlistController.updateAndProcessStocks(req, res, true);
-    
-    // 2. Start de SEC controle op de achtergrond
-    notificationController.checkNewSecQuarters().catch(secErr => {
-      console.error('Fout bij automatische SEC checks in cron:', secErr);
+    // Stuur DIRECT 200 OK terug naar Cron-Job.org om timeouts te voorkomen!
+    res.status(200).json({ message: 'Update en SEC check succesvol gestart op de achtergrond.' });
+
+    // Voer de updates in de achtergrond uit
+    (async () => {
+      console.log('[Cron Background] Starten met wisselkoersen, closing prices en alerts...');
+      await watchlistController.updateAndProcessStocks(null, null, true);
+      
+      console.log('[Cron Background] Starten met SEC controle...');
+      await notificationController.checkNewSecQuarters();
+      console.log('[Cron Background] Alle achtergrond-updates afgerond.');
+    })().catch(backgroundError => {
+      console.error('[Cron Background] Fout opgetreden tijdens achtergrondverwerking:', backgroundError);
     });
+    
   } catch (err) {
-    next(err);
+    // Fout bij het starten van de taak zelf
+    console.error('Fout bij starten cron-taak:', err);
+    if (!res.headersSent) {
+      next(err);
+    }
   }
 });
 
