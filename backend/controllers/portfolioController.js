@@ -529,13 +529,15 @@ const checkAndRepairPriceData = async (req, res) => {
             SELECT
                 t.aandeel_id,
                 s.ticker_symbol,
+                at.type_name as asset_type,
                 MIN(CAST(t.purchase_time AS DATE)) as first_transaction_date,
                 MAX(CAST(t.purchase_time AS DATE)) as last_transaction_date,
                 SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) as total_qty
             FROM PF_transactions t
             JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+            LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
             WHERE t.user_id = @userId AND t.aandeel_id IS NOT NULL
-            GROUP BY t.aandeel_id, s.ticker_symbol;
+            GROUP BY t.aandeel_id, s.ticker_symbol, at.type_name;
         `;
         const stocksResult = await pool.request().input('userId', sql.Int, userId).query(stocksInPortfolioQuery);
         const stocksToProcess = stocksResult.recordset;
@@ -586,15 +588,54 @@ const checkAndRepairPriceData = async (req, res) => {
                 const apiFetchStartDate = missingDates[0];
                 const apiFetchEndDate = targetEndDate.toISOString().split('T')[0];
                 
-                const apiKey = process.env.PROFIT_COM_API_KEY;
-                const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDate}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+                let apiData = [];
+                if (stock.asset_type === 'ETF') {
+                    let yahooTicker = stock.ticker_symbol;
+                    if (!yahooTicker.includes('.')) {
+                        yahooTicker = `${yahooTicker}.DE`;
+                    }
+                    const period1 = Math.floor(new Date(apiFetchStartDate).getTime() / 1000);
+                    const period2 = Math.floor(new Date(apiFetchEndDate).getTime() / 1000) + 86400; // include end date
+                    const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
 
-                const response = await fetch(apiUrl);
-                if (!response.ok) {
-                    write({ type: 'error', message: `API error for ${stock.ticker_symbol}: ${response.statusText}` });
-                    continue;
+                    try {
+                        const response = await fetch(apiUrl, {
+                            headers: {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                            }
+                        });
+                        if (!response.ok) {
+                            write({ type: 'error', message: `Yahoo Finance API error for ${stock.ticker_symbol}: ${response.statusText}` });
+                            continue;
+                        }
+                        const json = await response.json();
+                        const result = json.chart?.result?.[0];
+                        if (result) {
+                            const timestamps = result.timestamp || [];
+                            const closes = result.indicators?.quote?.[0]?.close || [];
+                            apiData = timestamps.map((ts, idx) => {
+                                if (closes[idx] === null || closes[idx] === undefined) return null;
+                                return {
+                                    t: ts,
+                                    c: closes[idx]
+                                };
+                            }).filter(Boolean);
+                        }
+                    } catch (e) {
+                        write({ type: 'error', message: `Fout bij ophalen van ${stock.ticker_symbol} via Yahoo Finance: ${e.message}` });
+                        continue;
+                    }
+                } else {
+                    const apiKey = process.env.PROFIT_COM_API_KEY;
+                    const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDate}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+
+                    const response = await fetch(apiUrl);
+                    if (!response.ok) {
+                        write({ type: 'error', message: `API error for ${stock.ticker_symbol}: ${response.statusText}` });
+                        continue;
+                    }
+                    apiData = await response.json();
                 }
-                const apiData = await response.json();
 
                 if (apiData && apiData.length > 0) {
                     let insertedCount = 0;
@@ -955,6 +996,93 @@ const getTransactions = async (req, res) => {
   }
 };
 
+const fetchAndStorePricesForStock = async (aandeel_id) => {
+  try {
+    const pool = await sql.connect(config);
+    const stockQuery = `
+      SELECT s.ticker_symbol, at.type_name as asset_type 
+      FROM Stocks s
+      LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+      WHERE s.aandeel_id = @aandeel_id
+    `;
+    const stockResult = await pool.request().input('aandeel_id', sql.Int, aandeel_id).query(stockQuery);
+    if (stockResult.recordset.length === 0) return;
+    const stock = stockResult.recordset[0];
+
+    const today = new Date();
+    const todayFormatted = today.toISOString().split("T")[0];
+    const tenYearsAgo = new Date();
+    tenYearsAgo.setFullYear(today.getFullYear() - 10);
+    const apiFetchStartDateFormatted = tenYearsAgo.toISOString().split("T")[0];
+
+    let apiData = [];
+    if (stock.asset_type === 'ETF') {
+      let yahooTicker = stock.ticker_symbol;
+      if (!yahooTicker.includes('.')) {
+        yahooTicker = `${yahooTicker}.DE`;
+      }
+      const period1 = Math.floor(tenYearsAgo.getTime() / 1000);
+      const period2 = Math.floor(today.getTime() / 1000) + 86400;
+      const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
+
+      console.log(`[Background Sync] Ophalen van ETF data voor ${stock.ticker_symbol} via Yahoo Finance: ${apiUrl}`);
+      const response = await fetch(apiUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+      });
+      if (response.ok) {
+        const json = await response.json();
+        const result = json.chart?.result?.[0];
+        if (result) {
+          const timestamps = result.timestamp || [];
+          const closes = result.indicators?.quote?.[0]?.close || [];
+          apiData = timestamps.map((ts, idx) => {
+            if (closes[idx] === null || closes[idx] === undefined) return null;
+            return {
+              t: ts,
+              c: closes[idx]
+            };
+          }).filter(Boolean);
+        }
+      }
+    } else if (stock.asset_type === 'STOCK') {
+      const apiKey = process.env.PROFIT_COM_API_KEY;
+      const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${todayFormatted}&token=${apiKey}`;
+
+      console.log(`[Background Sync] Ophalen van STOCK data voor ${stock.ticker_symbol} via Profit.com: ${apiUrl}`);
+      const response = await fetch(apiUrl);
+      if (response.ok) {
+        apiData = await response.json();
+      }
+    }
+
+    if (apiData && apiData.length > 0) {
+      console.log(`[Background Sync] Opslaan van ${apiData.length} prijsrecords voor ${stock.ticker_symbol}...`);
+      for (const record of apiData) {
+        if (!record || !record.t) continue;
+        const recordDateStr = new Date(record.t * 1000).toISOString().split('T')[0];
+
+        await pool.request()
+          .input("aandeel_id", sql.Int, aandeel_id)
+          .input("closing_price", sql.Decimal(18, 2), record.c)
+          .input("date", sql.VarChar, recordDateStr)
+          .input("last_updated_at", sql.DateTime, new Date())
+          .query(`
+            MERGE INTO DailyClosingPrices AS target
+            USING (SELECT @aandeel_id AS aandeel_id, @closing_price AS closing_price, CAST(@date AS DATE) AS date) AS source
+            ON target.date = source.date AND target.aandeel_id = source.aandeel_id
+            WHEN MATCHED THEN UPDATE SET closing_price = source.closing_price, last_updated_at = @last_updated_at
+            WHEN NOT MATCHED THEN INSERT (aandeel_id, closing_price, date, last_updated_at) VALUES (source.aandeel_id, source.closing_price, source.date, @last_updated_at);
+          `);
+      }
+      console.log(`[Background Sync] Prijsdata succesvol gesynchroniseerd voor ${stock.ticker_symbol}.`);
+    }
+  } catch (error) {
+    console.error(`[Background Sync Error] Fout bij prijs-synchronisatie voor aandeel_id ${aandeel_id}:`, error);
+  }
+};
+
 const addTransaction = async (req, res) => {
   try {
     const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1 } = req.body;
@@ -997,6 +1125,10 @@ const addTransaction = async (req, res) => {
         INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate)
         VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate)
       `);
+
+    // Synchroniseer prijzen op de achtergrond
+    fetchAndStorePricesForStock(aandeel_id);
+
     res.status(201).json({ message: 'Transactie succesvol toegevoegd' });
   } catch (error) {
     console.error('Fout bij toevoegen transactie:', error);
@@ -1023,7 +1155,12 @@ const updateTransaction = async (req, res) => {
         WHERE id = @id
       `);
     
-    if (result.rowsAffected[0] > 0) res.status(200).json({ message: 'Transactie succesvol bijgewerkt' });
+    if (result.rowsAffected[0] > 0) {
+      // Synchroniseer prijzen op de achtergrond
+      fetchAndStorePricesForStock(aandeel_id);
+
+      res.status(200).json({ message: 'Transactie succesvol bijgewerkt' });
+    }
     else res.status(404).json({ message: 'Transactie niet gevonden.' });
   } catch (error) {
     console.error('Fout bij bewerken transactie:', error);
@@ -1040,6 +1177,7 @@ const addMultipleTransactions = async (req, res) => {
 
     const pool = await sql.connect(config);
     let added = 0; let duplicates = 0; let errors = 0;
+    const importedAandeelIds = new Set();
 
     for (const t of transactions) {
       try {
@@ -1079,11 +1217,18 @@ const addMultipleTransactions = async (req, res) => {
               VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate)
             `);
           added++;
+          importedAandeelIds.add(aandeel_id);
       } catch (rowError) {
           console.error('Fout bij verwerken specifieke rij:', rowError);
           errors++;
       }
     }
+
+    // Synchroniseer prijzen op de achtergrond voor alle unieke aandeelIds die succesvol zijn geïmporteerd
+    for (const aandeel_id of importedAandeelIds) {
+        fetchAndStorePricesForStock(aandeel_id);
+    }
+
     res.status(200).json({ message: `Import voltooid! Toegevoegd: ${added}, Duplicaten overgeslagen: ${duplicates}, Fouten/Onbekende tickers: ${errors}.` });
   } catch (error) {
     console.error('Fout bij importeren van meerdere transacties:', error);

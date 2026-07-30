@@ -581,19 +581,40 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
               const apiFetchEndDate = todayFormatted;
 
-              const apiKey = process.env.PROFIT_COM_API_KEY;
-              const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+              if (stock.asset_type === 'ETF') {
+                let yahooTicker = stock.ticker_symbol;
+                if (!yahooTicker.includes('.')) {
+                  yahooTicker = `${yahooTicker}.DE`;
+                }
+                const period1 = Math.floor(apiFetchStartDate.getTime() / 1000);
+                const period2 = Math.floor(new Date(todayFormatted).getTime() / 1000) + 86400; // include today
+                const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
 
-              try {
-                console.log(`Ophalen van data voor ${stock.ticker_symbol} via API: ${apiUrl}`);
-                const response = await fetch(apiUrl);
-                if (!response.ok) {
-                  console.warn(`API error voor ${stock.ticker_symbol} (Status: ${response.status}): ${response.statusText}`);
-                } else {
-                    apiData = await response.json();
-                    console.log(`API data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
+                try {
+                  console.log(`Ophalen van ETF data voor ${stock.ticker_symbol} (Yahoo symbol: ${yahooTicker}) via Yahoo Finance: ${apiUrl}`);
+                  const response = await fetch(apiUrl, {
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                  });
+                  if (!response.ok) {
+                    console.warn(`Yahoo Finance API error voor ${stock.ticker_symbol} (Status: ${response.status}): ${response.statusText}`);
+                  } else {
+                    const json = await response.json();
+                    const result = json.chart?.result?.[0];
+                    if (result) {
+                      const timestamps = result.timestamp || [];
+                      const closes = result.indicators?.quote?.[0]?.close || [];
+                      apiData = timestamps.map((ts, idx) => {
+                        if (closes[idx] === null || closes[idx] === undefined) return null;
+                        return {
+                          t: ts,
+                          c: closes[idx]
+                        };
+                      }).filter(Boolean);
+                    }
+                    console.log(`Yahoo Finance data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
                     
-                    // Stuur voortgang naar client
                     if (res) {
                         const progress = ((index + 1) / totalStocks) * 100;
                         const progressPayload = {
@@ -603,9 +624,37 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
                         };
                         res.write(JSON.stringify(progressPayload) + '\n');
                     }
+                  }
+                } catch (apiError) {
+                  console.error(`Fout bij het ophalen van Yahoo Finance data voor ${stock.ticker_symbol}:`, apiError.message);
                 }
-              } catch (apiError) {
-                console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
+              } else {
+                const apiKey = process.env.PROFIT_COM_API_KEY;
+                const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+
+                try {
+                  console.log(`Ophalen van data voor ${stock.ticker_symbol} via API: ${apiUrl}`);
+                  const response = await fetch(apiUrl);
+                  if (!response.ok) {
+                    console.warn(`API error voor ${stock.ticker_symbol} (Status: ${response.status}): ${response.statusText}`);
+                  } else {
+                      apiData = await response.json();
+                      console.log(`API data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
+                      
+                      // Stuur voortgang naar client
+                      if (res) {
+                          const progress = ((index + 1) / totalStocks) * 100;
+                          const progressPayload = {
+                              type: 'progress',
+                              message: `Verwerken ${stock.ticker_symbol} (${index + 1}/${totalStocks})`,
+                              progress: progress.toFixed(0)
+                          };
+                          res.write(JSON.stringify(progressPayload) + '\n');
+                      }
+                  }
+                } catch (apiError) {
+                  console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
+                }
               }
 
               // 2. Voeg nieuwe / werk bestaande DailyClosingPrices bij
