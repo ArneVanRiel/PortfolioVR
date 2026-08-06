@@ -31,7 +31,10 @@ const LoginPageTest = () => {
 
     // Google SDK initialisatie voor inloggen
     useEffect(() => {
-        if (step === 1 && window.google) {
+        if (step !== 1) return;
+
+        const initGoogle = () => {
+            if (!window.google) return false;
             try {
                 window.google.accounts.id.initialize({
                     client_id: process.env.REACT_APP_GOOGLE_CLIENT_ID || 'your_google_client_id.apps.googleusercontent.com',
@@ -52,10 +55,24 @@ const LoginPageTest = () => {
                         }
                     );
                 }
+                return true;
             } catch (err) {
                 console.error("Fout bij laden Google login:", err);
+                return true;
             }
-        }
+        };
+
+        // Probeer direct te initialiseren
+        if (initGoogle()) return;
+
+        // Als google nog niet geladen is, check elke 100ms
+        const interval = setInterval(() => {
+            if (initGoogle()) {
+                clearInterval(interval);
+            }
+        }, 100);
+
+        return () => clearInterval(interval);
     }, [preferredMethod, step]);
 
     const handleLoginSuccess = (token, userID, role, name) => {

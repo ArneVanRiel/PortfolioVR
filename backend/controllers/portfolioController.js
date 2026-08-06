@@ -2,6 +2,7 @@
 const { sql, config } = require('../config/database');
 const xirr = require('xirr');
 const fetch = require('node-fetch');
+const axios = require('axios');
 
 const recalculateAndStorePortfolioHistory = async (req, res) => {
   try {
@@ -142,11 +143,11 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
     }
     // --- END NEW ---
 
-    // Step 1: Fetch all cashflows for XIRR calculation
+    // Step 1: Fetch all cashflows for XIRR calculation (including transaction currency)
     const cashflowRequest = pool.request();
     cashflowRequest.input('userId', sql.Int, userId);
     const cashflowResult = await cashflowRequest.query(`
-        SELECT aandeel_id, purchase_time, transaction_type, quantity, price, fees, taxes
+        SELECT aandeel_id, purchase_time, transaction_type, quantity, price, fees, taxes, currency
         FROM PF_transactions
         WHERE user_id = @userId
         ORDER BY purchase_time ASC
@@ -194,6 +195,41 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
         `);
         dailyPrices = pricesResult.recordset;
     }
+
+    // Step 3b: Query EUR-denominated stock details to map currencies
+    const isStockEurMap = {};
+    if (userStockIds.length > 0) {
+        const stocksResult = await pool.request().query(`
+            SELECT s.aandeel_id, s.ticker_symbol, at.type_name as asset_type
+            FROM Stocks s
+            LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+            WHERE s.aandeel_id IN (${userStockIds.join(',')})
+        `);
+        stocksResult.recordset.forEach(s => {
+            const ticker = s.ticker_symbol || '';
+            const isEur = ticker.endsWith('.DE') || ticker.endsWith('.AS') || ticker.endsWith('.BR') || s.asset_type === 'ETF';
+            isStockEurMap[s.aandeel_id] = isEur;
+        });
+    }
+
+    // Step 3c: Query EURUSD exchange rates once into memory
+    const fxResult = await pool.request().query(`
+        SELECT CAST(date AS DATE) as date, rate
+        FROM DailyExchangeRates
+        WHERE currency_pair = 'EURUSD'
+    `);
+    const fxMap = {};
+    fxResult.recordset.forEach(row => {
+        const dateStr = new Date(row.date).toISOString().split('T')[0];
+        fxMap[dateStr] = row.rate;
+    });
+
+    const getExchangeRateForDate = (dateStr) => {
+        if (fxMap[dateStr]) return Number(fxMap[dateStr]);
+        const dates = Object.keys(fxMap).filter(d => d <= dateStr).sort();
+        if (dates.length > 0) return Number(fxMap[dates[dates.length - 1]]);
+        return 1.0;
+    };
 
     // Step 4: Build price timeline for each stock for linear interpolation
     const priceTimeline = {};
@@ -293,14 +329,29 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
         }
 
         let total_value = 0;
+        let total_value_eur = 0;
+        const rate = getExchangeRateForDate(currentStr);
         for (const [aandeel_id, qty] of Object.entries(holdings)) {
             if (qty > 0.00001) {
-                const price = getInterpolatedPrice(aandeel_id, currentTimestamp);
-                total_value += qty * price;
+                let price = getInterpolatedPrice(aandeel_id, currentTimestamp);
+                
+                // USD-waarde berekenen
+                let price_usd = price;
+                if (isStockEurMap[aandeel_id]) {
+                    price_usd = price * rate;
+                }
+                total_value += qty * price_usd;
+
+                // EUR-waarde berekenen
+                let price_eur = price;
+                if (!isStockEurMap[aandeel_id]) {
+                    price_eur = price / rate;
+                }
+                total_value_eur += qty * price_eur;
             }
         }
 
-        dailyValues.push({ date: currentStr, total_value });
+        dailyValues.push({ date: currentStr, total_value, total_value_eur });
         currentProcessDate.setUTCDate(currentProcessDate.getUTCDate() + 1);
     }
 
@@ -329,17 +380,30 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 
       // --- NEW: Calculate cash balance for the current day ---
       const cash_balance = transactionsUntilDate.reduce((balance, t) => {
+        const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+        const rate = getExchangeRateForDate(tDateStr);
+        let amount = 0;
         switch (t.transaction_type) {
             case 'DEPOSIT':
-                return balance + t.quantity;
+                amount = t.quantity;
+                if (t.currency === 'EUR') amount = amount * rate;
+                return balance + amount;
             case 'WITHDRAWAL':
-                return balance - t.quantity;
+                amount = t.quantity;
+                if (t.currency === 'EUR') amount = amount * rate;
+                return balance - amount;
             case 'BUY':
-                return balance - ((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0));
+                amount = ((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0));
+                if (t.currency === 'EUR') amount = amount * rate;
+                return balance - amount;
             case 'SELL':
-                return balance + ((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0));
+                amount = ((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0));
+                if (t.currency === 'EUR') amount = amount * rate;
+                return balance + amount;
             case 'DIVIDEND':
-                return balance + ((t.quantity * t.price) - (t.taxes || 0));
+                amount = ((t.quantity * t.price) - (t.taxes || 0));
+                if (t.currency === 'EUR') amount = amount * rate;
+                return balance + amount;
             default:
                 return balance;
         }
@@ -351,15 +415,48 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 
       // Calculate net_invested in assets and cumulative dividends
       let net_invested_assets = 0;
+      let net_invested_assets_eur = 0;
       let cumulative_dividends = 0;
+      let cumulative_dividends_eur = 0;
       
       transactionsUntilDate.forEach(t => {
+        const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+        const rate = getExchangeRateForDate(tDateStr);
+        
+        let val = (t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0);
+        let val_usd = val;
+        let val_eur = val;
+        if (t.currency === 'EUR') {
+            val_usd = val * rate;
+        } else {
+            val_eur = val / rate;
+        }
+        
         if (t.transaction_type === 'BUY') {
-          net_invested_assets += (t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0);
+          net_invested_assets += val_usd;
+          net_invested_assets_eur += val_eur;
         } else if (t.transaction_type === 'SELL') {
-          net_invested_assets -= ((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0));
+          let sellVal = ((t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0));
+          let sellVal_usd = sellVal;
+          let sellVal_eur = sellVal;
+          if (t.currency === 'EUR') {
+              sellVal_usd = sellVal * rate;
+          } else {
+              sellVal_eur = sellVal / rate;
+          }
+          net_invested_assets -= sellVal_usd;
+          net_invested_assets_eur -= sellVal_eur;
         } else if (t.transaction_type === 'DIVIDEND') {
-          cumulative_dividends += ((t.quantity * t.price) - (t.taxes || 0));
+          let divVal = ((t.quantity * t.price) - (t.taxes || 0));
+          let divVal_usd = divVal;
+          let divVal_eur = divVal;
+          if (t.currency === 'EUR') {
+              divVal_usd = divVal * rate;
+          } else {
+              divVal_eur = divVal / rate;
+          }
+          cumulative_dividends += divVal_usd;
+          cumulative_dividends_eur += divVal_eur;
         }
       });
 
@@ -368,6 +465,8 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
       try {
         const rawAssetCashflows = transactionsUntilDate.filter(t => ['BUY', 'SELL', 'DIVIDEND'].includes(t.transaction_type))
           .map(t => {
+            const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+            const rate = getExchangeRateForDate(tDateStr);
             let amount = 0;
             if (t.transaction_type === 'BUY') {
               amount = -((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0));
@@ -376,6 +475,7 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
             } else if (t.transaction_type === 'DIVIDEND') {
               amount = (t.quantity * t.price) - (t.taxes || 0);
             }
+            if (t.currency === 'EUR') amount = amount * rate;
             return { amount, date: new Date(t.purchase_time) };
           });
 
@@ -423,9 +523,12 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
       try {
         const rawAccountCashflows = transactionsUntilDate.filter(t => ['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type))
           .map(t => {
+            const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+            const rate = getExchangeRateForDate(tDateStr);
             let amount = 0;
             if (t.transaction_type === 'DEPOSIT') { amount = -t.quantity; }
             else if (t.transaction_type === 'WITHDRAWAL') { amount = t.quantity; }
+            if (t.currency === 'EUR') amount = amount * rate;
             return { amount, date: new Date(t.purchase_time) };
           });
 
@@ -476,16 +579,19 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
         .input('user_id', sql.Int, userId)
         .input('date', sql.Date, record.date)
         .input('total_value', sql.Decimal(18, 2), record.total_value)
+        .input('total_value_eur', sql.Decimal(18, 2), record.total_value_eur)
         .input('asset_xirr', sql.Decimal(18, 8), isFinite(asset_xirr) ? asset_xirr : 0)
         .input('account_xirr', sql.Decimal(18, 8), isFinite(account_xirr) ? account_xirr : 0)
         .input('net_invested', sql.Decimal(18, 2), net_invested_assets)
+        .input('net_invested_eur', sql.Decimal(18, 2), net_invested_assets_eur)
         .input('cumulative_dividends', sql.Decimal(18, 2), cumulative_dividends)
+        .input('cumulative_dividends_eur', sql.Decimal(18, 2), cumulative_dividends_eur)
         .query(`
           MERGE INTO DailyPortfolioValue AS target
-          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value, @asset_xirr AS asset_xirr, @account_xirr AS account_xirr, @net_invested AS net_invested, @cumulative_dividends AS cumulative_dividends) AS source
+          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value, @total_value_eur AS total_value_eur, @asset_xirr AS asset_xirr, @account_xirr AS account_xirr, @net_invested AS net_invested, @net_invested_eur AS net_invested_eur, @cumulative_dividends AS cumulative_dividends, @cumulative_dividends_eur AS cumulative_dividends_eur) AS source
           ON target.date = source.date AND target.user_id = source.user_id
-          WHEN MATCHED THEN UPDATE SET total_value = source.total_value, asset_xirr = source.asset_xirr, account_xirr = source.account_xirr, net_invested = source.net_invested, cumulative_dividends = source.cumulative_dividends
-          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value, asset_xirr, account_xirr, net_invested, cumulative_dividends) VALUES (source.user_id, source.date, source.total_value, source.asset_xirr, source.account_xirr, source.net_invested, source.cumulative_dividends);
+          WHEN MATCHED THEN UPDATE SET total_value = source.total_value, total_value_eur = source.total_value_eur, asset_xirr = source.asset_xirr, account_xirr = source.account_xirr, net_invested = source.net_invested, net_invested_eur = source.net_invested_eur, cumulative_dividends = source.cumulative_dividends, cumulative_dividends_eur = source.cumulative_dividends_eur
+          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value, total_value_eur, asset_xirr, account_xirr, net_invested, net_invested_eur, cumulative_dividends, cumulative_dividends_eur) VALUES (source.user_id, source.date, source.total_value, source.total_value_eur, source.asset_xirr, source.account_xirr, source.net_invested, source.net_invested_eur, source.cumulative_dividends, source.cumulative_dividends_eur);
         `);
 
       // Send progress update to the client
@@ -729,21 +835,59 @@ const getPortfolioValues = async (req, res) => {
           SELECT DISTINCT date FROM DailyClosingPrices WHERE date >= @startDate AND date <= @endDate
         ),
         DailyFilteredPortfolioValue AS (
-          SELECT d.date, SUM(lt.total_quantity * COALESCE(lcp.closing_price, tp.price, 0)) AS total_value, ISNULL(MAX(er.rate), 1) as exchange_rate,
-                 SUM(lt.net_invested) AS net_invested, SUM(lt.cumulative_dividends) AS cumulative_dividends
+          SELECT d.date, 
+                 SUM(lt.total_quantity * COALESCE(lcp.closing_price, tp.price, 0) * 
+                     CASE 
+                       WHEN @isEur = 1 THEN 
+                         CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+                       ELSE 
+                         CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+                     END
+                 ) AS total_value,
+                 SUM(lt.net_invested) AS net_invested, 
+                 SUM(lt.cumulative_dividends) AS cumulative_dividends
           FROM DailyDates d
           CROSS APPLY (
             SELECT pt.aandeel_id, 
                    SUM(CASE WHEN pt.transaction_type = 'BUY' THEN pt.quantity WHEN pt.transaction_type = 'SELL' THEN -pt.quantity ELSE 0 END) AS total_quantity,
-                   SUM(CASE WHEN pt.transaction_type = 'BUY' THEN (pt.quantity * pt.price) + ISNULL(pt.fees,0) + ISNULL(pt.taxes,0) WHEN pt.transaction_type = 'SELL' THEN -((pt.quantity * pt.price) - ISNULL(pt.fees,0) - ISNULL(pt.taxes,0)) ELSE 0 END) AS net_invested,
-                   SUM(CASE WHEN pt.transaction_type = 'DIVIDEND' THEN (pt.quantity * pt.price) - ISNULL(pt.taxes,0) ELSE 0 END) AS cumulative_dividends
+                   SUM(CASE WHEN pt.transaction_type = 'BUY' THEN 
+                     ((pt.quantity * pt.price) + ISNULL(pt.fees,0) + ISNULL(pt.taxes,0)) * 
+                     CASE 
+                       WHEN @isEur = 1 THEN 
+                         CASE WHEN pt.currency = 'EUR' THEN 1.0 ELSE 1.0 / ISNULL(er_tx.rate, 1) END
+                       ELSE 
+                         CASE WHEN pt.currency = 'EUR' THEN ISNULL(er_tx.rate, 1) ELSE 1.0 END
+                     END
+                     WHEN pt.transaction_type = 'SELL' THEN 
+                     -((pt.quantity * pt.price) - ISNULL(pt.fees,0) - ISNULL(pt.taxes,0)) * 
+                     CASE 
+                       WHEN @isEur = 1 THEN 
+                         CASE WHEN pt.currency = 'EUR' THEN 1.0 ELSE 1.0 / ISNULL(er_tx.rate, 1) END
+                       ELSE 
+                         CASE WHEN pt.currency = 'EUR' THEN ISNULL(er_tx.rate, 1) ELSE 1.0 END
+                     END
+                     ELSE 0 END) AS net_invested,
+                   SUM(CASE WHEN pt.transaction_type = 'DIVIDEND' THEN 
+                     ((pt.quantity * pt.price) - ISNULL(pt.taxes,0)) * 
+                     CASE 
+                       WHEN @isEur = 1 THEN 
+                         CASE WHEN pt.currency = 'EUR' THEN 1.0 ELSE 1.0 / ISNULL(er_tx.rate, 1) END
+                       ELSE 
+                         CASE WHEN pt.currency = 'EUR' THEN ISNULL(er_tx.rate, 1) ELSE 1.0 END
+                     END
+                     ELSE 0 END) AS cumulative_dividends
             FROM PF_transactions pt
             JOIN Stocks s ON pt.aandeel_id = s.aandeel_id
             JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+            OUTER APPLY (
+              SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= CAST(pt.purchase_time AS DATE) ORDER BY date DESC
+            ) er_tx
             WHERE pt.purchase_time <= DATEADD(DAY, 1, d.date) AND pt.user_id = @userId AND at.type_name IN (${types})
             GROUP BY pt.aandeel_id
             HAVING SUM(CASE WHEN pt.transaction_type = 'BUY' THEN pt.quantity WHEN pt.transaction_type = 'SELL' THEN -pt.quantity ELSE 0 END) > 0
           ) lt
+          JOIN Stocks s ON lt.aandeel_id = s.aandeel_id
+          JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
           OUTER APPLY (
             SELECT TOP 1 closing_price FROM DailyClosingPrices dcp
             WHERE dcp.aandeel_id = lt.aandeel_id AND dcp.date <= d.date ORDER BY dcp.date DESC
@@ -758,24 +902,21 @@ const getPortfolioValues = async (req, res) => {
           ) er
           GROUP BY d.date
         )
-        SELECT date, (ISNULL(total_value, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS total_value
-             , 0 AS asset_xirr, 0 AS account_xirr, -- Set XIRR to 0 for filtered views
-             (ISNULL(net_invested, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS net_invested,
-             (ISNULL(cumulative_dividends, 0) / CASE WHEN @isEur = 1 THEN exchange_rate ELSE 1 END) AS cumulative_dividends
+        SELECT date, ISNULL(total_value, 0) AS total_value, 
+               0 AS asset_xirr, 0 AS account_xirr,
+               ISNULL(net_invested, 0) AS net_invested, 
+               ISNULL(cumulative_dividends, 0) AS cumulative_dividends
         FROM DailyFilteredPortfolioValue
         ORDER BY date ASC
       `;
     } else {
       query = `
         SELECT dpv.date, 
-               (dpv.total_value / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS total_value, 
+               CASE WHEN @isEur = 1 THEN dpv.total_value_eur ELSE dpv.total_value END AS total_value, 
                dpv.asset_xirr, dpv.account_xirr,
-               (dpv.net_invested / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS net_invested,
-               (dpv.cumulative_dividends / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS cumulative_dividends
+               CASE WHEN @isEur = 1 THEN dpv.net_invested_eur ELSE dpv.net_invested END AS net_invested,
+               CASE WHEN @isEur = 1 THEN dpv.cumulative_dividends_eur ELSE dpv.cumulative_dividends END AS cumulative_dividends
         FROM DailyPortfolioValue dpv
-        OUTER APPLY (
-            SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= dpv.date ORDER BY date DESC
-        ) er
         WHERE dpv.user_id = @userId AND dpv.date >= @startDate AND dpv.date <= @endDate
         ORDER BY dpv.date ASC
       `;
@@ -825,11 +966,16 @@ const calculateReturns = async (req, res) => {
         SELECT
           CONVERT(DATE, t.purchase_time) AS transaction_date,
           SUM(CASE
-            WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price
-            WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price
+            WHEN t.transaction_type = 'BUY' THEN 
+              CASE WHEN t.currency = 'EUR' THEN (t.quantity * t.price) * ISNULL(er.rate, 1) ELSE t.quantity * t.price END
+            WHEN t.transaction_type = 'SELL' THEN 
+              CASE WHEN t.currency = 'EUR' THEN -(t.quantity * t.price) * ISNULL(er.rate, 1) ELSE -(t.quantity * t.price) END
             ELSE 0
           END) AS total_transaction_value
         FROM PF_transactions t
+        OUTER APPLY (
+            SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= CONVERT(DATE, t.purchase_time) ORDER BY date DESC
+        ) er
         WHERE t.user_id = @userId
         ${dateFilter ? 'AND t.purchase_time >= @dateFilter' : ''}
         GROUP BY CONVERT(DATE, t.purchase_time)
@@ -936,11 +1082,51 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         s.name,
         at.type_name AS asset_type,
         h.total_quantity AS quantity,
-        ((h.total_invested / NULLIF(h.total_quantity, 0)) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS average_price,
-        (COALESCE(p.closing_price, ltp.price, 0) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS price,
-        ((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS value,
-        (((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) - h.total_invested) / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS gainLoss,
-        (h.total_invested / CASE WHEN @isEur = 1 THEN ISNULL(er.rate, 1) ELSE 1 END) AS total_invested
+        -- Bereken de conversiefactor op basis van de asset-valuta en de gevraagde weergave-valuta
+        -- Indien weergave in EUR (@isEur = 1): EUR-aandelen/ETFs x1.0, USD-aandelen x1.0/rate
+        -- Indien weergave in USD (@isEur = 0): EUR-aandelen/ETFs xrate, USD-aandelen x1.0
+        CASE 
+          WHEN @isEur = 1 THEN 
+            CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+          ELSE 
+            CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+        END AS conv_factor,
+        -- Pas de conv_factor direct toe op alle relevante bedragen
+        ((h.total_invested / NULLIF(h.total_quantity, 0)) * 
+          CASE 
+            WHEN @isEur = 1 THEN 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+            ELSE 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+          END) AS average_price,
+        (COALESCE(p.closing_price, ltp.price, 0) * 
+          CASE 
+            WHEN @isEur = 1 THEN 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+            ELSE 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+          END) AS price,
+        ((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) * 
+          CASE 
+            WHEN @isEur = 1 THEN 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+            ELSE 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+          END) AS value,
+        (((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) - h.total_invested) * 
+          CASE 
+            WHEN @isEur = 1 THEN 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+            ELSE 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+          END) AS gainLoss,
+        (h.total_invested * 
+          CASE 
+            WHEN @isEur = 1 THEN 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
+            ELSE 
+              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
+          END) AS total_invested
       FROM Holdings h
       JOIN Stocks s ON h.aandeel_id = s.aandeel_id
       LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
@@ -1443,8 +1629,20 @@ const getPortfolioReturnsDynamics = async (req, res) => {
                         case 'DEPOSIT': 
                         case 'WITHDRAWAL': flow = 0; break;
                     }
-                    // Hier zou valuta conversie moeten komen als transacties in verschillende valuta zijn.
-                    // Voor nu gaan we uit van een consistente valuta.
+                    
+                    // Valuta conversie voor transactie cashflows
+                    const rate = getRateOnDate(new Date(t.purchase_time));
+                    if (isEur) {
+                        if (t.currency !== 'EUR') {
+                            // Convert USD to EUR (divide by rate)
+                            flow = flow / (rate || 1);
+                        }
+                    } else {
+                        if (t.currency === 'EUR') {
+                            // Convert EUR to USD (multiply by rate)
+                            flow = flow * (rate || 1);
+                        }
+                    }
                     return sum + flow;
                 }
                 return sum;
@@ -1576,6 +1774,168 @@ const applyStockSplit = async (req, res) => {
     }
 };
 
+const getBenchmarkHistory = async (req, res) => {
+    try {
+        const userId = 1; // Haal dit uit sessie/JWT of default
+        const { ticker = 'SPY', displayCurrency = 'USD' } = req.query;
+
+        const pool = await sql.connect(config);
+
+        // 1. Haal de vroegste transactiedatum van de gebruiker op
+        const firstTxResult = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(`SELECT MIN(CAST(purchase_time AS DATE)) as first_date FROM PF_transactions WHERE user_id = @userId`);
+        
+        let firstDate = firstTxResult.recordset[0].first_date;
+        if (!firstDate) {
+            firstDate = new Date();
+            firstDate.setFullYear(firstDate.getFullYear() - 1);
+        } else {
+            firstDate = new Date(firstDate);
+        }
+
+        // Neem een buffer van 5 dagen in het verleden
+        firstDate.setDate(firstDate.getDate() - 5);
+        const period1 = Math.floor(firstDate.getTime() / 1000);
+        const period2 = Math.floor(Date.now() / 1000);
+
+        // 2. Haal de koershistorie van de benchmark op via Yahoo Finance API
+        const yahooTicker = ticker.toUpperCase().trim();
+        const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
+        
+        console.log(`[Benchmark] Ophalen van benchmark ${yahooTicker} via Yahoo: ${apiUrl}`);
+        
+        const response = await axios.get(apiUrl, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+        });
+
+        const chartData = response.data?.chart?.result?.[0];
+        if (!chartData) {
+            return res.status(404).json({ message: `Geen koersdata gevonden voor benchmark ${yahooTicker}` });
+        }
+
+        const timestamps = chartData.timestamp || [];
+        const closes = chartData.indicators?.quote?.[0]?.close || [];
+
+        const benchmarkPrices = {};
+        timestamps.forEach((ts, idx) => {
+            const dateStr = new Date(ts * 1000).toISOString().split('T')[0];
+            const price = closes[idx];
+            if (price != null) {
+                benchmarkPrices[dateStr] = price;
+            }
+        });
+
+        // 3. Haal alle BUY & SELL transacties van de gebruiker op
+        const txResult = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(`
+                SELECT CAST(purchase_time AS DATE) as date, transaction_type, quantity, price, currency
+                FROM PF_transactions
+                WHERE user_id = @userId AND transaction_type IN ('BUY', 'SELL')
+                ORDER BY purchase_time ASC
+            `);
+        const transactions = txResult.recordset;
+
+        // Wisselkoersen inladen voor EUR/USD conversie
+        const fxResult = await pool.request().query(`
+            SELECT CAST(date AS DATE) as date, rate
+            FROM DailyExchangeRates
+            WHERE currency_pair = 'EURUSD'
+        `);
+        const fxMap = {};
+        fxResult.recordset.forEach(r => {
+            const dateStr = new Date(r.date).toISOString().split('T')[0];
+            fxMap[dateStr] = parseFloat(r.rate);
+        });
+
+        const getExchangeRateForDate = (dateStr) => {
+            let curr = new Date(dateStr);
+            for (let i = 0; i < 30; i++) {
+                const checkStr = curr.toISOString().split('T')[0];
+                if (fxMap[checkStr]) return fxMap[checkStr];
+                curr.setDate(curr.getDate() - 1);
+            }
+            return 1.1; // Default fallback
+        };
+
+        // 4. Bouw de dagelijkse tijdlijn op op basis van de datums uit DailyPortfolioValue
+        const valDatesResult = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(`
+                SELECT CAST(date AS DATE) as date
+                FROM DailyPortfolioValue
+                WHERE user_id = @userId
+                ORDER BY date ASC
+            `);
+        
+        const timelineDates = valDatesResult.recordset.map(r => new Date(r.date).toISOString().split('T')[0]);
+
+        if (timelineDates.length === 0) {
+            return res.json([]);
+        }
+
+        const sortedBenchmarkDates = Object.keys(benchmarkPrices).sort();
+        const getBenchmarkPriceForDate = (dateStr) => {
+            if (benchmarkPrices[dateStr]) return benchmarkPrices[dateStr];
+            let lastPrice = 1.0;
+            for (let i = 0; i < sortedBenchmarkDates.length; i++) {
+                const bDate = sortedBenchmarkDates[i];
+                if (bDate > dateStr) break;
+                lastPrice = benchmarkPrices[bDate];
+            }
+            return lastPrice;
+        };
+
+        let simulatedShares = 0;
+        const resultTimeline = [];
+
+        timelineDates.forEach(dateStr => {
+            const rate = getExchangeRateForDate(dateStr);
+            const benchmarkPrice = getBenchmarkPriceForDate(dateStr);
+
+            // Verwerk de transacties die op of voor deze dag hebben plaatsgevonden
+            const dayTxs = transactions.filter(t => new Date(t.date).toISOString().split('T')[0] === dateStr);
+            dayTxs.forEach(t => {
+                let cashValue = t.quantity * t.price;
+                
+                // Converteer transactiebedrag naar USD (waarin de benchmarks SPY, QQQ genoteerd staan)
+                if (t.currency === 'EUR') {
+                    cashValue = cashValue * rate;
+                }
+
+                if (t.transaction_type === 'BUY') {
+                    simulatedShares += cashValue / benchmarkPrice;
+                } else if (t.transaction_type === 'SELL') {
+                    simulatedShares -= cashValue / benchmarkPrice;
+                }
+            });
+
+            if (simulatedShares < 0) simulatedShares = 0;
+
+            let simulatedValue = simulatedShares * benchmarkPrice;
+
+            // Omrekenen naar display valuta van de gebruiker (EUR of USD)
+            if (displayCurrency === 'EUR') {
+                simulatedValue = simulatedValue / rate;
+            }
+
+            resultTimeline.push({
+                date: dateStr,
+                value: parseFloat(simulatedValue.toFixed(2))
+            });
+        });
+
+        res.json(resultTimeline);
+
+    } catch (err) {
+        console.error('Fout bij ophalen benchmark geschiedenis:', err);
+        res.status(500).json({ message: 'Serverfout bij ophalen benchmark geschiedenis' });
+    }
+};
+
 module.exports = {
   recalculateAndStorePortfolioHistory,
   getPortfolioValues,
@@ -1591,5 +1951,6 @@ module.exports = {
   getPortfolioReturnsDynamics,
   markTobPaid,
   forceUpdateExchangeRates,
-  applyStockSplit
+  applyStockSplit,
+  getBenchmarkHistory
 };
