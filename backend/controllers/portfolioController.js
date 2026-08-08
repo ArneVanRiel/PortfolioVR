@@ -1890,6 +1890,7 @@ const getBenchmarkHistory = async (req, res) => {
         };
 
         let simulatedShares = 0;
+        let simulatedCostBasis = 0;
         const resultTimeline = [];
 
         timelineDates.forEach(dateStr => {
@@ -1908,23 +1909,33 @@ const getBenchmarkHistory = async (req, res) => {
 
                 if (t.transaction_type === 'BUY') {
                     simulatedShares += cashValue / benchmarkPrice;
+                    simulatedCostBasis += cashValue;
                 } else if (t.transaction_type === 'SELL') {
+                    const fractionSold = simulatedShares > 0 ? (cashValue / benchmarkPrice) / simulatedShares : 0;
                     simulatedShares -= cashValue / benchmarkPrice;
+                    simulatedCostBasis -= simulatedCostBasis * fractionSold;
                 }
             });
 
-            if (simulatedShares < 0) simulatedShares = 0;
+            if (simulatedShares < 0) {
+                simulatedShares = 0;
+                simulatedCostBasis = 0;
+            }
 
             let simulatedValue = simulatedShares * benchmarkPrice;
+            let displayCostBasis = simulatedCostBasis;
 
             // Omrekenen naar display valuta van de gebruiker (EUR of USD)
             if (displayCurrency === 'EUR') {
                 simulatedValue = simulatedValue / rate;
+                displayCostBasis = displayCostBasis / rate;
             }
 
             resultTimeline.push({
                 date: dateStr,
-                value: parseFloat(simulatedValue.toFixed(2))
+                value: parseFloat(simulatedValue.toFixed(2)),
+                costBasis: parseFloat(displayCostBasis.toFixed(2)),
+                rawPrice: parseFloat(benchmarkPrice.toFixed(2))
             });
         });
 

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Line, Bar } from 'react-chartjs-2';
 
 const BENCHMARKS = [
@@ -11,6 +11,8 @@ const BENCHMARKS = [
 ];
 
 const GrowthTab = ({
+  history,
+  categoryHistories,
   selectedBenchmark,
   setSelectedBenchmark,
   benchmarkHistory,
@@ -51,6 +53,8 @@ const GrowthTab = ({
   formatCurrency,
   isIncognito,
   processedHoldings,
+  rawTransactions,
+  availableAssetTypes,
   loading
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -58,7 +62,47 @@ const GrowthTab = ({
   const [historyType, setHistoryType] = useState('portfolio'); // 'portfolio' | 'assets'
   const [groupBy, setGroupBy] = useState('none'); // 'none' | 'class' | 'sector'
 
-  // Custom dataset visibility state
+  // Performance chart specific states (Screenshot 16 & 17)
+  const [perfCompareBenchmark, setPerfCompareBenchmark] = useState(false);
+  const [perfSettingsOpen, setPerfSettingsOpen] = useState(false);
+  const [perfCalcMethod, setPerfCalcMethod] = useState('period'); // 'period' | 'first_trade'
+  const [perfGroupBy, setPerfGroupBy] = useState('none');
+
+  // Custom category visibility state for Category Grouping (Screenshot 19)
+  const [visibleCategories, setVisibleCategories] = useState({});
+
+  useEffect(() => {
+    if (availableAssetTypes && availableAssetTypes.length > 0) {
+      const initial = {};
+      availableAssetTypes.forEach(cat => {
+        initial[cat] = true;
+      });
+      setVisibleCategories(initial);
+    }
+  }, [availableAssetTypes]);
+
+  const CATEGORY_COLORS = {
+    STOCK: '#2563eb',     // Blue
+    STOCKS: '#2563eb',
+    ETF: '#F59E0B',       // Orange/Yellow
+    ETFS: '#F59E0B',
+    FUNDS: '#F59E0B',
+    COMMODITY: '#8B5CF6',   // Purple
+    COMMODITIES: '#8B5CF6',
+    FINANCIAL: '#14B8A6',   // Teal
+    FINANCIALS: '#14B8A6',
+    ONBEKEND: '#9CA3AF'     // Gray
+  };
+
+  const getCategoryColor = (cat) => CATEGORY_COLORS[cat.toUpperCase()] || '#10B981';
+
+  const getCategoryLabel = (cat) => {
+    if (cat.toUpperCase() === 'STOCK' || cat.toUpperCase() === 'STOCKS') return 'Stocks';
+    if (cat.toUpperCase() === 'ETF' || cat.toUpperCase() === 'ETFS' || cat.toUpperCase() === 'FUNDS') return 'Funds';
+    return cat;
+  };
+
+  // Custom dataset visibility state for default Value Chart
   const [visibleDatasets, setVisibleDatasets] = useState({
     portfolio: true,
     benchmark: true,
@@ -89,7 +133,6 @@ const GrowthTab = ({
     return `${formatDt(startD)} - ${formatDt(endD)}`;
   }, [filteredHistVal]);
 
-  // Match benchmark timeline to user history timeline using YYYY-MM-DD
   const matchedBenchmarkValues = useMemo(() => {
     return filteredHistVal.map(h => {
       const hDateStr = h.date.substring(0, 10);
@@ -98,7 +141,6 @@ const GrowthTab = ({
     });
   }, [filteredHistVal, benchmarkHistory]);
 
-  // Rebase benchmark values to start at the exact same value as portfolio value on day 1 (re-basing)
   const rebasedBenchmarkValues = useMemo(() => {
     if (filteredHistVal.length === 0 || matchedBenchmarkValues.length === 0) return [];
     
@@ -113,43 +155,68 @@ const GrowthTab = ({
     return matchedBenchmarkValues.map(v => v === null ? null : parseFloat((v * ratio).toFixed(2)));
   }, [filteredHistVal, matchedBenchmarkValues]);
 
-  const periodGains = useMemo(() => {
-    if (filteredHistVal.length < 2 || rebasedBenchmarkValues.length < 2) return { portfolio: 0, benchmark: 0 };
+  const rebasedBenchmarkCost = useMemo(() => {
+    if (filteredHistVal.length === 0 || matchedBenchmarkValues.length === 0) return [];
     
     const startP = filteredHistVal[0].total_value || 0;
+    const startB = matchedBenchmarkValues.find(v => v !== null) || 0;
+    
+    if (startP === 0 || startB === 0) {
+      return filteredHistVal.map(h => h.net_invested);
+    }
+    
+    const ratio = startP / startB;
+    return filteredHistVal.map(h => {
+      const hDateStr = h.date.substring(0, 10);
+      const bPoint = benchmarkHistory.find(b => b.date.substring(0, 10) === hDateStr);
+      const bCost = bPoint ? bPoint.costBasis : 0;
+      return parseFloat((bCost * ratio).toFixed(2));
+    });
+  }, [filteredHistVal, matchedBenchmarkValues, benchmarkHistory]);
+
+  const periodGains = useMemo(() => {
+    if (filteredHistVal.length < 2 || rebasedBenchmarkValues.length < 2 || rebasedBenchmarkCost.length < 2) return { portfolio: 0, benchmark: 0 };
+    
+    const startP = filteredHistVal[0].total_value || 0;
+    const startInvested = filteredHistVal[0].net_invested || 0;
     const endP = filteredHistVal[filteredHistVal.length - 1].total_value || 0;
-    
+    const endInvested = filteredHistVal[filteredHistVal.length - 1].net_invested || 0;
+
     const endB = rebasedBenchmarkValues[rebasedBenchmarkValues.length - 1] || 0;
+    const endBCost = rebasedBenchmarkCost[rebasedBenchmarkCost.length - 1] || 0;
     
+    const portfolioProfit = (endP - endInvested) - (startP - startInvested);
+    const benchmarkProfit = (endB - endBCost) - (startP - rebasedBenchmarkCost[0]);
+
     return {
-      portfolio: endP - startP,
-      benchmark: endB - startP
+      portfolio: portfolioProfit,
+      benchmark: benchmarkProfit
     };
-  }, [filteredHistVal, rebasedBenchmarkValues]);
+  }, [filteredHistVal, rebasedBenchmarkValues, rebasedBenchmarkCost]);
 
   // --- Dynamic Alert Block Calculations (Card 1) ---
   const alertInfo = useMemo(() => {
-    if (filteredHistVal.length < 2 || benchmarkHistory.length < 2) return null;
+    if (filteredHistVal.length < 2 || benchmarkHistory.length < 2 || rebasedBenchmarkValues.length < 2 || rebasedBenchmarkCost.length < 2) return null;
 
     const startP = filteredHistVal[0].total_value || 0;
+    const startInvested = filteredHistVal[0].net_invested || 0;
     const endP = filteredHistVal[filteredHistVal.length - 1].total_value || 0;
-    
+    const endInvested = filteredHistVal[filteredHistVal.length - 1].net_invested || 0;
+
+    const endB = rebasedBenchmarkValues[rebasedBenchmarkValues.length - 1] || 0;
+    const endBCost = rebasedBenchmarkCost[rebasedBenchmarkCost.length - 1] || 0;
+
     const startDateStr = filteredHistVal[0].date.substring(0, 10);
-    const endDateStr = filteredHistVal[filteredHistVal.length - 1].date.substring(0, 10);
-
     const startBPoint = benchmarkHistory.find(b => b.date.substring(0, 10) >= startDateStr);
-    const endBPoint = benchmarkHistory.find(b => b.date.substring(0, 10) <= endDateStr);
-
     const startB = startBPoint ? startBPoint.value : 0;
-    const endB = endBPoint ? endBPoint.value : 0;
 
     if (startP === 0 || startB === 0) return null;
 
-    const pReturnPct = ((endP - startP) / startP) * 100;
-    const bReturnPct = ((endB - startB) / startB) * 100;
+    const portfolioProfit = (endP - endInvested) - (startP - startInvested);
+    const benchmarkProfit = (endB - endBCost) - (startP - rebasedBenchmarkCost[0]);
 
-    const diffPct = pReturnPct - bReturnPct;
-    const diffVal = (endP - startP) - (endB - startB);
+    const diffVal = portfolioProfit - benchmarkProfit;
+    const diffPct = (diffVal / startP) * 100;
 
     return {
       isAhead: diffPct >= 0,
@@ -157,56 +224,119 @@ const GrowthTab = ({
       diffVal: Math.abs(diffVal),
       benchmarkName
     };
-  }, [filteredHistVal, benchmarkHistory, benchmarkName]);
+  }, [filteredHistVal, benchmarkHistory, rebasedBenchmarkValues, rebasedBenchmarkCost, benchmarkName]);
+
+  // Compute trade markers for the Portfolio Value chart (Show trades option)
+  const tradeMarkers = useMemo(() => {
+    if (!growthShowTrades || !rawTransactions || rawTransactions.length === 0) {
+      return null;
+    }
+    
+    const pointRadii = [];
+    const pointHoverRadii = [];
+    const pointBgColors = [];
+    const pointBorderColors = [];
+    
+    filteredHistVal.forEach(h => {
+      const hDateStr = h.date.substring(0, 10);
+      const dayTxs = rawTransactions.filter(t => {
+        if (!t.purchase_time) return false;
+        const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+        return tDateStr === hDateStr && (t.transaction_type === 'BUY' || t.transaction_type === 'SELL');
+      });
+      
+      if (dayTxs.length > 0) {
+        const hasBuy = dayTxs.some(t => t.transaction_type === 'BUY');
+        pointRadii.push(6);
+        pointHoverRadii.push(8);
+        pointBgColors.push(hasBuy ? '#10B981' : '#EF4444');
+        pointBorderColors.push('#ffffff');
+      } else {
+        pointRadii.push(0);
+        pointHoverRadii.push(4);
+        pointBgColors.push('#2563eb');
+        pointBorderColors.push('#2563eb');
+      }
+    });
+    
+    return { pointRadii, pointHoverRadii, pointBgColors, pointBorderColors };
+  }, [filteredHistVal, rawTransactions, growthShowTrades]);
 
   // --- Chart 1: Portfolio Value ---
   const valueChartData = useMemo(() => {
     const labels = filteredHistVal.map(h => new Date(h.date).toLocaleDateString('nl-BE'));
     const datasets = [];
 
-    if (visibleDatasets.portfolio) {
-      datasets.push({
-        label: 'Portfolio',
-        data: filteredHistVal.map(h => h.total_value),
-        borderColor: '#2563eb',
-        backgroundColor: 'rgba(37, 99, 235, 0.05)',
-        borderWidth: 2.5,
-        fill: true,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-        tension: 0.1
+    if (groupBy === 'class') {
+      availableAssetTypes.forEach(cat => {
+        if (visibleCategories[cat]) {
+          const catData = filteredHistVal.map(h => {
+            const hDateStr = h.date.substring(0, 10);
+            const found = (categoryHistories[cat] || []).find(c => c.date.substring(0, 10) === hDateStr);
+            return found ? found.total_value : 0;
+          });
+          
+          datasets.push({
+            label: getCategoryLabel(cat),
+            data: catData,
+            borderColor: getCategoryColor(cat),
+            backgroundColor: 'rgba(37, 99, 235, 0.02)',
+            borderWidth: 2.5,
+            fill: false,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.1
+          });
+        }
       });
-    }
+    } else {
+      if (visibleDatasets.portfolio) {
+        datasets.push({
+          label: 'Portfolio',
+          data: filteredHistVal.map(h => h.total_value),
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37, 99, 235, 0.05)',
+          borderWidth: 2.5,
+          fill: true,
+          pointRadius: tradeMarkers ? tradeMarkers.pointRadii : 0,
+          pointHoverRadius: tradeMarkers ? tradeMarkers.pointHoverRadii : 4,
+          pointBackgroundColor: tradeMarkers ? tradeMarkers.pointBgColors : '#2563eb',
+          pointBorderColor: tradeMarkers ? tradeMarkers.pointBorderColors : '#2563eb',
+          pointBorderWidth: tradeMarkers ? 1.5 : 0,
+          tension: 0.1
+        });
+      }
 
-    if (visibleDatasets.benchmark) {
-      datasets.push({
-        label: benchmarkName,
-        data: rebasedBenchmarkValues,
-        borderColor: '#F59E0B',
-        borderWidth: 2,
-        fill: false,
-        pointRadius: 0,
-        pointHoverRadius: 4,
-        tension: 0.1
-      });
-    }
+      if (visibleDatasets.benchmark) {
+        datasets.push({
+          label: benchmarkName,
+          data: rebasedBenchmarkValues,
+          borderColor: '#F59E0B',
+          borderWidth: 2,
+          fill: false,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          tension: 0.1
+        });
+      }
 
-    if (visibleDatasets.costBasis && growthShowCostBasis && historyType === 'portfolio') {
-      datasets.push({
-        label: 'Invested',
-        data: filteredHistVal.map(h => h.net_invested),
-        borderColor: '#8B5CF6',
-        borderWidth: 1.5,
-        borderDash: [5, 5],
-        fill: false,
-        pointRadius: 0,
-        pointHoverRadius: 0,
-        tension: 0
-      });
+      if (visibleDatasets.costBasis && growthShowCostBasis && historyType === 'portfolio') {
+        datasets.push({
+          label: 'Invested',
+          data: filteredHistVal.map(h => h.net_invested),
+          borderColor: '#8B5CF6',
+          borderWidth: 1.5,
+          borderDash: [5, 5],
+          fill: false,
+          pointRadius: 0,
+          pointHoverRadius: 0,
+          tension: 0
+        });
+      }
     }
 
     return { labels, datasets };
-  }, [filteredHistVal, matchedBenchmarkValues, benchmarkName, growthShowCostBasis, visibleDatasets, historyType]);
+  }, [filteredHistVal, rebasedBenchmarkValues, benchmarkName, growthShowCostBasis, visibleDatasets, historyType, tradeMarkers, groupBy, availableAssetTypes, visibleCategories, categoryHistories]);
 
   // Custom ChartJS Plugin to draw range selection background (Screenshot 14)
   const rangeSelectionPlugin = useMemo(() => ({
@@ -231,7 +361,6 @@ const GrowthTab = ({
           chartArea.bottom - chartArea.top
         );
         
-        // Draw dashed vertical lines
         ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
@@ -268,7 +397,6 @@ const GrowthTab = ({
           setDragEndIdx(end);
           setDragStartIdx(start);
           
-          // Trigger dates filter
           if (filteredHistVal[start] && filteredHistVal[end]) {
             setValStart(filteredHistVal[start].date);
             setValEnd(filteredHistVal[end].date);
@@ -302,25 +430,302 @@ const GrowthTab = ({
     }
   }), [displayCurrency, isIncognito, formatCurrency, dragStartIdx, dragEndIdx, filteredHistVal, setValStart, setValEnd, setValPeriod]);
 
-  // --- Chart 2: Portfolio Performance (Teal Chart) ---
+  // --- Chart 2: Portfolio Performance (Teal Chart) Calculations (Screenshot 16) ---
+  const perfDateRangeText = useMemo(() => {
+    if (filteredHistPerf.length === 0) return '';
+    const startD = new Date(filteredHistPerf[0].date);
+    const endD = new Date(filteredHistPerf[filteredHistPerf.length - 1].date);
+    
+    const formatDt = (d) => {
+      const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      return `${months[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).substring(2)}`;
+    };
+    
+    return `${formatDt(startD)} - ${formatDt(endD)}`;
+  }, [filteredHistPerf]);
+
+  const matchedPerfBenchmarkValues = useMemo(() => {
+    return filteredHistPerf.map(h => {
+      const hDateStr = h.date.substring(0, 10);
+      const bPoint = benchmarkHistory.find(b => b.date.substring(0, 10) === hDateStr);
+      return bPoint ? { value: bPoint.value, costBasis: bPoint.costBasis, rawPrice: bPoint.rawPrice } : null;
+    });
+  }, [filteredHistPerf, benchmarkHistory]);
+
+  const fullTwrTimeline = useMemo(() => {
+    if (!history || history.length === 0) return [];
+    
+    let currentTwr = 1.0;
+    const twrValues = [];
+    
+    for (let i = 0; i < history.length; i++) {
+      const h = history[i];
+      if (i === 0) {
+        twrValues.push(0);
+        continue;
+      }
+      
+      const prev = history[i - 1];
+      const prevVal = prev.total_value || 0;
+      const curVal = h.total_value || 0;
+      const curInvested = h.net_invested || 0;
+      const prevInvested = prev.net_invested || 0;
+      
+      const cf = curInvested - prevInvested;
+      
+      let dailyReturn = 0;
+      if (prevVal > 0) {
+        dailyReturn = (curVal - cf) / prevVal - 1;
+      }
+      
+      if (dailyReturn > 2.0) dailyReturn = 0;
+      if (dailyReturn < -0.9) dailyReturn = 0;
+      
+      currentTwr = currentTwr * (1 + dailyReturn);
+      twrValues.push((currentTwr - 1) * 100);
+    }
+    
+    return twrValues;
+  }, [history]);
+
+  const twrValuesForPerf = useMemo(() => {
+    return filteredHistPerf.map(h => {
+      const idx = history.findIndex(p => p.date === h.date);
+      if (idx !== -1 && fullTwrTimeline[idx] !== undefined) {
+        return fullTwrTimeline[idx];
+      }
+      return 0;
+    });
+  }, [filteredHistPerf, history, fullTwrTimeline]);
+
+  // Compiles TWR timelines for individual asset categories
+  const categoryTwrTimelines = useMemo(() => {
+    if (!history || history.length === 0 || !categoryHistories) return {};
+    
+    const catTimelines = {};
+    
+    availableAssetTypes.forEach(cat => {
+      const catHistory = categoryHistories[cat] || [];
+      if (catHistory.length === 0) {
+        catTimelines[cat] = [];
+        return;
+      }
+      
+      let currentTwr = 1.0;
+      const twrValues = [];
+      
+      for (let i = 0; i < catHistory.length; i++) {
+        const h = catHistory[i];
+        if (i === 0) {
+          twrValues.push(0);
+          continue;
+        }
+        
+        const prev = catHistory[i - 1];
+        const prevVal = prev.total_value || 0;
+        const curVal = h.total_value || 0;
+        const curInvested = h.net_invested || 0;
+        const prevInvested = prev.net_invested || 0;
+        
+        const cf = curInvested - prevInvested;
+        
+        let dailyReturn = 0;
+        if (prevVal > 0) {
+          dailyReturn = (curVal - cf) / prevVal - 1;
+        }
+        
+        if (dailyReturn > 2.0) dailyReturn = 0;
+        if (dailyReturn < -0.9) dailyReturn = 0;
+        
+        currentTwr = currentTwr * (1 + dailyReturn);
+        twrValues.push((currentTwr - 1) * 100);
+      }
+      
+      catTimelines[cat] = twrValues;
+    });
+    
+    return catTimelines;
+  }, [history, categoryHistories, availableAssetTypes]);
+
+  const getCategoryLegendValues = (cat) => {
+    const catHistory = categoryHistories[cat] || [];
+    const fullCatTwrValues = categoryTwrTimelines[cat] || [];
+    
+    if (catHistory.length === 0 || filteredHistPerf.length < 2) {
+      return { val: 0, pct: 0 };
+    }
+    
+    const startHDate = filteredHistPerf[0].date.substring(0, 10);
+    const endHDate = filteredHistPerf[filteredHistPerf.length - 1].date.substring(0, 10);
+    
+    const startIdx = catHistory.findIndex(p => p.date.substring(0, 10) === startHDate);
+    const endIdx = catHistory.findIndex(p => p.date.substring(0, 10) === endHDate);
+    
+    if (startIdx === -1 || endIdx === -1) {
+      return { val: 0, pct: 0 };
+    }
+    
+    const startVal = catHistory[startIdx].total_value || 0;
+    const startInvested = catHistory[startIdx].net_invested || 0;
+    const endVal = catHistory[endIdx].total_value || 0;
+    const endInvested = catHistory[endIdx].net_invested || 0;
+    
+    const startProfit = startVal - startInvested;
+    const endProfit = endVal - endInvested;
+    
+    let val = endProfit - startProfit;
+    let pct = 0;
+    
+    const startTwrPct = fullCatTwrValues[startIdx] || 0;
+    const endTwrPct = fullCatTwrValues[endIdx] || 0;
+    
+    if (perfCalcMethod === 'period') {
+      val = endProfit - startProfit;
+      pct = (((1 + endTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
+    } else {
+      val = endProfit;
+      pct = endTwrPct;
+    }
+    
+    return { val, pct };
+  };
+
+  const perfLegendValues = useMemo(() => {
+    if (filteredHistPerf.length < 2) return { portfolioVal: 0, portfolioPct: 0, benchmarkVal: 0, benchmarkPct: 0 };
+    
+    const startP = filteredHistPerf[0].total_value || 0;
+    const startInvested = filteredHistPerf[0].net_invested || 0;
+    const endP = filteredHistPerf[filteredHistPerf.length - 1].total_value || 0;
+    const endInvested = filteredHistPerf[filteredHistPerf.length - 1].net_invested || 0;
+    
+    const startPProfit = startP - startInvested;
+    const endPProfit = endP - endInvested;
+    
+    let pProfit = endPProfit - startPProfit;
+    let pPct = 0;
+    
+    const startTwrPct = twrValuesForPerf[0] || 0;
+    const endTwrPct = twrValuesForPerf[twrValuesForPerf.length - 1] || 0;
+    
+    if (perfCalcMethod === 'period') {
+      pProfit = endPProfit - startPProfit;
+      pPct = (((1 + endTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
+    } else {
+      pProfit = endPProfit;
+      pPct = endTwrPct;
+    }
+    
+    const startBPoint = matchedPerfBenchmarkValues.find(v => v !== null) || { value: 0, costBasis: 0, rawPrice: 0 };
+    const endBPoint = matchedPerfBenchmarkValues[matchedPerfBenchmarkValues.length - 1] || { value: 0, costBasis: 0, rawPrice: 0 };
+    const firstBPoint = benchmarkHistory.length > 0 ? benchmarkHistory[0] : { value: 0, costBasis: 0, rawPrice: 0 };
+    
+    let bProfit = 0;
+    let bPct = 0;
+    
+    if (perfCalcMethod === 'period') {
+      const startPrice = startBPoint.rawPrice || 1;
+      const endPrice = endBPoint.rawPrice || 1;
+      bPct = ((endPrice - startPrice) / startPrice) * 100;
+      bProfit = (bPct / 100) * endInvested;
+    } else {
+      const firstPrice = firstBPoint.rawPrice || 1;
+      const endPrice = endBPoint.rawPrice || 1;
+      bPct = ((endPrice - firstPrice) / firstPrice) * 100;
+      bProfit = (bPct / 100) * endInvested;
+    }
+    
+    return {
+      portfolioVal: pProfit,
+      portfolioPct: pPct,
+      benchmarkVal: bProfit,
+      benchmarkPct: bPct
+    };
+  }, [filteredHistPerf, twrValuesForPerf, matchedPerfBenchmarkValues, benchmarkHistory, perfCalcMethod]);
+
   const performanceChartData = useMemo(() => {
     const labels = filteredHistPerf.map(h => new Date(h.date).toLocaleDateString('nl-BE'));
-    
-    // Performance data calculations
-    const perfData = filteredHistPerf.map(h => {
-      const profit = h.total_value - h.net_invested;
-      if (growthPerfType === 'percent') {
-        const invested = h.net_invested || 1;
-        return (profit / invested) * 100;
-      }
-      return profit;
-    });
+    const datasets = [];
 
-    return {
-      labels,
-      datasets: [{
-        label: 'Performance',
-        data: perfData,
+    if (perfGroupBy === 'class') {
+      availableAssetTypes.forEach(cat => {
+        if (visibleCategories[cat]) {
+          const catHistory = categoryHistories[cat] || [];
+          const fullCatTwrValues = categoryTwrTimelines[cat] || [];
+          
+          const catData = filteredHistPerf.map((h, idx) => {
+            const fullIdx = catHistory.findIndex(p => p.date.substring(0, 10) === h.date.substring(0, 10));
+            const currentTwrPct = fullIdx !== -1 ? (fullCatTwrValues[fullIdx] || 0) : 0;
+            
+            const startHDate = filteredHistPerf[0].date.substring(0, 10);
+            const startIdx = catHistory.findIndex(p => p.date.substring(0, 10) === startHDate);
+            const startTwrPct = startIdx !== -1 ? (fullCatTwrValues[startIdx] || 0) : 0;
+            
+            const catVal = fullIdx !== -1 ? (catHistory[fullIdx].total_value || 0) : 0;
+            const catInvested = fullIdx !== -1 ? (catHistory[fullIdx].net_invested || 0) : 0;
+            
+            const startCatVal = startIdx !== -1 ? (catHistory[startIdx].total_value || 0) : 0;
+            const startCatInvested = startIdx !== -1 ? (catHistory[startIdx].net_invested || 0) : 0;
+            
+            const profit = catVal - catInvested;
+            const startProfit = startCatVal - startCatInvested;
+            
+            if (perfCalcMethod === 'period') {
+              if (growthPerfType === 'percent') {
+                return (((1 + currentTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
+              } else {
+                return profit - startProfit;
+              }
+            } else {
+              if (growthPerfType === 'percent') {
+                return currentTwrPct;
+              } else {
+                return profit;
+              }
+            }
+          });
+
+          datasets.push({
+            label: getCategoryLabel(cat),
+            data: catData,
+            borderColor: getCategoryColor(cat),
+            backgroundColor: 'rgba(20, 184, 166, 0.02)',
+            borderWidth: 2,
+            fill: false,
+            pointRadius: 0,
+            pointHoverRadius: 4,
+            tension: 0.1
+          });
+        }
+      });
+    } else {
+      // Calculate Portfolio Performance Timeline
+      const startP = filteredHistPerf.length > 0 ? (filteredHistPerf[0].total_value || 1) : 1;
+      const startInvested = filteredHistPerf.length > 0 ? (filteredHistPerf[0].net_invested || 0) : 0;
+      const startProfit = startP - startInvested;
+
+      const pData = filteredHistPerf.map((h, idx) => {
+        const profit = h.total_value - h.net_invested;
+        const currentTwrPct = twrValuesForPerf[idx] || 0;
+        const startTwrPct = twrValuesForPerf[0] || 0;
+        
+        if (perfCalcMethod === 'period') {
+          if (growthPerfType === 'percent') {
+            return (((1 + currentTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
+          } else {
+            return profit - startProfit;
+          }
+        } else {
+          if (growthPerfType === 'percent') {
+            return currentTwrPct;
+          } else {
+            return profit;
+          }
+        }
+      });
+
+      datasets.push({
+        label: 'Portfolio',
+        data: pData,
         borderColor: '#14B8A6',
         backgroundColor: 'rgba(20, 184, 166, 0.05)',
         borderWidth: 2,
@@ -328,9 +733,47 @@ const GrowthTab = ({
         pointRadius: 0,
         pointHoverRadius: 4,
         tension: 0.1
-      }]
-    };
-  }, [filteredHistPerf, growthPerfType]);
+      });
+    }
+
+    // Calculate Benchmark Performance Timeline
+    if (perfCompareBenchmark) {
+      const startBPoint = matchedPerfBenchmarkValues.find(v => v !== null) || { value: 1, costBasis: 1, rawPrice: 1 };
+      const firstBPoint = benchmarkHistory.length > 0 ? benchmarkHistory[0] : { value: 1, costBasis: 1, rawPrice: 1 };
+
+      const bData = filteredHistPerf.map((h, idx) => {
+        const bPoint = matchedPerfBenchmarkValues[idx] || startBPoint;
+        const bPrice = bPoint.rawPrice || 1;
+        
+        if (perfCalcMethod === 'period') {
+          const startPrice = startBPoint.rawPrice || 1;
+          const bPct = ((bPrice - startPrice) / startPrice) * 100;
+          return growthPerfType === 'percent' 
+            ? bPct 
+            : (bPct / 100) * (h.net_invested || 1);
+        } else {
+          const firstPrice = firstBPoint.rawPrice || 1;
+          const bPct = ((bPrice - firstPrice) / firstPrice) * 100;
+          return growthPerfType === 'percent' 
+            ? bPct 
+            : (bPct / 100) * (h.net_invested || 1);
+        }
+      });
+
+      datasets.push({
+        label: benchmarkName,
+        data: bData,
+        borderColor: '#F59E0B',
+        borderWidth: 2,
+        fill: false,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        tension: 0.1
+      });
+    }
+
+    return { labels, datasets };
+  }, [filteredHistPerf, growthPerfType, perfCalcMethod, perfCompareBenchmark, matchedPerfBenchmarkValues, twrValuesForPerf, benchmarkHistory, benchmarkName, perfGroupBy, availableAssetTypes, visibleCategories, categoryHistories, categoryTwrTimelines]);
 
   const performanceChartOptions = useMemo(() => ({
     responsive: true,
@@ -343,13 +786,13 @@ const GrowthTab = ({
         padding: 10,
         cornerRadius: 6,
         callbacks: {
-          label: (ctx) => ` Performance: ${growthPerfType === 'percent' ? ctx.raw.toFixed(2) + '%' : formatCurrency(ctx.raw)}`
+          label: (ctx) => ` ${ctx.dataset.label}: ${growthPerfType === 'percent' ? ctx.raw.toFixed(2) + '%' : formatCurrency(ctx.raw)}`
         }
       }
     },
     scales: {
       x: { grid: { display: false }, ticks: { maxTicksLimit: 8, font: { family: 'Inter, sans-serif' }, color: '#9CA3AF' }, border: { display: false } },
-      y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (val) => growthPerfType === 'percent' ? `${val}%` : new Intl.NumberFormat('en-US', { style: 'currency', currency: displayCurrency, maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(val) } }
+      y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (val) => growthPerfType === 'percent' ? `${val.toFixed(0)}%` : new Intl.NumberFormat('en-US', { style: 'currency', currency: displayCurrency, maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(val) } }
     }
   }), [growthPerfType, displayCurrency, formatCurrency]);
 
@@ -484,7 +927,7 @@ const GrowthTab = ({
       </div>
 
       {/* Card 1: Portfolio Value Compare */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[530px] relative">
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[560px] relative">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Portfolio value
@@ -500,25 +943,27 @@ const GrowthTab = ({
           </h3>
           
           {/* Custom Date Range & Period Gains legend (Screenshot 11) */}
-          <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-gray-500 sm:text-right">
-            <span>{dateRangeText}</span>
-            {visibleDatasets.portfolio && (
-              <span className={`flex items-center gap-1 ${periodGains.portfolio >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                <span className="w-2 h-2 rounded-full bg-blue-500"></span>
-                {periodGains.portfolio >= 0 ? '+' : ''}{formatCurrency(periodGains.portfolio)}
-              </span>
-            )}
-            {visibleDatasets.benchmark && (
-              <span className={`flex items-center gap-1 ${periodGains.benchmark >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                <span className="w-2 h-2 rounded-full bg-[#F59E0B]"></span>
-                {periodGains.benchmark >= 0 ? '+' : ''}{formatCurrency(periodGains.benchmark)}
-              </span>
-            )}
-          </div>
+          {groupBy !== 'class' && (
+            <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-gray-500 sm:text-right">
+              <span>{dateRangeText}</span>
+              {visibleDatasets.portfolio && (
+                <span className={`flex items-center gap-1 ${periodGains.portfolio >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  <span className="w-2 h-2 rounded-full bg-blue-500"></span>
+                  {periodGains.portfolio >= 0 ? '+' : ''}{formatCurrency(periodGains.portfolio)}
+                </span>
+              )}
+              {visibleDatasets.benchmark && (
+                <span className={`flex items-center gap-1 ${periodGains.benchmark >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  <span className="w-2 h-2 rounded-full bg-[#F59E0B]"></span>
+                  {periodGains.benchmark >= 0 ? '+' : ''}{formatCurrency(periodGains.benchmark)}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Dynamic Alert Banner */}
-        {alertInfo && (
+        {alertInfo && groupBy !== 'class' && (
           <div className={`mb-4 px-4 py-3 rounded-lg flex items-center gap-3 border text-xs font-semibold ${
             alertInfo.isAhead 
               ? 'bg-emerald-50/50 border-emerald-100 text-emerald-700' 
@@ -535,29 +980,44 @@ const GrowthTab = ({
           {renderTimeframeSelector(valPeriod, setValPeriod, valStart, setValStart, valEnd, setValEnd)}
           
           <div className="flex items-center gap-4">
-            {/* Custom legend with visibility toggles (Screenshot 11) */}
-            <div className="flex items-center gap-4 text-xs font-semibold text-gray-500 select-none">
-              <button
-                onClick={() => setVisibleDatasets(prev => ({ ...prev, portfolio: !prev.portfolio }))}
-                className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleDatasets.portfolio ? '' : 'line-through opacity-40'}`}
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span> Portfolio
-              </button>
-              <button
-                onClick={() => setVisibleDatasets(prev => ({ ...prev, benchmark: !prev.benchmark }))}
-                className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleDatasets.benchmark ? '' : 'line-through opacity-40'}`}
-              >
-                <span className="w-2.5 h-2.5 rounded-full bg-[#F59E0B]"></span> {benchmarkName}
-              </button>
-              {growthShowCostBasis && historyType === 'portfolio' && (
+            {/* Custom legend with visibility toggles (Screenshot 11 & 19) */}
+            {groupBy === 'class' ? (
+              <div className="flex items-center gap-4 text-xs font-semibold text-gray-500 select-none">
+                {availableAssetTypes.map(cat => (
+                  <button
+                    key={cat}
+                    onClick={() => setVisibleCategories(prev => ({ ...prev, [cat]: !prev[cat] }))}
+                    className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleCategories[cat] ? '' : 'line-through opacity-40'}`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(cat) }}></span>
+                    {getCategoryLabel(cat)}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex items-center gap-4 text-xs font-semibold text-gray-500 select-none">
                 <button
-                  onClick={() => setVisibleDatasets(prev => ({ ...prev, costBasis: !prev.costBasis }))}
-                  className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleDatasets.costBasis ? '' : 'line-through opacity-40'}`}
+                  onClick={() => setVisibleDatasets(prev => ({ ...prev, portfolio: !prev.portfolio }))}
+                  className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleDatasets.portfolio ? '' : 'line-through opacity-40'}`}
                 >
-                  <span className="w-2.5 h-0.5 border-t-2 border-dashed border-[#8B5CF6]"></span> Invested
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-500"></span> Portfolio
                 </button>
-              )}
-            </div>
+                <button
+                  onClick={() => setVisibleDatasets(prev => ({ ...prev, benchmark: !prev.benchmark }))}
+                  className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleDatasets.benchmark ? '' : 'line-through opacity-40'}`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#F59E0B]"></span> {benchmarkName}
+                </button>
+                {growthShowCostBasis && historyType === 'portfolio' && (
+                  <button
+                    onClick={() => setVisibleDatasets(prev => ({ ...prev, costBasis: !prev.costBasis }))}
+                    className={`flex items-center gap-1.5 hover:text-gray-900 transition-colors ${visibleDatasets.costBasis ? '' : 'line-through opacity-40'}`}
+                  >
+                    <span className="w-2.5 h-0.5 border-t-2 border-dashed border-[#8B5CF6]"></span> Invested
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* Three Dots Button for Settings Menu (Screenshot 12) */}
             <div className="relative">
@@ -608,7 +1068,7 @@ const GrowthTab = ({
                         className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-2 py-1 outline-none font-bold"
                       >
                         <option value="none">No grouping</option>
-                        <option value="class">Asset class</option>
+                        <option value="class">Categories</option>
                         <option value="sector">Sector</option>
                       </select>
                     </div>
@@ -619,7 +1079,7 @@ const GrowthTab = ({
                         Show cost basis
                         <span className="cursor-help text-[10px] text-gray-300 border border-gray-200 rounded-full w-3.5 h-3.5 flex items-center justify-center font-normal" title="Show line representing net invested money.">?</span>
                       </span>
-                      <label className="relative inline-flex items-center cursor-pointer">
+                      <option className="relative inline-flex items-center cursor-pointer">
                         <input
                           type="checkbox"
                           disabled={historyType === 'assets'}
@@ -628,7 +1088,7 @@ const GrowthTab = ({
                           className="sr-only peer"
                         />
                         <div className="w-9 h-5 bg-gray-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
-                      </label>
+                      </option>
                     </div>
 
                     {/* Show trades row */}
@@ -652,8 +1112,6 @@ const GrowthTab = ({
           </div>
         </div>
 
-
-
         <div className="flex-grow relative min-h-0 incognito-hide mt-2">
           {loading ? (
             <div className="flex h-full items-center justify-center">
@@ -661,7 +1119,7 @@ const GrowthTab = ({
             </div>
           ) : filteredHistVal.length > 0 ? (
             <Line 
-              key={`${valPeriod}-${filteredHistVal.length}-${visibleDatasets.portfolio}-${visibleDatasets.benchmark}-${historyType}`}
+              key={`${valPeriod}-${filteredHistVal.length}-${visibleDatasets.portfolio}-${visibleDatasets.benchmark}-${historyType}-${groupBy}`}
               data={valueChartData} 
               options={valueChartOptions} 
               plugins={[rangeSelectionPlugin]} 
@@ -673,25 +1131,179 @@ const GrowthTab = ({
             </div>
           )}
         </div>
+
+        {/* Checkbox selector layout below chart in class grouping (Card 1) */}
+        {groupBy === 'class' && (
+          <div className="flex flex-wrap justify-center gap-6 text-xs font-semibold text-gray-500 select-none mt-4 pt-4 border-t border-gray-100">
+            {availableAssetTypes.map(cat => {
+              const catHistory = categoryHistories[cat] || [];
+              const endVal = catHistory.length > 0 ? (catHistory[catHistory.length - 1].total_value || 0) : 0;
+              return (
+                <label key={cat} className="flex items-center gap-2 cursor-pointer hover:text-gray-900 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={!!visibleCategories[cat]}
+                    onChange={() => setVisibleCategories(prev => ({ ...prev, [cat]: !prev[cat] }))}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                  />
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(cat) }}></span>
+                  <span>
+                    {getCategoryLabel(cat)}: <span className="text-gray-900 font-bold">{formatCurrency(endVal)}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )}
+
         <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
           <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
           Waardegrafiek verborgen in privacymodus
         </div>
       </div>
 
-      {/* Card 2: Portfolio Performance */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[480px]">
-        <div className="flex justify-between items-center mb-6">
+      {/* Card 2: Portfolio Performance (Teal Chart Upgrade) */}
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[570px] relative">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-2 gap-4">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Portfolio performance
             <span className="cursor-help text-xs text-gray-300 border border-gray-200 rounded-full w-4 h-4 flex items-center justify-center font-normal" title="Historical return on assets.">?</span>
           </h3>
-          <div className="flex items-center gap-4">
-            {renderTimeframeSelector(perfPeriod, setPerfPeriod, perfStart, setPerfStart, perfEnd, setPerfEnd)}
-            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
-              <button onClick={() => setGrowthPerfType('percent')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${growthPerfType === 'percent' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>%</button>
-              <button onClick={() => setGrowthPerfType('value')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${growthPerfType === 'value' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>{displayCurrency}</button>
+          
+          {/* Legend showing absolute gains and percentages (Screenshot 16 & 19) */}
+          {perfGroupBy !== 'class' && (
+            <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-gray-500 sm:text-right">
+              <span>{perfDateRangeText}</span>
+              <span className={`flex items-center gap-1 ${perfLegendValues.portfolioVal >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                <span className="w-2.5 h-2.5 rounded-full bg-[#14B8A6]"></span>
+                {perfLegendValues.portfolioVal >= 0 ? '+' : ''}{formatCurrency(perfLegendValues.portfolioVal)} (▲ {perfLegendValues.portfolioPct.toFixed(2)}%)
+              </span>
+              {perfCompareBenchmark && (
+                <span className={`flex items-center gap-1 ${perfLegendValues.benchmarkVal >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#F59E0B]"></span>
+                  {perfLegendValues.benchmarkVal >= 0 ? '+' : ''}{formatCurrency(perfLegendValues.benchmarkVal)} (▲ {perfLegendValues.benchmarkPct.toFixed(2)}%)
+                </span>
+              )}
             </div>
+          )}
+        </div>
+
+        {/* Benchmarks row comparison selector (Screenshot 16) */}
+        <div className="flex items-center gap-2 mb-4 text-xs font-semibold text-gray-500">
+          <span>Benchmarks:</span>
+          <button
+            onClick={() => setPerfCompareBenchmark(true)}
+            className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all border ${
+              perfCompareBenchmark 
+                ? 'bg-blue-50 text-blue-600 border-blue-100' 
+                : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border-gray-200'
+            }`}
+          >
+            {benchmarkName}
+          </button>
+          <button
+            onClick={() => setPerfCompareBenchmark(!perfCompareBenchmark)}
+            className="text-gray-400 hover:text-gray-600 font-bold ml-1"
+          >
+            {perfCompareBenchmark ? 'Disable' : 'Compare'}
+          </button>
+        </div>
+
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
+          {renderTimeframeSelector(perfPeriod, setPerfPeriod, perfStart, setPerfStart, perfEnd, setPerfEnd)}
+          
+          {/* Settings Menu Button */}
+          <div className="relative">
+            <button
+              onClick={() => setPerfSettingsOpen(!perfSettingsOpen)}
+              className="text-gray-400 hover:text-gray-600 p-1 flex items-center justify-center"
+            >
+              <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 24 24">
+                <path d="M6 12a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm8 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm8 0a2 2 0 1 1-4 0 2 2 0 0 1 4 0z" />
+              </svg>
+            </button>
+            {perfSettingsOpen && (
+              <>
+                <div className="fixed inset-0 z-40" onClick={() => setPerfSettingsOpen(false)}></div>
+                <div className="origin-top-right absolute right-0 mt-2 w-80 rounded-xl shadow-xl bg-white border border-gray-100 ring-1 ring-black ring-opacity-5 z-50 p-4 space-y-4 text-xs font-semibold text-gray-700">
+                  
+                  {/* Total Profit % vs $ tabs (Screenshot 17) */}
+                  <div className="flex bg-gray-50 p-0.5 rounded-lg border border-gray-200">
+                    <button
+                      onClick={() => setGrowthPerfType('percent')}
+                      className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
+                        growthPerfType === 'percent' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                      }`}
+                    >
+                      Total profit, %
+                    </button>
+                    <button
+                      onClick={() => setGrowthPerfType('value')}
+                      className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
+                        growthPerfType === 'value' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                      }`}
+                    >
+                      Total profit, $
+                    </button>
+                  </div>
+
+                  {/* Group by */}
+                  <div className="flex justify-between items-center pt-1">
+                    <span>Group by</span>
+                    <select
+                      value={perfGroupBy}
+                      onChange={(e) => setPerfGroupBy(e.target.value)}
+                      className="bg-gray-50 border border-gray-200 text-gray-700 rounded-md px-2 py-1 outline-none font-bold"
+                    >
+                      <option value="none">No grouping</option>
+                      <option value="class">Categories</option>
+                      <option value="sector">Sector</option>
+                    </select>
+                  </div>
+
+                  {/* Toggle: Group by profit source */}
+                  <div className="flex justify-between items-center opacity-40">
+                    <span>Group by the profit source</span>
+                    <label className="relative inline-flex items-center cursor-not-allowed">
+                      <input type="checkbox" disabled className="sr-only peer" />
+                      <div className="w-9 h-5 bg-gray-200 rounded-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all"></div>
+                    </label>
+                  </div>
+
+                  {/* Calculate PL for: Selected period vs From the first trade (Screenshot 17 & 18) */}
+                  <div className="space-y-2 pt-1 border-t border-gray-100">
+                    <span className="text-gray-900 font-bold block mb-1">Calculate PL for:</span>
+                    <div className="flex bg-gray-50 p-0.5 rounded-lg border border-gray-200">
+                      <button
+                        onClick={() => setPerfCalcMethod('period')}
+                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
+                          perfCalcMethod === 'period' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                        }`}
+                      >
+                        Selected period
+                      </button>
+                      <button
+                        onClick={() => setPerfCalcMethod('first_trade')}
+                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
+                          perfCalcMethod === 'first_trade' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                        }`}
+                      >
+                        From first trade
+                      </button>
+                    </div>
+
+                    {/* Explanatory description below tabs */}
+                    <p className="text-[10px] text-gray-400 leading-normal font-medium pt-1">
+                      {perfCalcMethod === 'period' 
+                        ? 'PL is calculated relative to the portfolio value at the beginning of the period. Realized PL is calculated relative to the price of the asset at the beginning of the selected period (NOT the purchase price).' 
+                        : 'PL is always calculated from the date of the first transaction, and then the chart is "zoomed" to the selected period. Total values are calculated as the difference between PL values at the beginning and PL values at the end of the selected period.'
+                      }
+                    </p>
+                  </div>
+
+                </div>
+              </>
+            )}
           </div>
         </div>
 
@@ -702,7 +1314,7 @@ const GrowthTab = ({
             </div>
           ) : filteredHistPerf.length > 0 ? (
             <Line 
-              key={`${perfPeriod}-${filteredHistPerf.length}-${growthPerfType}`}
+              key={`${perfPeriod}-${filteredHistPerf.length}-${growthPerfType}-${perfCalcMethod}-${perfCompareBenchmark}-${perfGroupBy}`}
               data={performanceChartData} 
               options={performanceChartOptions} 
             />
@@ -713,6 +1325,29 @@ const GrowthTab = ({
             </div>
           )}
         </div>
+
+        {/* Checkbox selector layout below chart in class grouping (Card 2) */}
+        {perfGroupBy === 'class' && (
+          <div className="flex flex-wrap justify-center gap-6 text-xs font-semibold text-gray-500 select-none mt-4 pt-4 border-t border-gray-100">
+            {availableAssetTypes.map(cat => {
+              const values = getCategoryLegendValues(cat);
+              return (
+                <label key={cat} className="flex items-center gap-2 cursor-pointer hover:text-gray-900 transition-colors">
+                  <input
+                    type="checkbox"
+                    checked={!!visibleCategories[cat]}
+                    onChange={() => setVisibleCategories(prev => ({ ...prev, [cat]: !prev[cat] }))}
+                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500 w-3.5 h-3.5"
+                  />
+                  <span className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: getCategoryColor(cat) }}></span>
+                  <span>
+                    {getCategoryLabel(cat)}: <span className={values.val >= 0 ? 'text-emerald-600 font-bold' : 'text-rose-600 font-bold'}>{values.val >= 0 ? '+' : ''}{growthPerfType === 'percent' ? `${values.pct.toFixed(2)}%` : formatCurrency(values.val)}</span>
+                  </span>
+                </label>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {/* Card 3: Dynamics of portfolio returns */}

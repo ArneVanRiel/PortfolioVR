@@ -39,6 +39,7 @@ const PortfolioManager = () => {
   const [rawTransactions, setRawTransactions] = useState([]);
   const [history, setHistory] = useState([]);
   const [availableAssetTypes, setAvailableAssetTypes] = useState([]);
+  const [categoryHistories, setCategoryHistories] = useState({});
   const [selectedTypes, setSelectedTypes] = useState([]); // Empty means "Overview (alles)"
   const [loading, setLoading] = useState(true);
   
@@ -134,10 +135,18 @@ const PortfolioManager = () => {
       startDate.setDate(startDate.getDate() - 7);
     } else if (period === '1M') {
       startDate.setMonth(startDate.getMonth() - 1);
+    } else if (period === '3M') {
+      startDate.setMonth(startDate.getMonth() - 3);
+    } else if (period === '6M') {
+      startDate.setMonth(startDate.getMonth() - 6);
     } else if (period === 'YTD') {
       startDate.setMonth(0, 1);
     } else if (period === '1Y') {
       startDate.setFullYear(startDate.getFullYear() - 1);
+    } else if (period === '2Y') {
+      startDate.setFullYear(startDate.getFullYear() - 2);
+    } else if (period === '5Y') {
+      startDate.setFullYear(startDate.getFullYear() - 5);
     } else if (period === 'All') {
       startDate.setFullYear(1970);
     } else {
@@ -196,6 +205,23 @@ const PortfolioManager = () => {
     try {
       const res = await http.get(`/portfolio/calculatePortfolioValues?userId=${uid}&period=${periodToFetch}${typesParam}${customStartParam}${customEndParam}${currencyParam}`);
       setHistory(res.data);
+
+      if (activeTab === 'growth' && availableAssetTypes.length > 0) {
+        const catPromises = availableAssetTypes.map(cat => 
+          http.get(`/portfolio/calculatePortfolioValues?userId=${uid}&period=All&assetTypes=${cat}${currencyParam}`)
+            .then(r => ({ cat, data: r.data }))
+            .catch(err => {
+              console.error(`Fout bij ophalen geschiedenis voor ${cat}:`, err);
+              return { cat, data: [] };
+            })
+        );
+        const catResults = await Promise.all(catPromises);
+        const catMap = {};
+        catResults.forEach(r => {
+          catMap[r.cat] = r.data;
+        });
+        setCategoryHistories(catMap);
+      }
     } catch (e) {
       console.error("Fout bij ophalen van historische grafiek:", e);
     }
@@ -244,7 +270,7 @@ const PortfolioManager = () => {
     }
     fetchPortfolioData();
     fetchHistoryData();
-  }, [selectedTypes, chartPeriod, customStartDate, customEndDate, displayCurrency]);
+  }, [selectedTypes, chartPeriod, customStartDate, customEndDate, displayCurrency, activeTab, availableAssetTypes.join(',')]);
 
   const fetchBenchmarkData = async () => {
     try {
@@ -1294,7 +1320,7 @@ const PortfolioManager = () => {
   // Reusable Timeframe Selector per Grafiek
   const renderTimeframeSelector = (period, setPeriod, customStart, setCustomStart, customEnd, setCustomEnd) => (
     <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
-      {['1W', '1M', 'YTD', '1Y', 'All', 'Custom'].map(p => (
+      {['1W', '1M', '3M', '6M', 'YTD', '1Y', '2Y', '5Y', 'All', 'Custom'].map(p => (
         <button
           key={p}
           onClick={() => {
@@ -1903,6 +1929,9 @@ const PortfolioManager = () => {
       {/* --- TAB CONTENT: GROWTH --- */}
       {activeTab === 'growth' && (
         <GrowthTab
+          history={history}
+          categoryHistories={categoryHistories}
+          availableAssetTypes={availableAssetTypes}
           selectedBenchmark={selectedBenchmark}
           setSelectedBenchmark={setSelectedBenchmark}
           benchmarkHistory={benchmarkHistory}
@@ -1960,6 +1989,7 @@ const PortfolioManager = () => {
           formatCurrency={formatCurrency}
           isIncognito={isIncognito}
           processedHoldings={processedHoldings}
+          rawTransactions={rawTransactions}
           handleHoldingsSort={handleHoldingsSort}
           getSortIcon={getSortIcon}
           holdingsSort={holdingsSort}
