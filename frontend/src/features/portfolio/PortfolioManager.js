@@ -60,6 +60,22 @@ const PortfolioManager = () => {
   const [transSearch, setTransSearch] = useState('');
   const [transSort, setTransSort] = useState({ key: 'purchase_time', direction: 'desc' });
   const [transTypeFilter, setTransTypeFilter] = useState('');
+  const [transPlatformFilter, setTransPlatformFilter] = useState('');
+  const [dismissedDuplicateIds, setDismissedDuplicateIds] = useState(() => {
+    try {
+      const saved = localStorage.getItem('dismissedDuplicateIds');
+      return saved ? JSON.parse(saved) : [];
+    } catch (e) {
+      return [];
+    }
+  });
+
+  const handleDismissDuplicate = (id) => {
+    const updated = [...dismissedDuplicateIds, id];
+    setDismissedDuplicateIds(updated);
+    localStorage.setItem('dismissedDuplicateIds', JSON.stringify(updated));
+  };
+
   const [transCurrentPage, setTransCurrentPage] = useState(1);
   const transPerPage = 20;
   const [activeTab, setActiveTab] = useState('common');
@@ -559,17 +575,29 @@ const PortfolioManager = () => {
     return result;
   }, [filteredHoldings, holdingsSearch, holdingsSort]);
 
+  const availablePlatforms = useMemo(() => {
+    const names = rawTransactions.map(t => t.broker_name ? String(t.broker_name).trim() : 'Onbekend');
+    return [...new Set(names)].filter(name => name !== 'Onbekend' && name !== '');
+  }, [rawTransactions]);
+
   const processedTransactions = useMemo(() => {
-    let result = [...filteredTransactions];
+    let result = [...rawTransactions];
+    if (selectedTypes.length > 0) {
+      result = result.filter(t => selectedTypes.some(st => st.toLowerCase() === t.asset_type.toLowerCase()));
+    }
     if (transTypeFilter) {
       result = result.filter(t => t.transaction_type === transTypeFilter);
+    }
+    if (transPlatformFilter) {
+      result = result.filter(t => (t.broker_name || 'Onbekend') === transPlatformFilter);
     }
     if (transSearch) {
       const lower = transSearch.toLowerCase();
       result = result.filter(t => 
         t.ticker_symbol?.toLowerCase().includes(lower) || 
         t.transaction_type?.toLowerCase().includes(lower) ||
-        t.stock_name?.toLowerCase().includes(lower)
+        t.stock_name?.toLowerCase().includes(lower) ||
+        t.broker_name?.toLowerCase().includes(lower)
       );
     }
     if (transSort.key) {
@@ -589,7 +617,7 @@ const PortfolioManager = () => {
       });
     }
     return result;
-  }, [filteredTransactions, transSearch, transSort]);
+  }, [rawTransactions, selectedTypes, transTypeFilter, transPlatformFilter, transSearch, transSort]);
 
   // Paginatie logica
   const totalTransPages = Math.ceil(processedTransactions.length / transPerPage) || 1;
@@ -602,12 +630,11 @@ const PortfolioManager = () => {
   const potentialDuplicates = useMemo(() => {
     const groups = {};
     rawTransactions.forEach(t => {
-      // Toon voorlopig enkel BUY en SELL duplicaten (negeer dividenden, stortingen, etc.)
+      if (dismissedDuplicateIds.includes(t.id)) return;
       if (t.transaction_type !== 'BUY' && t.transaction_type !== 'SELL') return;
 
       const tDate = new Date(t.purchase_time).toISOString().split('T')[0];
       const tAsset = t.ticker_symbol || t.aandeel_id || 'CASH';
-      // Om stock splits te vinden: groepeer op Totale Waarde (inleg) i.p.v. Aantal
       const tTotalValue = (parseFloat(t.quantity || 0) * parseFloat(t.price || 0)).toFixed(1);
       const key = `${tDate}_${t.transaction_type}_${tAsset}_${tTotalValue}`;
       if (!groups[key]) groups[key] = [];
@@ -616,15 +643,13 @@ const PortfolioManager = () => {
     const duplicates = [];
     Object.values(groups).forEach(group => {
       if (group.length > 1) {
-        // Bereken of er een prijsverschil is in deze groep
         const prices = group.map(t => parseFloat(t.price || 0));
         const qtys = group.map(t => parseFloat(t.quantity || 0));
         const maxPrice = Math.max(...prices);
         const minPrice = Math.min(...prices);
         const priceVariance = maxPrice - minPrice;
-        const hasVariance = priceVariance > 0.015; // Toon afwijking als het meer dan ~1 cent is
+        const hasVariance = priceVariance > 0.015;
 
-        // Factor 1.5+ verschil in aandelen bij zelfde inlegbedrag wijst vrijwel altijd op een split dubbele boeking
         const isPossibleSplit = hasVariance && (Math.max(...qtys) / (Math.min(...qtys) || 1)) > 1.5;
 
         group.forEach(t => {
@@ -633,7 +658,7 @@ const PortfolioManager = () => {
       }
     });
     return duplicates.sort((a, b) => new Date(b.purchase_time) - new Date(a.purchase_time));
-  }, [rawTransactions]);
+  }, [rawTransactions, dismissedDuplicateIds]);
 
   // --- Verwijder Transactie ---
   const confirmDeleteTransaction = async () => {
@@ -1904,6 +1929,9 @@ const PortfolioManager = () => {
         <TransactionsTab
           transTypeFilter={transTypeFilter}
           setTransTypeFilter={setTransTypeFilter}
+          transPlatformFilter={transPlatformFilter}
+          setTransPlatformFilter={setTransPlatformFilter}
+          availablePlatforms={availablePlatforms}
           transSearch={transSearch}
           setTransSearch={setTransSearch}
           transSort={transSort}
@@ -1916,6 +1944,7 @@ const PortfolioManager = () => {
           totalTransPages={totalTransPages}
           transPerPage={transPerPage}
           potentialDuplicates={potentialDuplicates}
+          handleDismissDuplicate={handleDismissDuplicate}
           setTransactionToDelete={setTransactionToDelete}
           setTransactionToEdit={setTransactionToEdit}
           setIsEditModalOpen={setIsEditModalOpen}

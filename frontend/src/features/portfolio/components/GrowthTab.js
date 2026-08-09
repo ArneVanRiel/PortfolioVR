@@ -62,6 +62,39 @@ const GrowthTab = ({
   const [historyType, setHistoryType] = useState('portfolio'); // 'portfolio' | 'assets'
   const [groupBy, setGroupBy] = useState('none'); // 'none' | 'class' | 'sector'
 
+  const [dynamicsSettingsOpen, setDynamicsSettingsOpen] = useState(false);
+  const [isDynamicsModalOpen, setIsDynamicsModalOpen] = useState(false);
+  const [modalPeriodFilter, setModalPeriodFilter] = useState('12m');
+  const [cardPeriodFilter, setCardPeriodFilter] = useState('12m');
+
+  const formatPeriodLabel = (pStr, grouping) => {
+    if (!pStr) return '';
+    try {
+      if (grouping === 'monthly') {
+        const parts = pStr.split('-');
+        if (parts.length === 2) {
+          const year = parts[0];
+          const month = parseInt(parts[1]) - 1;
+          const date = new Date(year, month, 1);
+          return date.toLocaleDateString('nl-BE', { month: 'short', year: '2-digit' });
+        }
+      } else if (grouping === 'weekly') {
+        const date = new Date(pStr);
+        if (!isNaN(date.getTime())) {
+          return date.toLocaleDateString('nl-BE', { day: '2-digit', month: 'short', year: '2-digit' });
+        }
+      } else if (grouping === 'quarterly') {
+        const parts = pStr.split('-');
+        if (parts.length === 2) {
+          return `${parts[1]} '${parts[0].substring(2)}`;
+        }
+      }
+    } catch (e) {
+      // fallback
+    }
+    return pStr;
+  };
+
   // Performance chart specific states (Screenshot 16 & 17)
   const [perfCompareBenchmark, setPerfCompareBenchmark] = useState(false);
   const [perfSettingsOpen, setPerfSettingsOpen] = useState(false);
@@ -797,20 +830,102 @@ const GrowthTab = ({
   }), [growthPerfType, displayCurrency, formatCurrency]);
 
   // --- Chart 3: Dynamics of portfolio returns ---
+  const availableYears = useMemo(() => {
+    if (!dynamicsData || dynamicsData.length === 0) return [];
+    const years = dynamicsData.map(d => d.period.substring(0, 4));
+    return [...new Set(years)].sort((a, b) => b - a);
+  }, [dynamicsData]);
+
+  const filteredDynamicsData = useMemo(() => {
+    if (cardPeriodFilter === 'all') return dynamicsData;
+    if (cardPeriodFilter === '12m') return dynamicsData.slice(-12);
+    return dynamicsData.filter(d => d.period.startsWith(cardPeriodFilter));
+  }, [dynamicsData, cardPeriodFilter]);
+
+  const filteredModalData = useMemo(() => {
+    if (modalPeriodFilter === 'all') return dynamicsData;
+    if (modalPeriodFilter === '12m') return dynamicsData.slice(-12);
+    return dynamicsData.filter(d => d.period.startsWith(modalPeriodFilter));
+  }, [dynamicsData, modalPeriodFilter]);
+
+  const exportToCSV = () => {
+    const headers = ['Period', 'Total profit (%)', 'Total profit ($)', 'Capital gain', 'Dividends received', 'Taxes'];
+    const rows = filteredModalData.map(d => [
+        formatPeriodLabel(d.period, dynamicsPeriod),
+        d.returnPercent.toFixed(2),
+        d.returnValue.toFixed(2),
+        (d.capitalGain || 0).toFixed(2),
+        (d.dividendsReceived || 0).toFixed(2),
+        (d.taxes || 0).toFixed(2)
+    ]);
+    const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `portfolio_dynamics_${dynamicsPeriod}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const barLabelsPlugin = useMemo(() => ({
+    id: 'barLabels',
+    afterDatasetsDraw(chart) {
+      const { ctx, chartArea: { top, bottom } } = chart;
+      ctx.save();
+      chart.data.datasets.forEach((dataset, i) => {
+        const meta = chart.getDatasetMeta(i);
+        meta.data.forEach((bar, index) => {
+          const val = dataset.data[index];
+          if (val === null || val === undefined) return;
+          
+          let labelText = '';
+          if (dynamicsDisplay === 'percent' || dynamicsDisplay === 'irr') {
+              labelText = `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
+          } else {
+              labelText = formatCurrency(val);
+          }
+          
+          ctx.font = 'bold 9px Outfit, Inter, sans-serif';
+          ctx.fillStyle = val >= 0 ? '#0d9488' : '#e11d48'; // dark teal/red
+          ctx.textAlign = 'center';
+          
+          const padding = 6;
+          let yPos = bar.y - padding;
+          if (val < 0) {
+              yPos = bar.y + padding + 10;
+          }
+          
+          if (yPos > bottom) yPos = bottom - 2;
+          if (yPos < top) yPos = top + 10;
+          
+          ctx.fillText(labelText, bar.x, yPos);
+        });
+      });
+      ctx.restore();
+    }
+  }), [dynamicsDisplay, formatCurrency]);
+
   const dynamicsChartData = useMemo(() => {
-    const labels = dynamicsData.map(d => d.period);
-    const data = dynamicsData.map(d => dynamicsDisplay === 'percent' ? d.returnPercent : d.returnValue);
+    const labels = filteredDynamicsData.map(d => formatPeriodLabel(d.period, dynamicsPeriod));
+    const data = filteredDynamicsData.map(d => {
+      if (dynamicsDisplay === 'percent' || dynamicsDisplay === 'irr') {
+        return d.returnPercent;
+      }
+      return d.returnValue;
+    });
 
     return {
       labels,
       datasets: [{
         data,
-        backgroundColor: data.map(v => v >= 0 ? '#10B981' : '#EF4444'),
+        backgroundColor: data.map(v => v >= 0 ? '#14b8a6' : '#f43f5e'), // Teal and pink/red
         borderRadius: 4,
         maxBarThickness: 35
       }]
     };
-  }, [dynamicsData, dynamicsDisplay]);
+  }, [filteredDynamicsData, dynamicsDisplay, dynamicsPeriod]);
 
   const dynamicsChartOptions = useMemo(() => ({
     responsive: true,
@@ -822,13 +937,13 @@ const GrowthTab = ({
         padding: 10,
         cornerRadius: 6,
         callbacks: {
-          label: (ctx) => ` Return: ${dynamicsDisplay === 'percent' ? ctx.raw.toFixed(2) + '%' : formatCurrency(ctx.raw)}`
+          label: (ctx) => ` Return: ${dynamicsDisplay === 'percent' || dynamicsDisplay === 'irr' ? ctx.raw.toFixed(2) + '%' : formatCurrency(ctx.raw)}`
         }
       }
     },
     scales: {
       x: { grid: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF' }, border: { display: false } },
-      y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (val) => dynamicsDisplay === 'percent' ? `${val}%` : new Intl.NumberFormat('en-US', { style: 'currency', currency: displayCurrency, maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(val) } }
+      y: { grid: { color: '#F3F4F6' }, border: { display: false }, ticks: { font: { family: 'Inter, sans-serif' }, color: '#9CA3AF', callback: (val) => dynamicsDisplay === 'percent' || dynamicsDisplay === 'irr' ? `${val}%` : new Intl.NumberFormat('en-US', { style: 'currency', currency: displayCurrency, maximumSignificantDigits: 3, notation: "compact", compactDisplay: "short" }).format(val) } }
     }
   }), [dynamicsDisplay, displayCurrency, formatCurrency]);
 
@@ -1351,19 +1466,96 @@ const GrowthTab = ({
       </div>
 
       {/* Card 3: Dynamics of portfolio returns */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[480px]">
-        <div className="flex justify-between items-center mb-6">
+      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[520px]">
+        <div className="flex justify-between items-center mb-4">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Dynamics of portfolio returns
             <span className="cursor-help text-xs text-gray-300 border border-gray-200 rounded-full w-4 h-4 flex items-center justify-center font-normal" title="Monthly/weekly returns timeline.">?</span>
           </h3>
-          <div className="flex items-center gap-4">
-            {renderTimeframeSelector(dynPeriod, setDynPeriod, dynStart, setDynStart, dynEnd, setDynEnd)}
-            <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200">
-              <button onClick={() => setDynamicsDisplay('percent')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${dynamicsDisplay === 'percent' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>%</button>
-              <button onClick={() => setDynamicsDisplay('value')} className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all ${dynamicsDisplay === 'value' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500'}`}>{displayCurrency}</button>
-            </div>
+          <div className="relative">
+            <button 
+              onClick={() => setDynamicsSettingsOpen(!dynamicsSettingsOpen)} 
+              className="p-1.5 hover:bg-gray-100 rounded-lg transition-all text-gray-400 hover:text-gray-600"
+            >
+              <i className="ph ph-dots-three text-xl font-bold"></i>
+            </button>
+            {dynamicsSettingsOpen && (
+              <>
+                <div className="fixed inset-0 z-20" onClick={() => setDynamicsSettingsOpen(false)}></div>
+                <div className="absolute right-0 mt-1.5 w-64 bg-white rounded-xl shadow-xl border border-gray-100 py-3 z-30">
+                  <div className="px-4 py-2 flex flex-col gap-2">
+                    <div className="flex justify-between items-center text-xs font-semibold text-gray-700">
+                      <span>Period</span>
+                      <select 
+                        value={dynamicsPeriod} 
+                        onChange={(e) => {
+                          setDynamicsPeriod(e.target.value);
+                          setDynamicsSettingsOpen(false);
+                        }}
+                        className="px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50 text-gray-700 outline-none font-bold cursor-pointer"
+                      >
+                        <option value="weekly">Weekly</option>
+                        <option value="monthly">Monthly</option>
+                        <option value="quarterly">Quarterly</option>
+                        <option value="annually">Annual</option>
+                      </select>
+                    </div>
+                    
+                    <div className="flex justify-between items-center text-xs font-semibold text-gray-700 mt-2">
+                      <span>Display values</span>
+                      <select 
+                        value={dynamicsDisplay} 
+                        onChange={(e) => {
+                          setDynamicsDisplay(e.target.value);
+                          setDynamicsSettingsOpen(false);
+                        }}
+                        className="px-2 py-1 text-xs border border-gray-200 rounded bg-gray-50 text-gray-700 outline-none font-bold cursor-pointer"
+                      >
+                        <option value="percent">Total profit, %</option>
+                        <option value="value">Total profit, $</option>
+                        <option value="irr">IRR (%)</option>
+                      </select>
+                    </div>
+
+                    <div className="flex justify-between items-center text-xs font-semibold text-gray-700 mt-2">
+                      <span>Group by</span>
+                      <select 
+                        disabled
+                        className="px-2 py-1 text-xs border border-gray-200 rounded bg-gray-100 text-gray-400 outline-none font-bold cursor-not-allowed"
+                      >
+                        <option>No grouping</option>
+                      </select>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
+        </div>
+
+        {/* Benchmarks Compare Line */}
+        <div className="flex items-center gap-3 text-xs mb-3">
+          <span className="text-gray-400 font-bold">Benchmarks:</span>
+          <span className="px-2 py-0.5 bg-gray-100 text-gray-700 font-bold rounded">{benchmarkName}</span>
+          <button 
+            onClick={() => setDropdownOpen(true)}
+            className="text-blue-600 hover:text-blue-700 font-bold transition-all"
+          >
+            Compare
+          </button>
+        </div>
+
+        {/* Years selector matching Snowball */}
+        <div className="flex flex-wrap gap-1 mb-6">
+          {['all', '12m', ...availableYears].map(p => (
+            <button
+              key={p}
+              onClick={() => setCardPeriodFilter(p)}
+              className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all ${cardPeriodFilter === p ? 'bg-gray-100 text-gray-900 shadow-sm border border-gray-200/50' : 'text-gray-400 hover:text-gray-600'}`}
+            >
+              {p}
+            </button>
+          ))}
         </div>
 
         <div className="flex-grow relative min-h-0">
@@ -1373,9 +1565,10 @@ const GrowthTab = ({
             </div>
           ) : dynamicsData.length > 0 ? (
             <Bar 
-              key={`${dynPeriod}-${dynamicsData.length}-${dynamicsDisplay}`}
+              key={`${dynPeriod}-${dynamicsData.length}-${dynamicsDisplay}-${cardPeriodFilter}`}
               data={dynamicsChartData} 
-              options={dynamicsChartOptions} 
+              options={dynamicsChartOptions}
+              plugins={[barLabelsPlugin]}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
@@ -1384,7 +1577,130 @@ const GrowthTab = ({
             </div>
           )}
         </div>
+
+        {/* View details link */}
+        <div className="mt-4 pt-3 border-t border-gray-100 text-left">
+          <button 
+            onClick={() => setIsDynamicsModalOpen(true)}
+            className="text-xs font-bold text-gray-600 hover:text-gray-900 transition-all flex items-center gap-1"
+          >
+            <i className="ph ph-list-bullets text-base"></i>
+            View details →
+          </button>
+        </div>
       </div>
+
+      {/* Dynamics View Details Modal */}
+      {isDynamicsModalOpen && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl w-full max-w-5xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh] animate-in fade-in zoom-in-95 duration-200">
+            {/* Header */}
+            <div className="flex justify-between items-center px-6 py-4 border-b border-gray-150">
+              <h3 className="text-sm font-extrabold text-gray-900 flex items-center gap-2">
+                <i className="ph-fill ph-chart-bar text-base text-blue-600"></i>
+                Dynamics of portfolio returns
+              </h3>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={exportToCSV}
+                  className="text-[11px] font-bold text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200/80 px-3 py-2 rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
+                >
+                  <i className="ph ph-export text-sm"></i>
+                  Export to CSV
+                </button>
+                <button 
+                  onClick={() => setIsDynamicsModalOpen(false)}
+                  className="text-gray-400 hover:text-gray-600 p-1.5 hover:bg-gray-100 rounded-lg transition-all"
+                >
+                  <i className="ph ph-x text-xl font-bold"></i>
+                </button>
+              </div>
+            </div>
+
+            {/* Sub-header with comparison info and timeline selectors */}
+            <div className="px-6 py-3 bg-gray-50/50 border-b border-gray-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
+              <div className="flex items-center gap-2 text-xs font-semibold text-gray-500">
+                <span>Benchmarks:</span>
+                <span className="px-2 py-0.5 bg-gray-200/50 text-gray-700 rounded font-bold">{benchmarkName}</span>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {['all', '12m', ...availableYears].map(p => (
+                  <button
+                    key={p}
+                    onClick={() => setModalPeriodFilter(p)}
+                    className={`px-2.5 py-1 text-xs font-bold rounded-md transition-all ${modalPeriodFilter === p ? 'bg-gray-200 text-gray-800' : 'text-gray-400 hover:text-gray-600'}`}
+                  >
+                    {p}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Table */}
+            <div className="flex-grow overflow-y-auto p-6">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50/50">
+                    <th className="px-4 py-3 text-xs font-extrabold text-gray-400 uppercase tracking-wider">Period</th>
+                    <th className="px-4 py-3 text-xs font-extrabold text-gray-400 uppercase tracking-wider text-right">Total profit</th>
+                    <th className="px-4 py-3 text-xs font-extrabold text-gray-400 uppercase tracking-wider text-right">Capital gain</th>
+                    <th className="px-4 py-3 text-xs font-extrabold text-gray-400 uppercase tracking-wider text-right">Dividends received</th>
+                    <th className="px-4 py-3 text-xs font-extrabold text-gray-400 uppercase tracking-wider text-right">Taxes</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {filteredModalData.map((d, index) => {
+                    const isPositive = d.returnValue >= 0;
+                    return (
+                      <tr key={index} className="hover:bg-gray-50/60 transition-colors">
+                        <td className="px-4 py-4 text-xs font-bold text-gray-700">
+                          {formatPeriodLabel(d.period, dynamicsPeriod)}
+                        </td>
+                        <td className="px-4 py-4 text-right">
+                          <div className="flex flex-col items-end">
+                            <span className={`text-xs font-bold flex items-center gap-1 ${isPositive ? 'text-emerald-600' : 'text-rose-600'}`}>
+                              {isPositive ? '▲' : '▼'} {Math.abs(d.returnPercent).toFixed(2)}%
+                            </span>
+                            <span className={`text-[10px] font-bold ${isPositive ? 'text-emerald-500' : 'text-rose-500'}`}>
+                              {isPositive ? '+' : ''}{formatCurrency(d.returnValue)}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-4 py-4 text-right whitespace-nowrap text-xs font-bold">
+                          <span className={d.capitalGain >= 0 ? 'text-emerald-600' : 'text-rose-600'}>
+                            {d.capitalGain >= 0 ? '+' : ''}{formatCurrency(d.capitalGain)}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4 text-right whitespace-nowrap text-xs font-bold text-gray-900">
+                          {d.dividendsReceived > 0 ? (
+                            <span className="text-emerald-600 font-bold">+{formatCurrency(d.dividendsReceived)}</span>
+                          ) : (
+                            <span className="text-gray-300 font-medium">-</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-4 text-right whitespace-nowrap text-xs font-bold">
+                          {d.taxes > 0 ? (
+                            <span className="text-rose-600 font-bold">-{formatCurrency(d.taxes)}</span>
+                          ) : (
+                            <span className="text-gray-300 font-medium">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {filteredModalData.length === 0 && (
+                    <tr>
+                      <td colSpan="5" className="px-4 py-8 text-center text-xs font-bold text-gray-400">
+                        Geen gegevens beschikbaar voor de geselecteerde periode.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Card 4: Holdings Performance */}
       <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[520px]">
