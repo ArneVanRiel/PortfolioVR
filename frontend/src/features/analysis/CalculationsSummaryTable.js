@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useMemo, useCallback, forwardRef, useImperativeHandle } from 'react';
 import { useNavigate } from 'react-router-dom';
 import http from '../../http-common';
+import toast from 'react-hot-toast';
 import {
   Chart as ChartJS,
   CategoryScale,
@@ -30,12 +31,24 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     // --- State for sorting and filtering ---
     const [sortConfig, setSortConfig] = useState({ key: 'waarde_verdeling', direction: 'desc' });
     const [tickerFilter, setTickerFilter] = useState('');
-    const [scoreFilter, setScoreFilter] = useState('5');
+    const [scoreFilter, setScoreFilter] = useState(''); // Standaard op Alles zodat alle aandelen zichtbaar zijn
     const [priceToIntrinsicFilter, setPriceToIntrinsicFilter] = useState('');
     const [signalLineFilter, setSignalLineFilter] = useState('');
     const [alertTypeFilter, setAlertTypeFilter] = useState('');
+    const [portfolioFilter, setPortfolioFilter] = useState('all'); // 'all', 'score5', 'watchlist', 'idealePortfolio'
     const [showHighestEver, setShowHighestEver] = useState(false);
     const [percentageFilter, setPercentageFilter] = useState('');
+
+    // --- State for Add Stock Modal ---
+    const [showAddModal, setShowAddModal] = useState(false);
+    const [addStockMode, setAddStockMode] = useState('EXISTING');
+    const [targetModalView, setTargetModalView] = useState('watchlist');
+    const [selectedStockToAdd, setSelectedStockToAdd] = useState('');
+    const [selectedAssetType, setSelectedAssetType] = useState(1);
+    const [newTicker, setNewTicker] = useState('');
+    const [newName, setNewName] = useState('');
+    const [newIsin, setNewIsin] = useState('');
+    const [availableStocks, setAvailableStocks] = useState([]);
 
     // --- State for hover chart ---
     const [hoveredStockId, setHoveredStockId] = useState(null);
@@ -48,6 +61,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     const ALL_COLUMNS = useMemo(() => [
         { key: 'name', label: 'Aandeel', sortable: true, defaultVisible: true, type: 'string' },
         { key: 'selectiecriteria', label: 'Score', sortable: true, defaultVisible: true, type: 'number' },
+        { key: 'portfolio_status', label: 'Status', sortable: false, defaultVisible: true, type: 'string' },
         { key: 'current_price', label: 'Laatste Prijs', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'waarde_verdeling', label: 'Waardeverdeling', sortable: true, defaultVisible: true, type: 'number' },
         { key: 'percentage', label: 'Percentage', sortable: true, defaultVisible: true, type: 'number' },
@@ -98,15 +112,28 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
             
             const holdings = holdingsResponse.data;
             setHoldingsData(holdings);
-            setTotalActualValue(holdings.reduce((sum, item) => sum + (item.value || 0), 0));
+
+            let actualSum = 0;
+            if (holdings && Array.isArray(holdings)) {
+                actualSum = holdings.reduce((sum, h) => sum + (h.total_value || 0), 0);
+            }
+            setTotalActualValue(actualSum);
+
             setError('');
         } catch (err) {
-            setError('Kon de samenvatting van de berekeningen niet laden.');
             console.error('Error fetching calculations summary:', err);
+            setError('Fout bij ophalen van berekeningen overzicht.');
         } finally {
             setLoading(false);
         }
     }, [selectedDate]);
+
+    useImperativeHandle(ref, () => ({
+        openAddStockModal: (targetView = 'watchlist') => {
+            handleOpenAddModal(targetView);
+        },
+        refreshData: fetchSummary
+    }));
 
     useEffect(() => {
         fetchSummary();
@@ -243,6 +270,14 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
             });
         }
 
+        if (portfolioFilter === 'score5') {
+            currentData = currentData.filter(item => item.selectiecriteria === 5);
+        } else if (portfolioFilter === 'watchlist') {
+            currentData = currentData.filter(item => item.inWatchlist);
+        } else if (portfolioFilter === 'idealePortfolio') {
+            currentData = currentData.filter(item => item.inIdealePortfolio);
+        }
+
         if (sortConfig.key) {
             currentData.sort((a, b) => {
                 let aValue = a[sortConfig.key];
@@ -268,7 +303,74 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
             });
         }
         return currentData;
-    }, [summaryData, holdingsData, totalActualValue, totalWaardeVerdeling, tickerFilter, scoreFilter, priceToIntrinsicFilter, signalLineFilter, alertTypeFilter, percentageFilter, showHighestEver, sortConfig, ALL_COLUMNS]);
+    }, [summaryData, holdingsData, totalActualValue, totalWaardeVerdeling, tickerFilter, scoreFilter, priceToIntrinsicFilter, signalLineFilter, alertTypeFilter, percentageFilter, portfolioFilter, showHighestEver, sortConfig, ALL_COLUMNS]);
+
+    const handleToggleStockFlag = async (item, targetFlag) => {
+        const isCurrent = targetFlag === 'watchlist' ? item.inWatchlist : item.inIdealePortfolio;
+
+        try {
+            if (!isCurrent) {
+                await http.post('/watchlist/add-stock', {
+                    aandeel_id: item.stock_id,
+                    viewType: targetFlag,
+                    asset_type_id: 1,
+                });
+                toast.success(`${item.ticker_symbol || item.name} toegevoegd aan ${targetFlag === 'idealePortfolio' ? 'Ideale Portfolio' : 'Watchlist'}`);
+            } else {
+                await http.delete(`/watchlist/remove-stock/${item.stock_id}`, {
+                    data: { viewType: targetFlag }
+                });
+                toast.info(`${item.ticker_symbol || item.name} verwijderd uit ${targetFlag === 'idealePortfolio' ? 'Ideale Portfolio' : 'Watchlist'}`);
+            }
+            fetchSummary();
+        } catch (err) {
+            toast.error(`Fout bij wijzigen status: ${err.message}`);
+        }
+    };
+
+    const fetchAvailableStocks = useCallback(async () => {
+        try {
+            const res = await http.get('/watchlist/available-stocks');
+            setAvailableStocks(res.data);
+        } catch (err) {
+            console.error('Fout bij ophalen beschikbare stocks:', err);
+        }
+    }, []);
+
+    const handleOpenAddModal = (targetView = 'watchlist') => {
+        setTargetModalView(targetView);
+        setAddStockMode('EXISTING');
+        setSelectedStockToAdd('');
+        setNewTicker('');
+        setNewName('');
+        setNewIsin('');
+        fetchAvailableStocks();
+        setShowAddModal(true);
+    };
+
+    const handleConfirmAddStock = async () => {
+        if (addStockMode === 'NEW' && (!newTicker || !newName)) {
+            toast.error('Vul a.u.b. ten minste Ticker Symbol en Bedrijfsnaam in.');
+            return;
+        }
+        if (addStockMode === 'EXISTING' && !selectedStockToAdd) {
+            toast.error('Selecteer a.u.b. een aandeel.');
+            return;
+        }
+
+        try {
+            const payload = addStockMode === 'NEW' 
+                ? { ticker_symbol: newTicker, name: newName, isin: newIsin, viewType: targetModalView, asset_type_id: selectedAssetType || 1 }
+                : { aandeel_id: selectedStockToAdd, viewType: targetModalView, asset_type_id: selectedAssetType || 1 };
+
+            const res = await http.post('/watchlist/add-stock', payload);
+            toast.success(res.data.message || 'Aandeel succesvol toegevoegd!');
+            setShowAddModal(false);
+            fetchSummary();
+        } catch (err) {
+            toast.error(err.response?.data?.message || 'Fout bij toevoegen aandeel.');
+        }
+    };
 
     const handleMouseEnterPrice = async (e, stockId) => {
         const rect = e.target.getBoundingClientRect();
@@ -467,19 +569,74 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     return (
         <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-6 mb-6">
             <div className="overflow-x-auto">
-                <div className="flex justify-between items-center mb-4">
-                    <h3 className="text-xl font-bold text-gray-800">Overzicht Berekeningen</h3>
-                    <div className="flex items-center">
-                        <input
-                            id="showHighestEver"
-                            type="checkbox"
-                            checked={showHighestEver}
-                            onChange={(e) => setShowHighestEver(e.target.checked)}
-                            className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                        />
-                        <label htmlFor="showHighestEver" className="ml-2 block text-sm text-gray-900">
-                            Toon % vs Hoogste Ooit
-                        </label>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between mb-4 gap-3">
+                    <div>
+                        <h3 className="text-xl font-bold text-gray-800">Overzicht Berekeningen & Portfolio</h3>
+                        <p className="text-xs text-gray-500 mt-0.5">Bekijk FCF/ROE scores, intrinsieke waardes en beheer eenvoudig je Watchlist & Ideale Portfolio.</p>
+                    </div>
+
+                    <div className="flex items-center flex-wrap gap-3">
+                        {/* Quick Tab Switcher */}
+                        <div className="inline-flex rounded-xl bg-gray-100 p-1 border border-gray-200">
+                            <button
+                                type="button"
+                                onClick={() => { setPortfolioFilter('all'); setScoreFilter(''); }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
+                                    portfolioFilter === 'all' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                                }`}
+                            >
+                                📊 Alle Aandelen
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setPortfolioFilter('score5'); setScoreFilter('5'); }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
+                                    portfolioFilter === 'score5' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                                }`}
+                            >
+                                🏆 Score 5/5 Top
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setPortfolioFilter('watchlist'); setScoreFilter(''); }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
+                                    portfolioFilter === 'watchlist' ? 'bg-white text-amber-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                                }`}
+                            >
+                                ⭐ Watchlist
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => { setPortfolioFilter('idealePortfolio'); setScoreFilter(''); }}
+                                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all ${
+                                    portfolioFilter === 'idealePortfolio' ? 'bg-white text-emerald-800 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                                }`}
+                            >
+                                🏆 Ideale PF
+                            </button>
+                        </div>
+
+                        {/* Button: Voeg Aandeel Toe */}
+                        <button
+                            type="button"
+                            onClick={() => handleOpenAddModal('watchlist')}
+                            className="bg-blue-600 text-white font-extrabold text-xs py-2 px-3.5 rounded-xl shadow-sm hover:bg-blue-700 transition-all flex items-center gap-1.5 cursor-pointer"
+                        >
+                            <span>➕ Voeg Aandeel Toe</span>
+                        </button>
+
+                        <div className="flex items-center ml-2">
+                            <input
+                                id="showHighestEver"
+                                type="checkbox"
+                                checked={showHighestEver}
+                                onChange={(e) => setShowHighestEver(e.target.checked)}
+                                className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                            />
+                            <label htmlFor="showHighestEver" className="ml-1.5 block text-xs font-medium text-gray-700">
+                                % vs Hoogste Ooit
+                            </label>
+                        </div>
                     </div>
                 </div>
                 <div className="mb-6 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
@@ -510,6 +667,14 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                             <option value="">Alles</option>
                             <option value="5">5</option>
                             <option value="<5">&lt; 5</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label htmlFor="portfolioFilter" className="block text-sm font-semibold text-gray-700 mb-1">Portfolio Status</label>
+                        <select id="portfolioFilter" value={portfolioFilter} onChange={e => setPortfolioFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2 font-medium">
+                            <option value="all">Alle Aandelen</option>
+                            <option value="watchlist">⭐ Watchlist</option>
+                            <option value="idealePortfolio">🏆 Ideale Portfolio</option>
                         </select>
                     </div>
                     <div>
@@ -608,6 +773,21 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             return <span className="privacy-blur">{isIncognito ? '••••••' : `${item.name} (${item.ticker_symbol})`}</span>;
                                         case 'selectiecriteria':
                                             return value !== null ? value : '-';
+                                        case 'portfolio_status':
+                                            return (
+                                                <div className="flex items-center gap-1">
+                                                    {item.inWatchlist ? (
+                                                        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300">
+                                                            ⭐ Watchlist
+                                                        </span>
+                                                    ) : null}
+                                                    {item.inIdealePortfolio ? (
+                                                        <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                                                            🏆 Ideale PF
+                                                        </span>
+                                                    ) : null}
+                                                </div>
+                                            );
                                         case 'waarde_verdeling':
                                             const percentageToShow = showHighestEver ? item.diffPercentage : item.prevDiffPercentage;
                                             const label = showHighestEver ? 'H' : 'Q';
@@ -685,11 +865,34 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                                 {renderCell(col)}
                                             </td>
                                         ))}
-                                        <td className="px-2 py-2 whitespace-nowrap text-right text-xs font-medium space-x-2">
+                                        <td className="px-2 py-2 whitespace-nowrap text-right text-xs font-medium space-x-1.5 flex items-center justify-end">
+                                            {/* 1-Klik Toggles for Watchlist & Ideale Portfolio */}
+                                            <button
+                                                onClick={() => handleToggleStockFlag(item, 'watchlist')}
+                                                className={`px-1.5 py-0.5 rounded border text-[11px] font-bold transition-all ${
+                                                    item.inWatchlist 
+                                                        ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100' 
+                                                        : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-amber-50 hover:text-amber-600'
+                                                }`}
+                                                title={item.inWatchlist ? "Verwijderen uit Watchlist" : "Toevoegen aan Watchlist"}
+                                            >
+                                                ⭐
+                                            </button>
+                                            <button
+                                                onClick={() => handleToggleStockFlag(item, 'idealePortfolio')}
+                                                className={`px-1.5 py-0.5 rounded border text-[11px] font-bold transition-all ${
+                                                    item.inIdealePortfolio 
+                                                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100' 
+                                                        : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-emerald-50 hover:text-emerald-700'
+                                                }`}
+                                                title={item.inIdealePortfolio ? "Verwijderen uit Ideale Portfolio" : "Toevoegen aan Ideale Portfolio"}
+                                            >
+                                                🏆
+                                            </button>
                                             {highlightClass && (
                                                 <button 
                                                     onClick={() => navigate(`/analysis?ticker=${item.ticker_symbol}`)}
-                                                    className="text-indigo-600 hover:text-indigo-900"
+                                                    className="text-indigo-600 hover:text-indigo-900 ml-1"
                                                 >
                                                     Analyseer
                                                 </button>
@@ -744,6 +947,120 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                     ) : (
                         <div className="flex items-center justify-center h-full text-sm text-gray-500">Geen data</div>
                     )}
+                </div>
+            )}
+            {/* Modal: Voeg Aandeel Toe */}
+            {showAddModal && (
+                <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
+                    <div className="relative bg-white w-full max-w-md rounded-2xl shadow-2xl overflow-hidden">
+                        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50">
+                            <h3 className="text-lg font-bold text-gray-900">Voeg Aandeel Toe</h3>
+                            <button className="text-gray-400 hover:text-gray-600 font-bold cursor-pointer" onClick={() => setShowAddModal(false)}>✕</button>
+                        </div>
+                        <div className="p-6 space-y-4">
+                            {/* Doelkeuze */}
+                            <div>
+                                <label className="block text-xs font-extrabold text-gray-600 uppercase tracking-wider mb-1">Toevoegen Aan:</label>
+                                <select
+                                    value={targetModalView}
+                                    onChange={(e) => setTargetModalView(e.target.value)}
+                                    className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm font-semibold text-gray-900"
+                                >
+                                    <option value="watchlist">⭐ Watchlist</option>
+                                    <option value="idealePortfolio">🏆 Ideale Portfolio</option>
+                                </select>
+                            </div>
+
+                            {/* Modus keuze */}
+                            <div className="flex rounded-xl bg-gray-100 p-1 border border-gray-200">
+                                <button
+                                    type="button"
+                                    onClick={() => setAddStockMode('EXISTING')}
+                                    className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                                        addStockMode === 'EXISTING' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600'
+                                    }`}
+                                >
+                                    Selecteer uit DB
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => setAddStockMode('NEW')}
+                                    className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${
+                                        addStockMode === 'NEW' ? 'bg-white text-blue-600 shadow-sm' : 'text-gray-600'
+                                    }`}
+                                >
+                                    ✨ Nieuw Aandeel (Nog niet in DB)
+                                </button>
+                            </div>
+
+                            {addStockMode === 'EXISTING' ? (
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Selecteer Aandeel uit DB:</label>
+                                    <select
+                                        value={selectedStockToAdd}
+                                        onChange={(e) => setSelectedStockToAdd(e.target.value)}
+                                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-blue-500 focus:outline-none"
+                                    >
+                                        <option value="">Selecteer een aandeel...</option>
+                                        {availableStocks.map(stock => (
+                                            <option key={stock.aandeel_id} value={stock.aandeel_id}>
+                                                {stock.name} ({stock.ticker_symbol})
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                            ) : (
+                                <div className="space-y-3">
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Ticker Symbol *:</label>
+                                        <input
+                                            type="text"
+                                            placeholder="bijv. NVDA, PLTR, ASML"
+                                            value={newTicker}
+                                            onChange={(e) => setNewTicker(e.target.value)}
+                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm uppercase text-gray-900"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Bedrijfsnaam *:</label>
+                                        <input
+                                            type="text"
+                                            placeholder="bijv. NVIDIA Corporation"
+                                            value={newName}
+                                            onChange={(e) => setNewName(e.target.value)}
+                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm text-gray-900"
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">ISIN Code (Optioneel):</label>
+                                        <input
+                                            type="text"
+                                            placeholder="bijv. US67066G1040"
+                                            value={newIsin}
+                                            onChange={(e) => setNewIsin(e.target.value)}
+                                            className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm uppercase text-gray-900"
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                        <div className="px-6 py-4 bg-gray-50 border-t border-gray-200 flex justify-end space-x-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowAddModal(false)}
+                                className="px-4 py-2 bg-gray-200 text-gray-700 rounded-xl text-xs font-bold hover:bg-gray-300"
+                            >
+                                Annuleren
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleConfirmAddStock}
+                                className="px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold hover:bg-blue-700 shadow-sm"
+                            >
+                                Opslaan & Toevoegen
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
         </div>

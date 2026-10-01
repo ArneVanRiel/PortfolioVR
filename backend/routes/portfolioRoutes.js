@@ -17,7 +17,8 @@ const { // Renamed calculatePortfolioValues to recalculateAndStorePortfolioHisto
   forceUpdateExchangeRates,
   applyStockSplit,
   markTobPaid,
-  getBenchmarkHistory
+  getBenchmarkHistory,
+  getStrategyAdvisorData
 } = require('../controllers/portfolioController');
 
 router.post('/recalculateAndStorePortfolioHistory', recalculateAndStorePortfolioHistory); // New route for recalculation
@@ -29,6 +30,7 @@ router.get('/holdings', getCurrentPortfolioHoldings);
 router.get('/transactions', getTransactions);
 router.get('/returns-dynamics', getPortfolioReturnsDynamics);
 router.get('/benchmark-history', getBenchmarkHistory);
+router.get('/strategy-advisor', getStrategyAdvisorData);
 router.post('/addTransaction', addTransaction);
 router.put('/transactions/:id', updateTransaction);
 router.post('/addMultipleTransactions', addMultipleTransactions);

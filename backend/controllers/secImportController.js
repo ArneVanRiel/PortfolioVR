@@ -44,8 +44,16 @@ const FIELDS_TO_CHECK = {
     "NetCashProvidedByUsedInInvestingActivities": ["NetCashProvidedByUsedInInvestingActivities"],
     "NetCashProvidedByUsedInFinancingActivities": ["NetCashProvidedByUsedInFinancingActivities"],
     "PurchasesOfPropertyAndEquipment": ["PurchasesOfPropertyAndEquipment", "PaymentsToAcquirePropertyPlantAndEquipment", "PurchasesOfPropertyAndEquipmentAndIntangibleAssets", "PaymentsToAcquireProductiveAssets", ],
-    "Revenues": ["Revenues"],
-    "WeightedAverageNumberOfDilutedSharesOutstanding": ["WeightedAverageNumberOfDilutedSharesOutstanding"],
+    "Revenues": ["Revenues", "SalesRevenueNet", "RevenueFromContractWithCustomerExcludingAssessedTax", "RegulatedAndUnregulatedOperatingRevenues"],
+    "WeightedAverageNumberOfDilutedSharesOutstanding": [
+        "WeightedAverageNumberOfDilutedSharesOutstanding",
+        "WeightedAverageNumberOfSharesOutstandingDiluted",
+        "WeightedAverageNumberOfSharesOutstandingBasicAndDiluted",
+        "WeightedAverageSharesOutstandingDiluted",
+        "CommonStockSharesOutstanding",
+        "CommonStockSharesIssued",
+        "WeightedAverageNumberOfSharesOutstandingBasic"
+    ],
     "Dividend": ["PaymentsOfDividends", "CommonStockDividendsPerShareDeclared"]
 };
 
@@ -68,7 +76,15 @@ const getCik = async (ticker) => {
 const getFinancialData = async (cik) => {
     const url = `https://data.sec.gov/api/xbrl/companyfacts/CIK${cik}.json`;
     const response = await axios.get(url, { headers: HEADERS });
-    return response.data.facts['us-gaap'] || {};
+    const facts = response.data.facts || {};
+    return { ...(facts['us-gaap'] || {}), ...(facts['dei'] || {}) };
+};
+
+// Helper om units entries robuust op te halen ongeacht sleutel
+const getUnitsEntries = (fieldObj) => {
+    if (!fieldObj || !fieldObj.units) return null;
+    const u = fieldObj.units;
+    return u.USD || u.shares || u.Shares || u.pure || (Object.keys(u).length > 0 ? u[Object.keys(u)[0]] : null);
 };
 
 // Helper functie om de financiële data te verwerken, inclusief berekeningen en datumlogica
@@ -87,15 +103,13 @@ const processFinancialData = (financialData, ticker, write = () => {}) => {
                 
                 // Check of alle benodigde keys bestaan in de data
                 const allKeysExist = requiredKeys.every(reqKey => 
-                    financialData[reqKey] && 
-                    financialData[reqKey].units && 
-                    (financialData[reqKey].units.USD || financialData[reqKey].units.shares)
+                    financialData[reqKey] && getUnitsEntries(financialData[reqKey])
                 );
 
                 if (!allKeysExist) continue;
 
                 const primaryKey = requiredKeys[0];
-                const primaryUnits = financialData[primaryKey].units.USD || financialData[primaryKey].units.shares;
+                const primaryUnits = getUnitsEntries(financialData[primaryKey]);
                 let calculationAdded = false;
 
                 for (const entry of primaryUnits) {
@@ -107,8 +121,8 @@ const processFinancialData = (financialData, ticker, write = () => {}) => {
 
                     for (let i = 1; i < requiredKeys.length; i++) {
                         const otherKey = requiredKeys[i];
-                        const otherUnits = financialData[otherKey].units.USD || financialData[otherKey].units.shares;
-                        const matchingEntry = otherUnits.find(u => u.end === targetDate);
+                        const otherUnits = getUnitsEntries(financialData[otherKey]);
+                        const matchingEntry = otherUnits ? otherUnits.find(u => u.end === targetDate) : null;
                         
                         if (matchingEntry) {
                             values[otherKey] = matchingEntry.val;
@@ -157,8 +171,8 @@ const processFinancialData = (financialData, ticker, write = () => {}) => {
                 }
             }
             // Verwerk directe velden (strings)
-            else if (typeof key === 'string' && financialData[key] && financialData[key].units) {
-                const dataEntries = financialData[key].units.USD || financialData[key].units.shares;
+            else if (typeof key === 'string' && financialData[key]) {
+                const dataEntries = getUnitsEntries(financialData[key]);
                 if (!dataEntries) continue;
 
                 let dataAdded = false;
@@ -216,6 +230,36 @@ const processFinancialData = (financialData, ticker, write = () => {}) => {
             write(`[DEBUG] ⚠️ No data found for ${columnName}`);
         }
     }
+
+    // Auto forward-fill voor WeightedAverageNumberOfDilutedSharesOutstanding indien er gaten zijn tussen kwartalen
+    const sharesEntries = processedData.filter(d => d.metric === "WeightedAverageNumberOfDilutedSharesOutstanding");
+    if (sharesEntries.length > 0) {
+        const sortedShares = [...sharesEntries].sort((a, b) => new Date(a.period_end_date) - new Date(b.period_end_date));
+        const knownDates = new Set(sharesEntries.map(d => d.period_end_date));
+        const latestKnownShare = sortedShares[sortedShares.length - 1];
+
+        const allQuarterEndDates = [...new Set(processedData.map(d => d.period_end_date))].sort();
+
+        for (const qDate of allQuarterEndDates) {
+            if (!knownDates.has(qDate) && latestKnownShare) {
+                const sample = processedData.find(d => d.period_end_date === qDate && d.metric === "NetIncomeLoss") || latestKnownShare;
+                processedData.push({
+                    period_start_date: qDate,
+                    period_end_date: qDate,
+                    value: latestKnownShare.value,
+                    metric: "WeightedAverageNumberOfDilutedSharesOutstanding",
+                    how_added: `Auto Forward-fill (${latestKnownShare.how_added})`,
+                    fy: sample.fy,
+                    fp: sample.fp,
+                    form: sample.form,
+                    report_date: sample.report_date,
+                    ticker: ticker
+                });
+                knownDates.add(qDate);
+            }
+        }
+    }
+
     return processedData;
 };
 
@@ -388,6 +432,58 @@ const importSecData = async (req, res) => {
     }
 };
 
+const saveProcessedDataToDb = async (stockId, processedData, write = () => {}) => {
+    if (!processedData || processedData.length === 0) return;
+
+    const fpMap = { 'Q1': 1, 'Q2': 2, 'Q3': 3, 'FY': 4 };
+    const formMap = { '10-Q': 1, '10-K': 2 };
+
+    const chunkSize = 80;
+    for (let i = 0; i < processedData.length; i += chunkSize) {
+        const chunk = processedData.slice(i, i + chunkSize);
+        const req = new sql.Request();
+        req.input('stock_id', sql.Int, stockId);
+
+        const valueSelects = chunk.map((row, idx) => {
+            const fpId = fpMap[row.fp] || 1;
+            const formId = formMap[row.form] || 1;
+            const fyVal = row.fy || (row.period_end_date ? new Date(row.period_end_date).getFullYear() : 2024);
+            const pStart = row.period_start_date ? row.period_start_date.split('T')[0] : null;
+            const pEnd = row.period_end_date ? row.period_end_date.split('T')[0] : null;
+            const rDate = row.report_date ? row.report_date.split('T')[0] : null;
+            const howAdded = row.how_added ? row.how_added.substring(0, 100) : '';
+
+            req.input(`ps_${idx}`, sql.Date, pStart);
+            req.input(`pe_${idx}`, sql.Date, pEnd);
+            req.input(`fy_${idx}`, sql.Int, fyVal);
+            req.input(`fp_${idx}`, sql.Int, fpId);
+            req.input(`fm_${idx}`, sql.Int, formId);
+            req.input(`rd_${idx}`, sql.Date, rDate);
+            req.input(`dt_${idx}`, sql.NVarChar(100), row.metric);
+            req.input(`vl_${idx}`, sql.Decimal(20, 4), row.value);
+            req.input(`ha_${idx}`, sql.NVarChar(100), howAdded);
+
+            return `SELECT @stock_id AS stock_id, @ps_${idx} AS period_start_date, @pe_${idx} AS period_end_date, @fy_${idx} AS fy, @fp_${idx} AS fp_id, @fm_${idx} AS form_id, @rd_${idx} AS report_date, @dt_${idx} AS data_type, @vl_${idx} AS value, @ha_${idx} AS how_added`;
+        });
+
+        await req.query(`
+            MERGE INTO fundamental_data AS target
+            USING (${valueSelects.join(' UNION ALL ')}) AS source
+            ON target.stock_id = source.stock_id AND target.period_end_date = source.period_end_date AND target.data_type = source.data_type
+            WHEN MATCHED THEN
+                UPDATE SET period_start_date = source.period_start_date, value = source.value, how_added = source.how_added, fy = source.fy, fp_id = source.fp_id, form_id = source.form_id, report_date = source.report_date, updated_at = SYSDATETIME()
+            WHEN NOT MATCHED THEN
+                INSERT (period_start_date, period_end_date, fy, fp_id, form_id, report_date, stock_id, data_type, value, how_added, created_at, updated_at)
+                VALUES (source.period_start_date, source.period_end_date, source.fy, source.fp_id, source.form_id, source.report_date, source.stock_id, source.data_type, source.value, source.how_added, SYSDATETIME(), SYSDATETIME());
+        `);
+    }
+};
+
 module.exports = {
     importSecData,
+    getCik,
+    getFinancialData,
+    processFinancialData,
+    saveProcessedDataToDb
 };
+

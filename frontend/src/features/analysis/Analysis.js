@@ -10,6 +10,8 @@ import AnalysisAlertsTab from './AnalysisAlertsTab';
 import AnalysisCalculationsChart from './AnalysisCalculationsChart';
 import AnalysisPortfolioTab from './AnalysisPortfolioTab';
 import SearchSecFields from './searchSecFields';
+import StockScreenerTab from './StockScreenerTab';
+import StrategyBacktestTab from './StrategyBacktestTab';
 
 const Analysis = () => {
   const navigate = useNavigate();
@@ -28,7 +30,6 @@ const Analysis = () => {
   useEffect(() => {
     const fetchStocks = async () => {
       try {
-        setLoading(true);
         const response = await http.get(`/stocks`);
         setStocks(response.data);
       } catch (err) {
@@ -39,7 +40,7 @@ const Analysis = () => {
       }
     };
     fetchStocks();
-  }, []);
+  }, [activeTab]);
 
   // Selecteer aandeel automatisch op basis van URL parameter (bijv: ?ticker=AAPL)
   useEffect(() => {
@@ -54,7 +55,7 @@ const Analysis = () => {
   const handleStockChange = (stock) => {
     setSelectedStock(stock);
     if (stock) {
-      // Update the URL zodat de historie werkt en je de link kan kopiëren
+      // Update de URL zodat de historie werkt en je de link kan kopiëren
       navigate(`/analysis?ticker=${stock.ticker || stock.ticker_symbol}`);
     } else {
       navigate(`/analysis`);
@@ -63,6 +64,8 @@ const Analysis = () => {
 
   const TABS = [
     { id: 'Analyse', label: 'Overzicht & Grafieken', icon: 'ph-chart-line-up' },
+    { id: 'screener', label: 'Aandelen Screener', icon: 'ph-funnel' },
+    { id: 'backtest', label: 'Strategie Backtest', icon: 'ph-trend-up' },
     { id: 'portfolio', label: 'Portfolio', icon: 'ph-briefcase' },
     // Voeg Data Beheer, Berekeningen en SEC velden zoeken enkel toe als het geen demo account is
     ...(!isDemo ? [
@@ -144,7 +147,11 @@ const Analysis = () => {
 
       {/* Tab Content */}
       <div className="px-6">
-        {selectedStock ? (
+        {activeTab === 'screener' ? (
+          <StockScreenerTab />
+        ) : activeTab === 'backtest' ? (
+          <StrategyBacktestTab selectedStock={selectedStock} stocks={stocks} />
+        ) : selectedStock ? (
           <div className="animate-fade-in">
             {activeTab === 'data' && (
               <AnalysisDataTab selectedStock={selectedStock} />

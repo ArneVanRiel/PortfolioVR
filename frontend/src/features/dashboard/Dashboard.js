@@ -6,6 +6,7 @@ import http from '../../http-common';
 import toast from 'react-hot-toast';
 import Score5DistributionChart from './Score5DistributionChart';
 import IncompleteDataWidget from './IncompleteDataWidget';
+import WatchlistPortfolioTable from './WatchlistPortfolioTable';
 import { useIncognito } from '../../hooks/useIncognito';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -61,7 +62,7 @@ const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
 
 const Dashboard = () => {
   const isIncognito = useIncognito();
-  const [viewType] = useState('idealePortfolio');
+  const [viewType, setViewType] = useState('idealePortfolio');
   const watchlistTableRef = useRef(null);
   const calculationsTableRef = useRef(null);
   const alertsTableRef = useRef(null);
@@ -93,7 +94,9 @@ const Dashboard = () => {
   };
 
   const handleAddStock = () => {
-    if (watchlistTableRef.current) {
+    if (calculationsTableRef.current && calculationsTableRef.current.openAddStockModal) {
+      calculationsTableRef.current.openAddStockModal(viewType || 'watchlist');
+    } else if (watchlistTableRef.current && watchlistTableRef.current.openAddStockModal) {
       watchlistTableRef.current.openAddStockModal();
     }
   };

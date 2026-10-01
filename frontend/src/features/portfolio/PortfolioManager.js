@@ -9,6 +9,8 @@ import DiversificationTab from './components/DiversificationTab';
 import DividendsTab from './components/DividendsTab';
 import TransactionsTab from './components/TransactionsTab';
 import GrowthTab from './components/GrowthTab';
+import StrategyAdvisorTab from './StrategyAdvisorTab';
+import BrokerSyncModal from './BrokerSyncModal';
 
 import { useIncognito } from '../../hooks/useIncognito';
 import {
@@ -51,6 +53,9 @@ const PortfolioManager = () => {
   const [showImportReviewModal, setShowImportReviewModal] = useState(false);
   const [importPreviewData, setImportPreviewData] = useState([]);
   const [uploadType, setUploadType] = useState('template'); // 'template', 'etoro', 'degiro'
+  const [isBrokerSyncOpen, setIsBrokerSyncOpen] = useState(false);
+  const [brokerCash, setBrokerCash] = useState(null);
+  const [availableBalanceData, setAvailableBalanceData] = useState({ totalAmount: 0, balances: {} });
 
   const [chartPeriod, setChartPeriod] = useState('1Y');
   const [customStartDate, setCustomStartDate] = useState('');
@@ -186,11 +191,20 @@ const PortfolioManager = () => {
       const customStartParam = chartPeriod === 'Custom' && customStartDate ? `&customStartDate=${customStartDate}` : '';
       const customEndParam = chartPeriod === 'Custom' && customEndDate ? `&customEndDate=${customEndDate}` : '';
       const currencyParam = `&currency=${displayCurrency}`;
-      const [holdingsRes, transactionsRes, typesRes] = await Promise.all([
+      const [holdingsRes, transactionsRes, typesRes, brokerCashRes, balRes] = await Promise.all([
         http.get(`/portfolio/holdings?userId=${uid}&period=${chartPeriod}${customStartParam}${customEndParam}${currencyParam}`),
         http.get(`/portfolio/transactions?userId=${uid}&period=All`),
-        http.get('/watchlist/asset-types') // Gebruikt de bestaande route voor categorieën
+        http.get('/watchlist/asset-types'), // Gebruikt de bestaande route voor categorieën
+        http.get('/balance/available/broker-cash').catch(() => ({ data: null })),
+        http.get('/balance/available/latest-balance').catch(() => ({ data: { totalAmount: 0, balances: {} } }))
       ]);
+      
+      if (brokerCashRes && brokerCashRes.data) {
+        setBrokerCash(brokerCashRes.data);
+      }
+      if (balRes && balRes.data) {
+        setAvailableBalanceData(balRes.data);
+      }
       
       // Verwijder onzichtbare spaties uit de database strings met .trim()
       setRawHoldings(holdingsRes.data.map(h => ({ 
@@ -680,15 +694,16 @@ const PortfolioManager = () => {
     let totalVal = 0;
     let totalInv = 0;
     filteredHoldings.forEach(h => {
-      totalVal += h.value;
-      totalInv += h.total_invested;
+      totalVal += h.value || 0;
+      totalInv += h.total_invested || 0;
     });
     const gainLoss = totalVal - totalInv;
     return {
       totalValue: totalVal,
+      totalInvested: totalInv,
       overallGainLoss: gainLoss,
       overallGainLossPercentage: totalInv > 0 ? (gainLoss / totalInv) * 100 : 0,
-      todayChange: 0, // Mock
+      todayChange: 0,
       todayChangePercentage: 0
     };
   }, [filteredHoldings]);
@@ -696,7 +711,6 @@ const PortfolioManager = () => {
   // Haal de meest recente portfolio data op voor de summary cards
   const latestPortfolioData = useMemo(() => {
     if (history && history.length > 0) {
-      // De geschiedenis is al gesorteerd op datum, dus het laatste element is het meest recent
       return history[history.length - 1];
     }
     return null;
@@ -708,8 +722,8 @@ const PortfolioManager = () => {
     const prev = history[history.length - 2];
     
     const isEur = displayCurrency === 'EUR';
-    const latestVal = isEur ? (latest.total_value_eur || latest.total_value / 1.1) : (latest.total_value || 0);
-    const prevVal = isEur ? (prev.total_value_eur || prev.total_value / 1.1) : (prev.total_value || 0);
+    const latestVal = isEur ? (latest.total_value_eur ?? latest.total_value) : (latest.total_value ?? 0);
+    const prevVal = isEur ? (prev.total_value_eur ?? prev.total_value) : (prev.total_value ?? 0);
     
     const diff = latestVal - prevVal;
     const pct = prevVal > 0 ? (diff / prevVal) * 100 : 0;
@@ -717,14 +731,17 @@ const PortfolioManager = () => {
   }, [history, displayCurrency]);
 
   const totalProfit = useMemo(() => {
-    if (!latestPortfolioData) return { value: 0, percent: 0 };
     const isEur = displayCurrency === 'EUR';
-    const val = isEur ? (latestPortfolioData.total_value_eur || latestPortfolioData.total_value / 1.1) : (latestPortfolioData.total_value || 0);
-    const inv = isEur ? (latestPortfolioData.net_invested_eur || latestPortfolioData.net_invested / 1.1) : (latestPortfolioData.net_invested || 0);
+    const val = latestPortfolioData 
+      ? (isEur ? (latestPortfolioData.total_value_eur ?? latestPortfolioData.total_value) : (latestPortfolioData.total_value ?? 0))
+      : summary.totalValue;
+    const inv = latestPortfolioData
+      ? (isEur ? (latestPortfolioData.net_invested_eur ?? latestPortfolioData.net_invested) : (latestPortfolioData.net_invested ?? 0))
+      : summary.totalInvested;
     const diff = val - inv;
     const pct = inv > 0 ? (diff / inv) * 100 : 0;
     return { value: diff, percent: pct };
-  }, [latestPortfolioData, displayCurrency]);
+  }, [latestPortfolioData, summary, displayCurrency]);
 
   const passiveIncome = useMemo(() => {
     let totalAnn = 0;
@@ -737,7 +754,7 @@ const PortfolioManager = () => {
     
     if (totalAnn === 0) {
       const isEur = displayCurrency === 'EUR';
-      const cumDivs = isEur ? (latestPortfolioData?.cumulative_dividends_eur || (latestPortfolioData?.cumulative_dividends || 0) / 1.1) : (latestPortfolioData?.cumulative_dividends || 0);
+      const cumDivs = isEur ? (latestPortfolioData?.cumulative_dividends_eur ?? latestPortfolioData?.cumulative_dividends ?? 0) : (latestPortfolioData?.cumulative_dividends ?? 0);
       totalAnn = cumDivs > 0 ? cumDivs : (totalVal * 0.021);
     }
     
@@ -1281,6 +1298,7 @@ const PortfolioManager = () => {
   // --- Tab Configuratie (Snowball Stijl) ---
   const TABS = [
     { id: 'common', label: 'Common', icon: 'ph-chart-pie' },
+    { id: 'advisor', label: 'Strategie Assistent', icon: 'ph-sparkle' },
     { id: 'diversification', label: 'Diversification', icon: 'ph-chart-polar' },
     { id: 'dividends', label: 'Dividends', icon: 'ph-money' },
     { id: 'growth', label: 'Growth', icon: 'ph-trend-up' },
@@ -1638,6 +1656,18 @@ const PortfolioManager = () => {
                     EUR (€)
                   </button>
                 </div>
+
+                {/* Brokers & Synchronisatie Knop (Altijd zichtbaar) */}
+                <button
+                  type="button"
+                  onClick={() => setIsBrokerSyncOpen(true)}
+                  className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold px-3.5 py-2 rounded-xl shadow-sm hover:shadow-md transition-all text-xs mr-2"
+                  title="Koppel eToro, DeGiro of importeer rekeningoverzichten"
+                >
+                  <i className="ph-fill ph-plug-charging text-base text-amber-300"></i>
+                  <span>Brokers & Sync</span>
+                </button>
+
                 <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
                 
                 {/* Actions Dropdown: Template, Upload, Add Transaction (Visible ONLY on transactions or dividends tab) */}
@@ -1819,10 +1849,10 @@ const PortfolioManager = () => {
             </div>
             <div className="mt-3">
               <span className="text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
-                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.total_value_eur || latestPortfolioData?.total_value / 1.1) : (latestPortfolioData?.total_value || 0))}
+                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.total_value_eur ?? summary.totalValue) : (latestPortfolioData?.total_value ?? summary.totalValue))}
               </span>
               <span className="text-xs font-semibold text-gray-400 privacy-blur block mt-1">
-                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur || latestPortfolioData?.net_invested / 1.1) : (latestPortfolioData?.net_invested || 0))} invested
+                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur ?? summary.totalInvested) : (latestPortfolioData?.net_invested ?? summary.totalInvested))} invested
               </span>
             </div>
           </div>
@@ -1890,6 +1920,60 @@ const PortfolioManager = () => {
         </div>
       )}
 
+      {/* Cash Breakdown Banner (De Belegger / Snowball Style) */}
+      {activeTab === 'common' && (() => {
+        let otherCashSum = 0;
+        if (availableBalanceData?.balances) {
+          Object.entries(availableBalanceData.balances).forEach(([name, amount]) => {
+            const lower = name.toLowerCase();
+            if (!lower.includes('etoro') && !lower.includes('degiro')) {
+              otherCashSum += (Number(amount) || 0);
+            }
+          });
+        }
+        const totalCashDisplay = (availableBalanceData?.totalAmount > 0) 
+          ? availableBalanceData.totalAmount 
+          : ((brokerCash?.totalCashEur || 0) + otherCashSum);
+
+        return (
+          <div className="bg-white px-5 py-3.5 rounded-xl shadow-sm border border-gray-200 flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xl border border-emerald-100 shadow-sm">
+                <i className="ph ph-coins"></i>
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Beschikbaar Saldo (Cash)</span>
+                  <span className="text-lg font-extrabold text-emerald-600 privacy-blur">
+                    € {totalCashDisplay.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </span>
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
+                    Gekoppeld & Vrij
+                  </span>
+                </div>
+                <div className="text-xs text-gray-600 flex items-center gap-2 mt-1 flex-wrap font-medium">
+                  <span>DeGiro Cash: <strong className="text-gray-900 font-bold privacy-blur">€ {(brokerCash?.degiro?.amount || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+                  <span className="text-gray-300">•</span>
+                  <span>eToro Cash: <strong className="text-gray-900 font-bold privacy-blur">$ {(brokerCash?.etoro?.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> <span className="text-gray-400 privacy-blur">(≈ € {(brokerCash?.etoro?.amountEur || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span></span>
+                  <span className="text-gray-300">•</span>
+                  <span>Overige Rekeningen: <strong className="text-gray-900 font-bold privacy-blur">€ {otherCashSum.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button 
+                onClick={() => setIsBrokerSyncOpen(true)} 
+                className="text-xs font-semibold px-3.5 py-2 rounded-lg border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 hover:border-gray-300 transition-all flex items-center gap-1.5 shadow-sm"
+                title="Beheer broker API sleutels en imports"
+              >
+                <i className="ph ph-sliders"></i> Platform Koppelingen
+              </button>
+            </div>
+          </div>
+        );
+      })()}
+
       {/* --- TAB CONTENT: COMMON --- */}
       {activeTab === 'common' && (
         <OverviewTab
@@ -1952,6 +2036,8 @@ const PortfolioManager = () => {
           formatCurrency={formatCurrency}
           isDemo={isDemo}
           loading={loading}
+          onOpenBrokerSync={() => setIsBrokerSyncOpen(true)}
+          onOpenAddModal={() => setIsAddModalOpen(true)}
         />
       )}
 
@@ -1966,7 +2052,6 @@ const PortfolioManager = () => {
           benchmarkHistory={benchmarkHistory}
           selectedTypes={selectedTypes}
           setSelectedTypes={setSelectedTypes}
-          availableAssetTypes={availableAssetTypes}
           toggleType={toggleType}
           displayCurrency={displayCurrency}
           setDisplayCurrency={setDisplayCurrency}
@@ -2057,6 +2142,10 @@ const PortfolioManager = () => {
            <h3 className="text-2xl font-bold text-gray-800 mb-2">In Ontwikkeling</h3>
            <p className="text-gray-500 max-w-md">De functionaliteit voor '{TABS.find(t => t.id === activeTab)?.label}' wordt momenteel gebouwd. Kijk binnenkort nog eens!</p>
         </div>
+      )}
+
+      {activeTab === 'advisor' && (
+        <StrategyAdvisorTab />
       )}
 
       {activeTab === 'taxes' && (
@@ -2219,6 +2308,17 @@ const PortfolioManager = () => {
           </div>
         </div>
       )}
+
+      {/* Broker Synchronisatie & Import Modal (De Belegger stijl) */}
+      <BrokerSyncModal
+        isOpen={isBrokerSyncOpen}
+        onClose={() => setIsBrokerSyncOpen(false)}
+        onImportSuccess={() => {
+          fetchPortfolioData();
+          handleRecalculateHistory(true, '1970-01-01');
+        }}
+        allExistingTransactions={rawTransactions}
+      />
     </div>
   );
 };

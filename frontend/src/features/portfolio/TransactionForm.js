@@ -70,8 +70,8 @@ function TransactionForm({ onSuccess, onCancel, transactionToEdit, initialStockI
 
         const newTransaction = {
             user_id: userId,
-            aandeel_id: aandeelId,
-            broker_id: isCashTransaction ? null : brokerId,
+            aandeel_id: isCashTransaction ? null : aandeelId,
+            broker_id: brokerId,
             transaction_type: transactionType,
             quantity: quantity,
             currency,

@@ -3,7 +3,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cookieParser = require('cookie-parser');
-const { connectToDatabase } = require('./config/database');
+const { connectToDatabase, sql } = require('./config/database');
 const secRoutes = require('./routes/secRoutes');
 const watchlistRoutes = require('./routes/watchlistRoutes'); // alle pagina's voor watchlists en ideale portfolio
 const availableBalanceRoutes = require('./routes/availableBalanceRoutes');
@@ -16,6 +16,8 @@ const secFieldRoutes = require('./routes/secFieldRoutes');
 const portfolioRoutes = require('./routes/portfolioRoutes');
 const brokerRoutes = require('./routes/brokerRoutes');
 const stockExchangeRoutes = require('./routes/stockExchangeRoutes');
+const screenerRoutes = require('./routes/screenerRoutes');
+const backtestRoutes = require('./routes/backtestRoutes');
 const authRoutes = require('./routes/authRoutes');
 const verifyToken = require('./middleware/authMiddleware');
 
@@ -24,7 +26,34 @@ app.use(express.json());
 app.use(cors());
 
 // Verbind met de database
-connectToDatabase().catch(err => {
+connectToDatabase().then(() => {
+  console.log('Database verbonden. Starten van interne achtergrond-scheduler...');
+  
+  // Interne scheduler: controleert elke 30 minuten of data up-to-date is
+  const runInternalAutoSync = async () => {
+    try {
+      const watchlistController = require('./controllers/watchlistController');
+      const notificationController = require('./controllers/notificationController');
+      const now = new Date();
+      const hour = now.getHours();
+      
+      // Controleer status
+      console.log(`[Auto-Sync Check ${now.toLocaleTimeString('nl-BE')}] Bezig met controleren data-status...`);
+      // Voer periodieke update uit op de achtergrond
+      await watchlistController.updateAndProcessStocks(null, null, true);
+      await notificationController.checkNewSecQuarters();
+      console.log('[Auto-Sync] Data & SEC checks succesvol uitgevoerd.');
+    } catch (schedErr) {
+      console.warn('[Auto-Sync Notice] Interne achtergrond-update overgeslagen of mislukt:', schedErr.message);
+    }
+  };
+
+  // Draai eenmaal 10 seconden na opstarten
+  setTimeout(runInternalAutoSync, 10000);
+  // En vervolgens elke 30 minuten
+  setInterval(runInternalAutoSync, 30 * 60 * 1000);
+
+}).catch(err => {
   console.error('Kon niet verbinden met de database:', err);
   process.exit(1); // Sluit de server af als de databaseverbinding mislukt
 });
@@ -82,6 +111,8 @@ app.use('/api/sec-fields', verifyToken, secFieldRoutes);
 app.use('/api/portfolio', verifyToken, portfolioRoutes);
 app.use('/api/brokers', verifyToken, brokerRoutes);
 app.use('/api/stockexchange', verifyToken, stockExchangeRoutes);
+app.use('/api/screener', verifyToken, screenerRoutes);
+app.use('/api/backtest', verifyToken, backtestRoutes);
 
 const notificationController = require('./controllers/notificationController');
 app.get('/api/notifications', verifyToken, notificationController.getNotifications);

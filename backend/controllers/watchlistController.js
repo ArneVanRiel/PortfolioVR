@@ -73,15 +73,15 @@ const calculateFullMACDSeries = (closingPrices) => {
 const getStocksByView = async (req, res) => {
   const { view } = req.query;
 
-  if (!view || (view !== 'watchlist' && view !== 'idealePortfolio')) {
-    return res.status(400).json({ message: 'De "view" parameter is vereist (watchlist of idealePortfolio).' });
-  }
-
   let whereClause = '';
   if (view === 'watchlist') {
     whereClause = ' WHERE s.inWatchlist = 1';
   } else if (view === 'idealePortfolio') {
     whereClause = ' WHERE s.inIdealePortfolio = 1';
+  } else if (view === 'all') {
+    whereClause = ' WHERE (s.inWatchlist = 1 OR s.inIdealePortfolio = 1)';
+  } else {
+    return res.status(400).json({ message: 'De "view" parameter moet "watchlist", "idealePortfolio" of "all" zijn.' });
   }
 
   try {
@@ -288,24 +288,25 @@ const getDailyUpdateStatus = async (req, res) => {
 
 /**
  * Voegt een stock toe aan de database en markeert deze voor watchlist of ideale portfolio.
- * Accepteert nu asset_type_id.
- * @param {object} req - Het request object met { aandeel_id, viewType, asset_type_id }
+ * Ondersteunt nu ook het aanmaken van NIEUWE stocks met Ticker, Naam en ISIN nummer.
+ * @param {object} req - Het request object met { aandeel_id, ticker_symbol, ticker, name, isin, viewType, asset_type_id }
  * @param {object} res - Het response object.
  */
 const addStockToPortfolio = async (req, res) => {
-    const { aandeel_id, viewType, asset_type_id } = req.body; // NIEUW: asset_type_id ontvangen
+    let { aandeel_id, ticker_symbol, ticker, name, isin, viewType, asset_type_id = 1 } = req.body;
+    const tickerSymbol = (ticker_symbol || ticker || '').trim().toUpperCase();
 
-    if (!aandeel_id || !viewType || !asset_type_id) {
-        return res.status(400).json({ message: 'Aandeel ID, weergave type en asset type ID zijn vereist.' });
+    if (!aandeel_id && !tickerSymbol) {
+        return res.status(400).json({ message: 'Aandeel ID of Ticker symbol is vereist.' });
     }
-    if (viewType !== 'watchlist' && viewType !== 'idealePortfolio') {
+    if (!viewType || (viewType !== 'watchlist' && viewType !== 'idealePortfolio')) {
         return res.status(400).json({ message: 'Ongeldig weergave type. Kies "watchlist" of "idealePortfolio".' });
     }
 
     try {
         const pool = await sql.connect(config);
 
-        // Controleer eerst het huidige aantal stocks in watchlist of ideale portfolio
+        // Controleer limiet
         const totalStocksQuery = `
             SELECT COUNT(*) AS count
             FROM [dbo].[Stocks]
@@ -317,19 +318,60 @@ const addStockToPortfolio = async (req, res) => {
             return res.status(400).json({ message: 'Maximaal 99 stocks toegestaan in watchlist/ideale portfolio gecombineerd.' });
         }
 
-        // De stock bestaat al (aangezien we aandeel_id ontvangen), dus update alleen de flag en asset_type_id
-        const updateFlagColumn = viewType === 'watchlist' ? 'inWatchlist' : 'inIdealePortfolio';
+        const flagColumn = viewType === 'watchlist' ? 'inWatchlist' : 'inIdealePortfolio';
+
+        if (!aandeel_id && tickerSymbol) {
+            // Check of stock met deze ticker al in DB staat
+            const checkRes = await pool.request()
+                .input('ticker', sql.VarChar, tickerSymbol)
+                .query(`SELECT aandeel_id FROM [dbo].[Stocks] WHERE ticker_symbol = @ticker`);
+
+            if (checkRes.recordset.length > 0) {
+                aandeel_id = checkRes.recordset[0].aandeel_id;
+            } else {
+                // Nieuwe stock aanmaken met Ticker, Naam en ISIN
+                const stockName = name || tickerSymbol;
+                const isinVal = isin ? isin.trim().toUpperCase() : null;
+
+                const insertRes = await pool.request()
+                    .input('ticker', sql.VarChar, tickerSymbol)
+                    .input('name', sql.NVarChar, stockName)
+                    .input('isin', sql.VarChar, isinVal)
+                    .input('asset_type_id', sql.Int, asset_type_id)
+                    .input('flagVal', sql.Bit, 1)
+                    .query(`
+                        INSERT INTO [dbo].[Stocks] (ticker_symbol, name, isin, asset_type_id, stock_exchange_id, ${flagColumn})
+                        OUTPUT INSERTED.aandeel_id
+                        VALUES (@ticker, @name, @isin, @asset_type_id, 1, @flagVal)
+                    `);
+
+                aandeel_id = insertRes.recordset[0].aandeel_id;
+
+                return res.status(200).json({
+                    message: `Nieuw aandeel ${tickerSymbol} (${stockName}) succesvol aangemaakt in database met ISIN ${isinVal || 'geen'} en toegevoegd aan ${viewType}.`,
+                    aandeel_id
+                });
+            }
+        }
+
+        // Als aandeel_id bestaat (bestaand aandeel)
         await pool.request()
             .input('aandeel_id', sql.Int, aandeel_id)
-            .input('flagValue', sql.Bit, 1) // Zet de flag op true (1)
-            .input('asset_type_id', sql.Int, asset_type_id) // NIEUW: asset_type_id bijwerken
-            .query(`UPDATE [dbo].[Stocks] SET ${updateFlagColumn} = @flagValue, asset_type_id = @asset_type_id WHERE aandeel_id = @aandeel_id;`);
+            .input('asset_type_id', sql.Int, asset_type_id)
+            .input('isin', sql.VarChar, isin ? isin.trim().toUpperCase() : null)
+            .query(`
+                UPDATE [dbo].[Stocks] 
+                SET ${flagColumn} = 1, 
+                    asset_type_id = @asset_type_id,
+                    isin = COALESCE(@isin, isin)
+                WHERE aandeel_id = @aandeel_id;
+            `);
 
-        res.status(200).json({ message: `Stock succesvol toegevoegd aan ${viewType}.` });
+        res.status(200).json({ message: `Stock succesvol toegevoegd aan ${viewType}.`, aandeel_id });
 
     } catch (err) {
         console.error('Fout bij toevoegen stock:', err.message);
-        res.status(500).json({ message: 'Fout bij het toevoegen van de stock.' });
+        res.status(500).json({ message: 'Fout bij het toevoegen van de stock: ' + err.message });
     }
 };
 
@@ -630,30 +672,54 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
                 }
               } else {
                 const apiKey = process.env.PROFIT_COM_API_KEY;
-                const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+                if (apiKey) {
+                  const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${apiFetchEndDate}&token=${apiKey}`;
+
+                  try {
+                    console.log(`Ophalen van data voor ${stock.ticker_symbol} via Profit.com API: ${apiUrl}`);
+                    const response = await fetch(apiUrl);
+                    if (response.ok) {
+                      apiData = await response.json();
+                      console.log(`Profit.com data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
+                    }
+                  } catch (apiError) {
+                    console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
+                  }
+                }
+              }
+
+              // Fallback / Primaire ophaalmethode via Yahoo Finance voor aandelen waarvoor profit.com geen data leverde
+              if (!apiData || apiData.length === 0) {
+                let yahooTicker = stock.ticker_symbol;
+                const period1 = Math.floor(apiFetchStartDate.getTime() / 1000);
+                const period2 = Math.floor(new Date(todayFormatted).getTime() / 1000) + 86400;
+                const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
 
                 try {
-                  console.log(`Ophalen van data voor ${stock.ticker_symbol} via API: ${apiUrl}`);
-                  const response = await fetch(apiUrl);
-                  if (!response.ok) {
-                    console.warn(`API error voor ${stock.ticker_symbol} (Status: ${response.status}): ${response.statusText}`);
-                  } else {
-                      apiData = await response.json();
-                      console.log(`API data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
-                      
-                      // Stuur voortgang naar client
-                      if (res) {
-                          const progress = ((index + 1) / totalStocks) * 100;
-                          const progressPayload = {
-                              type: 'progress',
-                              message: `Verwerken ${stock.ticker_symbol} (${index + 1}/${totalStocks})`,
-                              progress: progress.toFixed(0)
-                          };
-                          res.write(JSON.stringify(progressPayload) + '\n');
-                      }
+                  console.log(`Ophalen van data voor ${stock.ticker_symbol} via Yahoo Finance: ${apiUrl}`);
+                  const response = await fetch(apiUrl, {
+                    headers: {
+                      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                    }
+                  });
+                  if (response.ok) {
+                    const json = await response.json();
+                    const result = json.chart?.result?.[0];
+                    if (result) {
+                      const timestamps = result.timestamp || [];
+                      const closes = result.indicators?.quote?.[0]?.close || [];
+                      apiData = timestamps.map((ts, idx) => {
+                        if (closes[idx] === null || closes[idx] === undefined) return null;
+                        return {
+                          t: ts,
+                          c: closes[idx]
+                        };
+                      }).filter(Boolean);
+                    }
+                    console.log(`Yahoo Finance data ontvangen voor ${stock.ticker_symbol}. Aantal records: ${apiData ? apiData.length : 0}`);
                   }
                 } catch (apiError) {
-                  console.error(`Fout bij het ophalen van data voor ${stock.ticker_symbol}:`, apiError.message);
+                  console.error(`Fout bij het ophalen van Yahoo Finance data voor ${stock.ticker_symbol}:`, apiError.message);
                 }
               }
 

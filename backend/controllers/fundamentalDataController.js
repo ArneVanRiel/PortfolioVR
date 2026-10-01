@@ -721,7 +721,8 @@ const getTickerOverviewAnalysis = async (req, res) => {
             const stockId = stock.aandeel_id;
             
             // Fetch all fundamental data for the current stock within the lookback period
-            const fundamentalData = (await request.input('stock_id', sql.Int, stockId)
+            const stockRequest = new sql.Request();
+            const fundamentalData = (await stockRequest.input('stock_id', sql.Int, stockId)
                 .input('earliest_date', sql.Date, earliestAllowedDate)
                 .input('latest_date', sql.Date, referenceDate)
                 .query`

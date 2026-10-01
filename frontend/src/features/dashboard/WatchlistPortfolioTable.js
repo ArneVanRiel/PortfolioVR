@@ -18,6 +18,13 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   const [showConfirmDeleteModal, setShowConfirmDeleteModal] = useState(false);
   const [stockToDelete, setStockToDelete] = useState(null);
   const [isColumnDropdownOpen, setIsColumnDropdownOpen] = useState(false); // State for column dropdown
+  
+  // NIEUW: Handmatig nieuw aandeel (Ticker, Naam, ISIN) toevoegen
+  const [addStockMode, setAddStockMode] = useState('EXISTING'); // 'EXISTING' of 'NEW'
+  const [newTicker, setNewTicker] = useState('');
+  const [newName, setNewName] = useState('');
+  const [newIsin, setNewIsin] = useState('');
+
   const MAX_STOCKS = 99;
 
   const navigate = useNavigate();
@@ -38,6 +45,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     { key: 'name', label: 'Naam', sortable: false, defaultVisible: true, type: 'string' },
     { key: 'ticker_symbol', label: 'Ticker', sortable: true, defaultVisible: true, type: 'string' },
     { key: 'asset_type_name', label: 'Type', sortable: false, defaultVisible: true, type: 'string' },
+    { key: 'portfolio_status', label: 'Status', sortable: false, defaultVisible: true, type: 'string' },
     { key: 'current_price', label: 'Laatste Prijs', sortable: true, defaultVisible: true, type: 'number' },
     { key: 'latest_fundamental_data_period_end_date', label: 'Laatste Data Datum', sortable: true, defaultVisible: true, type: 'date' },
     { key: 'current_signal_line', label: 'Huidige Signaal Lijn', sortable: true, defaultVisible: true, type: 'number' },
@@ -205,28 +213,56 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
 
   const handleAddStockClick = () => {
     setSelectedStockToAdd('');
-    const defaultStockType = assetTypes.find(type => type.type_name === 'STOCK');
+    const defaultStockType = assetTypes.find(type => type.type_name === 'STOCK' || type.type_name === 'Aandeel');
     if (defaultStockType) {
       setSelectedAssetType(defaultStockType.asset_type_id);
+    } else if (assetTypes.length > 0) {
+      setSelectedAssetType(assetTypes[0].asset_type_id);
     } else {
-      setSelectedAssetType('');
+      setSelectedAssetType(1);
     }
+    setAddStockMode('EXISTING');
+    setNewTicker('');
+    setNewName('');
+    setNewIsin('');
     setShowAddStockModal(true);
   };
 
   const handleConfirmAddStock = async () => {
-    if (!selectedStockToAdd) {
-      toast.error('Selecteer alstublieft een stock uit de lijst.');
+    if (stocks.length >= MAX_STOCKS) {
+      toast.error(`Je hebt al het maximale aantal van ${MAX_STOCKS} stocks bereikt.`);
       return;
     }
+
     if (!selectedAssetType) {
       toast.error('Selecteer alstublieft een asset type.');
       return;
     }
 
-    if (stocks.length >= MAX_STOCKS) {
-      toast.error(`Je hebt al het maximale aantal van ${MAX_STOCKS} stocks bereikt.`);
-      return;
+    let payload = {};
+
+    if (addStockMode === 'NEW') {
+      if (!newTicker.trim()) {
+        toast.error('Vul a.u.b. een Ticker symbol in (bijv. NVDA of ASML).');
+        return;
+      }
+      payload = {
+        ticker_symbol: newTicker.trim().toUpperCase(),
+        name: newName.trim() || newTicker.trim().toUpperCase(),
+        isin: newIsin.trim().toUpperCase() || null,
+        viewType: viewType,
+        asset_type_id: selectedAssetType
+      };
+    } else {
+      if (!selectedStockToAdd) {
+        toast.error('Selecteer alstublieft een stock uit de lijst of kies "Nieuw Aandeel Invoeren".');
+        return;
+      }
+      payload = {
+        aandeel_id: selectedStockToAdd,
+        viewType: viewType,
+        asset_type_id: selectedAssetType
+      };
     }
 
     try {
@@ -236,11 +272,7 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${localStorage.getItem('token')}`
         },
-        body: JSON.stringify({
-          aandeel_id: selectedStockToAdd,
-          viewType: viewType,
-          asset_type_id: selectedAssetType,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (!response.ok) {
@@ -251,6 +283,9 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
       const result = await response.json();
       toast.success(result.message);
       setShowAddStockModal(false);
+      setNewTicker('');
+      setNewName('');
+      setNewIsin('');
       fetchStocksAndAlerts();
       fetchAvailableStocks();
     } catch (err) {
@@ -297,6 +332,64 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
   const handleCancelDelete = () => {
     setShowConfirmDeleteModal(false);
     setStockToDelete(null);
+  };
+
+  // 1-Klik snel in- of uitschakelen van Watchlist of Ideale Portfolio status per aandeel
+  const handleToggleStockFlag = async (stock, targetFlag) => {
+    const isCurrent = targetFlag === 'watchlist' ? stock.inWatchlist : stock.inIdealePortfolio;
+
+    try {
+      if (!isCurrent) {
+        const res = await fetch(`${API_URL}/watchlist/add-stock`, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({
+            aandeel_id: stock.aandeel_id,
+            viewType: targetFlag,
+            asset_type_id: stock.asset_type_id || 1,
+          }),
+        });
+        if (!res.ok) throw new Error('Toevoegen mislukt');
+        toast.success(`${stock.ticker_symbol} toegevoegd aan ${targetFlag === 'idealePortfolio' ? 'Ideale Portfolio' : 'Watchlist'}`);
+      } else {
+        const res = await fetch(`${API_URL}/watchlist/remove-stock/${stock.aandeel_id}`, {
+          method: 'DELETE',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${localStorage.getItem('token')}`
+          },
+          body: JSON.stringify({ viewType: targetFlag }),
+        });
+        if (!res.ok) throw new Error('Verwijderen mislukt');
+        toast.info(`${stock.ticker_symbol} verwijderd uit ${targetFlag === 'idealePortfolio' ? 'Ideale Portfolio' : 'Watchlist'}`);
+      }
+
+      fetchStocksAndAlerts();
+      fetchAvailableStocks();
+    } catch (err) {
+      toast.error(`Fout bij wijzigen status: ${err.message}`);
+    }
+  };
+
+  // Render portfolio status badges
+  const renderPortfolioStatus = (stock) => {
+    return (
+      <div className="flex items-center gap-1.5 flex-wrap">
+        {stock.inWatchlist ? (
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-300 shadow-sm">
+            ⭐ Watchlist
+          </span>
+        ) : null}
+        {stock.inIdealePortfolio ? (
+          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 shadow-sm">
+            🏆 Ideale PF
+          </span>
+        ) : null}
+      </div>
+    );
   };
 
   // Functie voor "Voeg Data Toe" knop per aandeel
@@ -452,24 +545,44 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
     <div className="bg-gray-50">
       <div className="container mx-auto">
         {/* Header sectie met titel en knoppen */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-4 border-b border-gray-200">
-          <h1 className="text-2xl text-gray-900 font-bold">Watchlist / Ideale Portfolio</h1>
-
-        {/* Sectie voor de selectie van Watchlist of Ideale Portfolio en Update knop */}
-        <div className="mt-4 sm:mt-0 flex items-center space-x-4">
-          <div className="flex items-center space-x-2">
-            <label htmlFor="viewType" className="text-sm font-medium text-gray-600">Weergave:</label>
-            <select
-              id="viewType"
-              value={viewType}
-              onChange={handleViewTypeChange}
-              className="block w-auto rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500"
-            >
-              <option value="idealePortfolio">Ideale Portfolio</option>
-              <option value="watchlist">Watchlist</option>
-            </select>
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between py-4 border-b border-gray-200 gap-3">
+          <div>
+            <h1 className="text-2xl text-gray-900 font-bold">Watchlist / Ideale Portfolio</h1>
+            <p className="text-xs text-gray-500 mt-0.5">Beheer je gevolgde aandelen, bekijk MACD koopsignalen en wissel direct van status.</p>
           </div>
-        </div>
+
+          {/* 3-Way Tab Switcher */}
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-xl bg-gray-200/80 p-1 border border-gray-300 shadow-sm">
+              <button
+                type="button"
+                onClick={() => setViewType('watchlist')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1 ${
+                  viewType === 'watchlist' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>⭐ Watchlist</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewType('idealePortfolio')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1 ${
+                  viewType === 'idealePortfolio' ? 'bg-white text-emerald-800 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>🏆 Ideale Portfolio</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewType('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-extrabold transition-all flex items-center gap-1 ${
+                  viewType === 'all' ? 'bg-white text-purple-800 shadow-sm' : 'text-gray-600 hover:text-gray-900'
+                }`}
+              >
+                <span>📊 Alle Aandelen</span>
+              </button>
+            </div>
+          </div>
         </div>
 
         {error && (
@@ -597,7 +710,8 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                       <tr key={stock.aandeel_id}>
                         {visibleColumnDefinitions.map(col => (
                           <td key={`${stock.aandeel_id}-${col.key}`} className="px-6 py-4 whitespace-nowrap text-sm text-gray-800">
-                            {col.key === 'current_price' && stock.current_price !== null ? `€${stock.current_price.toFixed(2)}` :
+                            {col.key === 'portfolio_status' ? renderPortfolioStatus(stock) :
+                             col.key === 'current_price' && stock.current_price !== null ? `€${stock.current_price.toFixed(2)}` :
                              col.key === 'latest_fundamental_data_period_end_date' ? renderLastDataDate(stock.latest_fundamental_data_period_end_date) :
                              col.key === 'current_signal_line' && stock.current_signal_line !== null ? stock.current_signal_line.toFixed(4) :
                              col.key === 'latest_alert_date' && stock.latest_alert_date ? new Date(stock.latest_alert_date).toLocaleDateString() :
@@ -607,7 +721,32 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                           </td>
                         ))}
                     {!isDemo && (
-                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
+                      <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-1.5">
+                          {/* Snel 1-Klik Toggles for Watchlist & Ideale Portfolio */}
+                          <button
+                            onClick={() => handleToggleStockFlag(stock, 'watchlist')}
+                            className={`p-2 rounded-lg border text-xs font-bold transition-all ${
+                              stock.inWatchlist 
+                                ? 'bg-amber-50 text-amber-700 border-amber-300 hover:bg-amber-100 shadow-sm' 
+                                : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-amber-50 hover:text-amber-600'
+                            }`}
+                            title={stock.inWatchlist ? "Verwijderen uit Watchlist" : "Toevoegen aan Watchlist"}
+                          >
+                            ⭐
+                          </button>
+
+                          <button
+                            onClick={() => handleToggleStockFlag(stock, 'idealePortfolio')}
+                            className={`p-2 rounded-lg border text-xs font-bold transition-all ${
+                              stock.inIdealePortfolio 
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100 shadow-sm' 
+                                : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-emerald-50 hover:text-emerald-700'
+                            }`}
+                            title={stock.inIdealePortfolio ? "Verwijderen uit Ideale Portfolio" : "Toevoegen aan Ideale Portfolio"}
+                          >
+                            🏆
+                          </button>
+
                           <button
                             className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 hover:text-blue-600 focus:outline-none focus:ring-2 focus:ring-blue-500"
                             onClick={() => handleAddStockData(stock.ticker_symbol)}
@@ -682,14 +821,40 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                   <svg className="w-6 h-6 text-gray-500 hover:text-gray-800" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                 </button>
               </div>
-              <div className="p-6 space-y-6">
+              <div className="p-6 space-y-5">
+                {/* Modus Keuze Tabs */}
+                <div className="flex rounded-xl bg-gray-100 p-1 border border-gray-200">
+                  <button
+                    type="button"
+                    onClick={() => setAddStockMode('EXISTING')}
+                    className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+                      addStockMode === 'EXISTING'
+                        ? 'bg-white text-blue-600 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    Selecteer uit Database
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAddStockMode('NEW')}
+                    className={`flex-1 py-2 text-xs font-bold rounded-lg transition-all ${
+                      addStockMode === 'NEW'
+                        ? 'bg-white text-blue-600 shadow-sm'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    ✨ Nieuw Aandeel (Nog niet in DB)
+                  </button>
+                </div>
+
                 <div>
-                  <label htmlFor="selectAssetType" className="block text-sm font-bold text-gray-700 mb-1">Asset Type:</label>
+                  <label htmlFor="selectAssetType" className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Asset Type:</label>
                   <select
                     id="selectAssetType"
                     value={selectedAssetType}
                     onChange={(e) => setSelectedAssetType(e.target.value)}
-                    className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
+                    className="mt-1 block w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 focus:outline-none"
                   >
                     <option value="">Selecteer een type...</option>
                     {assetTypes.map(type => (
@@ -699,38 +864,82 @@ export default forwardRef(function WatchlistPortfolioTable({ onViewTypeChange = 
                     ))}
                   </select>
                 </div>
-                <div>
-                  <label htmlFor="selectStock" className="block text-sm font-bold text-gray-700 mb-1">Selecteer Stock:</label>
-                  {filteredAvailableStocks.length > 0 ? (
-                    <select
-                      id="selectStock"
-                      value={selectedStockToAdd}
-                      onChange={(e) => setSelectedStockToAdd(e.target.value)}
-                      className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"
-                    >
-                      <option value="">Selecteer een stock...</option>
-                      {filteredAvailableStocks.map(stock => (
-                        <option key={stock.aandeel_id} value={stock.aandeel_id}>
-                          {stock.name} ({stock.ticker_symbol})
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <p className="text-sm text-gray-600 mt-2">Geen stocks beschikbaar voor het geselecteerde type of ze zijn al toegevoegd.</p>
-                  )}
-                </div>
+
+                {addStockMode === 'EXISTING' ? (
+                  <div>
+                    <label htmlFor="selectStock" className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">Selecteer Bestaande Stock:</label>
+                    {filteredAvailableStocks.length > 0 ? (
+                      <select
+                        id="selectStock"
+                        value={selectedStockToAdd}
+                        onChange={(e) => setSelectedStockToAdd(e.target.value)}
+                        className="mt-1 block w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 focus:outline-none"
+                      >
+                        <option value="">Selecteer een stock...</option>
+                        {filteredAvailableStocks.map(stock => (
+                          <option key={stock.aandeel_id} value={stock.aandeel_id}>
+                            {stock.name} ({stock.ticker_symbol})
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <p className="text-xs text-gray-500 mt-2">Geen ongebruikte stocks beschikbaar in DB. Kies "Nieuw Aandeel" om een nieuw aandeel toe te voegen.</p>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-4 pt-1">
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                        Ticker Symbol <span className="text-red-500">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={newTicker}
+                        onChange={(e) => setNewTicker(e.target.value.toUpperCase())}
+                        placeholder="Bijv. NVDA, ASML, PLTR, COST..."
+                        className="block w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 focus:outline-none uppercase font-mono font-bold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                        Bedrijfsnaam
+                      </label>
+                      <input
+                        type="text"
+                        value={newName}
+                        onChange={(e) => setNewName(e.target.value)}
+                        placeholder="Bijv. NVIDIA Corporation (optioneel)"
+                        className="block w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1">
+                        ISIN Code / Nummer
+                      </label>
+                      <input
+                        type="text"
+                        value={newIsin}
+                        onChange={(e) => setNewIsin(e.target.value.toUpperCase())}
+                        placeholder="Bijv. US67066G1040 (optioneel)"
+                        className="block w-full rounded-xl border border-gray-300 px-3 py-2.5 text-sm text-gray-900 focus:border-blue-500 focus:ring-2 focus:ring-blue-200 focus:outline-none uppercase font-mono"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="flex items-center justify-end p-5 space-x-4 border-t border-gray-200 rounded-b-xl bg-gray-50">
                 <button
-                  className="px-6 py-2.5 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300"
+                  className="px-6 py-2.5 bg-white text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-300 font-bold text-sm"
                   onClick={() => setShowAddStockModal(false)}
                 >
                   Annuleren
                 </button>
                 <button
-                  className="px-6 py-2.5 bg-blue-600 text-white font-semibold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="px-6 py-2.5 bg-blue-600 text-white font-bold rounded-lg hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed text-sm"
                   onClick={handleConfirmAddStock}
-                  disabled={!selectedStockToAdd || !selectedAssetType || filteredAvailableStocks.length === 0}
+                  disabled={!selectedAssetType || (addStockMode === 'EXISTING' && !selectedStockToAdd) || (addStockMode === 'NEW' && !newTicker.trim())}
                 >
                   Toevoegen
                 </button>

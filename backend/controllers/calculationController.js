@@ -48,12 +48,10 @@ async function performCalculations(stockId, periodEndDate = null) {
         effectivePeriodEndDate = latestDateResult.recordset[0].period_end_date;
     }
 
-    const lookbackDate = new Date(effectivePeriodEndDate);
-    lookbackDate.setFullYear(lookbackDate.getFullYear() - 13);
-
     const fundamentalDataResult = await pool.request()
-        .input('stockId', sql.Int, stockId).input('lookbackDate', sql.Date, lookbackDate).input('endDate', sql.Date, new Date(effectivePeriodEndDate))
-        .query(`SELECT period_end_date, data_type, value, fp_id FROM fundamental_data WHERE stock_id = @stockId AND data_type IN ('LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity', 'NetIncomeLoss', 'NetCashProvidedByUsedInOperatingActivities', 'PurchasesOfPropertyAndEquipment', 'WeightedAverageNumberOfDilutedSharesOutstanding') AND period_end_date BETWEEN @lookbackDate AND @endDate ORDER BY period_end_date ASC`);
+        .input('stockId', sql.Int, stockId)
+        .input('endDate', sql.Date, new Date(effectivePeriodEndDate))
+        .query(`SELECT period_end_date, data_type, value, fp_id FROM fundamental_data WHERE stock_id = @stockId AND data_type IN ('LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity', 'NetIncomeLoss', 'NetCashProvidedByUsedInOperatingActivities', 'PurchasesOfPropertyAndEquipment', 'WeightedAverageNumberOfDilutedSharesOutstanding') AND period_end_date <= @endDate ORDER BY period_end_date ASC`);
 
     if (fundamentalDataResult.recordset.length === 0) throw new Error('Not enough fundamental data to perform calculations.');
 
@@ -746,11 +744,13 @@ exports.getSummaryByDate = async (req, res) => {
                     OR (type_melding = 'Verkoopsignaal')
             )
             SELECT 
+                s.aandeel_id as stock_id,
                 s.name,
                 s.ticker_symbol,
+                s.inWatchlist,
+                s.inIdealePortfolio,
                 at.type_name as asset_type_name,
                 lc.id as calculation_id,
-                lc.stock_id,
                 lc.waarde_verdeling,
                 lc.intrinsieke_waarde,
                 lc.calculation_date,
@@ -764,9 +764,9 @@ exports.getSummaryByDate = async (req, res) => {
                 la.latest_trade_amount,
                 la.type_melding as latest_alert_type
             FROM 
-                LatestCalculations lc
-            JOIN 
-                stocks s ON lc.stock_id = s.aandeel_id
+                stocks s
+            LEFT JOIN
+                LatestCalculations lc ON s.aandeel_id = lc.stock_id
             LEFT JOIN
                 AssetTypes at ON s.asset_type_id = at.asset_type_id
             LEFT JOIN
@@ -774,13 +774,13 @@ exports.getSummaryByDate = async (req, res) => {
             LEFT JOIN
                 PreviousWaarde pw ON lc.id = pw.calculation_id
             LEFT JOIN
-                LatestDailyData ldd ON lc.stock_id = ldd.aandeel_id AND ldd.rn = 1
+                LatestDailyData ldd ON s.aandeel_id = ldd.aandeel_id AND ldd.rn = 1
             LEFT JOIN
-                LatestMACD lm ON lc.stock_id = lm.aandeel_id AND lm.rn = 1
+                LatestMACD lm ON s.aandeel_id = lm.aandeel_id AND lm.rn = 1
             LEFT JOIN
-                LatestAlert la ON lc.stock_id = la.aandeel_id AND la.rn = 1
+                LatestAlert la ON s.aandeel_id = la.aandeel_id AND la.rn = 1
             ORDER BY 
-                lc.waarde_verdeling DESC;
+                ISNULL(lc.waarde_verdeling, 0) DESC, s.name ASC;
         `;
         const result = await pool.request()
             .input('date', sql.Date, date)
@@ -811,3 +811,5 @@ exports.deleteCalculation = async (req, res) => {
         res.status(500).send('Error deleting calculation.');
     }
 };
+
+exports.performCalculations = performCalculations;

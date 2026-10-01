@@ -1166,12 +1166,11 @@ const getPortfolioReturns = async (req, res) => {
 
 const getCurrentPortfolioHoldings = async (req, res) => {
   try {
-    // Haal userId uit query param of sessie (hier standaard 1 voor testdoeleinden)
     const userId = req.query.userId || 1;
     const { period, customStartDate, customEndDate, currency } = req.query;
     const { endDate } = parseDateRange(period, customStartDate, customEndDate);
     const pool = await sql.connect(config);
-    const isEur = currency === 'EUR' ? 1 : 0;
+    const isEur = currency === 'EUR' || !currency ? 1 : 0;
 
     // Bereken het actuele bezit op basis van alle transacties en de meest recente slotkoers
     const query = `
@@ -1179,12 +1178,13 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         SELECT
           t.aandeel_id,
           SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS total_quantity,
-          SUM(CASE WHEN t.transaction_type = 'BUY' THEN (t.quantity * t.price) WHEN t.transaction_type = 'SELL' THEN -(t.quantity * t.price) ELSE 0 END) AS total_invested
+          SUM(CASE WHEN t.currency = 'EUR' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_eur,
+          SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_usd
         FROM PF_transactions t
         WHERE t.user_id = @userId
         AND t.purchase_time <= @endDate
         GROUP BY t.aandeel_id
-        HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0
+        HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
       ),
       LatestPrices AS (
         SELECT aandeel_id, closing_price,
@@ -1193,7 +1193,7 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         WHERE date <= @endDate
       ),
       LatestTransactionPrices AS (
-        SELECT aandeel_id, price,
+        SELECT aandeel_id, price, currency,
                ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY purchase_time DESC) as rn
         FROM PF_transactions
         WHERE user_id = @userId AND purchase_time <= @endDate
@@ -1204,51 +1204,80 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         s.name,
         at.type_name AS asset_type,
         h.total_quantity AS quantity,
-        -- Bereken de conversiefactor op basis van de asset-valuta en de gevraagde weergave-valuta
-        -- Indien weergave in EUR (@isEur = 1): EUR-aandelen/ETFs x1.0, USD-aandelen x1.0/rate
-        -- Indien weergave in USD (@isEur = 0): EUR-aandelen/ETFs xrate, USD-aandelen x1.0
+        -- Detecteer native valuta
         CASE 
-          WHEN @isEur = 1 THEN 
-            CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
-          ELSE 
-            CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
-        END AS conv_factor,
-        -- Pas de conv_factor direct toe op alle relevante bedragen
-        ((h.total_invested / NULLIF(h.total_quantity, 0)) * 
-          CASE 
-            WHEN @isEur = 1 THEN 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
-            ELSE 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
-          END) AS average_price,
-        (COALESCE(p.closing_price, ltp.price, 0) * 
-          CASE 
-            WHEN @isEur = 1 THEN 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
-            ELSE 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
-          END) AS price,
-        ((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) * 
-          CASE 
-            WHEN @isEur = 1 THEN 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
-            ELSE 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
-          END) AS value,
-        (((h.total_quantity * COALESCE(p.closing_price, ltp.price, 0)) - h.total_invested) * 
-          CASE 
-            WHEN @isEur = 1 THEN 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
-            ELSE 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
-          END) AS gainLoss,
-        (h.total_invested * 
-          CASE 
-            WHEN @isEur = 1 THEN 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN 1.0 ELSE 1.0 / ISNULL(er.rate, 1) END
-            ELSE 
-              CASE WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR at.type_name = 'ETF') THEN ISNULL(er.rate, 1) ELSE 1.0 END
-          END) AS total_invested
+          WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+          THEN 'EUR' 
+          ELSE 'USD' 
+        END AS native_currency,
+        
+        -- Geconverteerde prijs naar gevraagde weergave-valuta (@isEur)
+        CASE 
+          WHEN @isEur = 1 THEN
+            CASE 
+              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+              THEN COALESCE(p.closing_price, ltp.price, 0)
+              ELSE COALESCE(p.closing_price, ltp.price, 0) / ISNULL(er.rate, 1.13)
+            END
+          ELSE
+            CASE 
+              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+              THEN COALESCE(p.closing_price, ltp.price, 0) * ISNULL(er.rate, 1.13)
+              ELSE COALESCE(p.closing_price, ltp.price, 0)
+            END
+        END AS price,
+
+        -- Totale marktwaarde van de holding
+        CASE 
+          WHEN @isEur = 1 THEN
+            h.total_quantity * CASE 
+              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+              THEN COALESCE(p.closing_price, ltp.price, 0)
+              ELSE COALESCE(p.closing_price, ltp.price, 0) / ISNULL(er.rate, 1.13)
+            END
+          ELSE
+            h.total_quantity * CASE 
+              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+              THEN COALESCE(p.closing_price, ltp.price, 0) * ISNULL(er.rate, 1.13)
+              ELSE COALESCE(p.closing_price, ltp.price, 0)
+            END
+        END AS value,
+
+        -- Totale inleg geconverteerd naar gevraagde valuta
+        CASE 
+          WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13)))
+          ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd)
+        END AS total_invested,
+
+        -- Gemiddelde aankoopprijs in gevraagde valuta
+        CASE 
+          WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13))) / NULLIF(h.total_quantity, 0)
+          ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd) / NULLIF(h.total_quantity, 0)
+        END AS average_price,
+
+        -- Ongerealiseerde winst / verlies
+        (
+          (CASE 
+            WHEN @isEur = 1 THEN
+              h.total_quantity * CASE 
+                WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+                THEN COALESCE(p.closing_price, ltp.price, 0)
+                ELSE COALESCE(p.closing_price, ltp.price, 0) / ISNULL(er.rate, 1.13)
+              END
+            ELSE
+              h.total_quantity * CASE 
+                WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
+                THEN COALESCE(p.closing_price, ltp.price, 0) * ISNULL(er.rate, 1.13)
+                ELSE COALESCE(p.closing_price, ltp.price, 0)
+              END
+          END)
+          -
+          (CASE 
+            WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13)))
+            ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd)
+          END)
+        ) AS gainLoss
+
       FROM Holdings h
       JOIN Stocks s ON h.aandeel_id = s.aandeel_id
       LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
@@ -1281,7 +1310,7 @@ const getTransactions = async (req, res) => {
       .input('startDate', sql.DateTime, startDate)
       .input('endDate', sql.DateTime, endDate)
       .query(`
-        SELECT t.*, s.ticker_symbol, s.name as stock_name, at.type_name as asset_type, b.name as broker_name,
+        SELECT t.*, s.ticker_symbol, s.name as stock_name, s.isin, at.type_name as asset_type, b.name as broker_name,
                er.rate as historical_exchange_rate
         FROM PF_transactions t
         LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
@@ -1393,20 +1422,24 @@ const fetchAndStorePricesForStock = async (aandeel_id) => {
 
 const addTransaction = async (req, res) => {
   try {
-    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1 } = req.body;
+    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, import_source = 'manual' } = req.body;
     const pool = await sql.connect(config);
+    const isCash = ['DEPOSIT', 'WITHDRAWAL'].includes(transaction_type);
     
-    // Check of transactie al bestaat (Duplicaat check op Tijd, Aandeel, Prijs en Aantal)
+    // Check of transactie al bestaat
     const duplicateCheck = await pool.request()
       .input('user_id', sql.Int, user_id)
-      .input('aandeel_id', sql.Int, aandeel_id)
+      .input('aandeel_id', sql.Int, isCash ? null : aandeel_id)
+      .input('broker_id', sql.Int, broker_id || null)
       .input('transaction_type', sql.VarChar, transaction_type)
       .input('quantity', sql.Decimal(18, 5), quantity)
-      .input('price', sql.Decimal(18, 4), price)
+      .input('price', sql.Decimal(18, 4), isCash ? 1 : price)
       .input('purchase_time', sql.DateTime, purchase_time)
       .query(`
         SELECT 1 FROM PF_transactions
-        WHERE user_id = @user_id AND aandeel_id = @aandeel_id
+        WHERE user_id = @user_id 
+        AND (@aandeel_id IS NULL OR aandeel_id = @aandeel_id)
+        AND (@broker_id IS NULL OR broker_id = @broker_id)
         AND transaction_type = @transaction_type 
         AND ABS(quantity - @quantity) < 0.0001
         AND ABS(price - @price) <= 0.015 
@@ -1419,23 +1452,26 @@ const addTransaction = async (req, res) => {
 
     await pool.request()
       .input('user_id', sql.Int, user_id)
-      .input('aandeel_id', sql.Int, aandeel_id)
+      .input('aandeel_id', sql.Int, isCash ? null : aandeel_id)
       .input('broker_id', sql.Int, broker_id)
       .input('transaction_type', sql.VarChar, transaction_type)
       .input('quantity', sql.Decimal(18, 5), quantity)
       .input('currency', sql.VarChar, currency)
-      .input('price', sql.Decimal(18, 4), price)
+      .input('price', sql.Decimal(18, 4), isCash ? 1 : price)
       .input('purchase_time', sql.DateTime, purchase_time)
       .input('fees', sql.Decimal(18, 4), fees)
       .input('taxes', sql.Decimal(18, 4), taxes)
       .input('exchange_rate', sql.Decimal(18, 6), exchange_rate)
+      .input('import_source', sql.NVarChar, import_source)
       .query(`
-        INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate)
-        VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate)
+        INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate, import_source, created_at, updated_at)
+        VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate, @import_source, GETDATE(), GETDATE())
       `);
 
-    // Synchroniseer prijzen op de achtergrond
-    fetchAndStorePricesForStock(aandeel_id);
+    // Synchroniseer prijzen op de achtergrond alleen indien aandeel_id aanwezig is
+    if (aandeel_id) {
+      fetchAndStorePricesForStock(aandeel_id);
+    }
 
     res.status(201).json({ message: 'Transactie succesvol toegevoegd' });
   } catch (error) {
@@ -1447,9 +1483,20 @@ const addTransaction = async (req, res) => {
 const updateTransaction = async (req, res) => {
   try {
     const { id } = req.params;
-    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1 } = req.body;
+    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, force = false } = req.body;
     const pool = await sql.connect(config);
     
+    // Controleer of de transactie afkomstig is van een broker import
+    const existing = await pool.request().input('id', sql.Int, id).query('SELECT import_source FROM PF_transactions WHERE id = @id');
+    if (existing.recordset.length > 0) {
+      const src = existing.recordset[0].import_source;
+      if (src && src !== 'manual' && !force) {
+        return res.status(403).json({ 
+          message: `Deze transactie is automatisch geïmporteerd via ${src} en kan niet rechtstreeks worden aangepast om de zuiverheid van het grootboek te waarborgen.` 
+        });
+      }
+    }
+
     const result = await pool.request()
       .input('id', sql.Int, id).input('user_id', sql.Int, user_id).input('aandeel_id', sql.Int, aandeel_id).input('broker_id', sql.Int, broker_id)
       .input('transaction_type', sql.VarChar, transaction_type).input('quantity', sql.Decimal(18, 5), quantity).input('currency', sql.VarChar, currency)
@@ -1459,7 +1506,7 @@ const updateTransaction = async (req, res) => {
         UPDATE PF_transactions 
         SET user_id = @user_id, aandeel_id = @aandeel_id, broker_id = @broker_id, transaction_type = @transaction_type, 
             quantity = @quantity, currency = @currency, price = @price, purchase_time = @purchase_time, 
-            fees = @fees, taxes = @taxes, exchange_rate = @exchange_rate
+            fees = @fees, taxes = @taxes, exchange_rate = @exchange_rate, updated_at = GETDATE()
         WHERE id = @id
       `);
     
@@ -1489,45 +1536,159 @@ const addMultipleTransactions = async (req, res) => {
 
     for (const t of transactions) {
       try {
-          let aandeel_id = t.aandeel_id;
+          const isCash = ['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type);
+          let aandeel_id = t.aandeel_id || null;
+          let matchedTicker = t.ticker;
 
-          // Zoek het aandeel_id op basis van ISIN (DeGiro) of Ticker (eToro/Template)
-          if (!aandeel_id) {
+          // 1. Zoek aandeel_id op basis van ISIN, Ticker of Naam (alleen voor aandelen/etfs)
+          if (!isCash && !aandeel_id) {
               let stockResult;
-              if (t.isin) {
-                  stockResult = await pool.request().input('isin', sql.VarChar, t.isin).query(`SELECT aandeel_id FROM Stocks WHERE isin = @isin`);
+              const cleanIsin = t.isin ? String(t.isin).trim().toUpperCase() : null;
+              const cleanTicker = t.ticker ? String(t.ticker).trim().toUpperCase() : null;
+              const cleanName = t.ticker ? String(t.ticker).trim() : '';
+
+              // A. Zoek op ISIN
+              if (cleanIsin) {
+                  stockResult = await pool.request()
+                      .input('isin', sql.VarChar, cleanIsin)
+                      .query(`SELECT aandeel_id, ticker_symbol, name, isin FROM Stocks WHERE isin = @isin`);
               }
-              if ((!stockResult || stockResult.recordset.length === 0) && t.ticker) {
-                  stockResult = await pool.request().input('ticker', sql.NVarChar, t.ticker).query(`SELECT aandeel_id FROM Stocks WHERE ticker_symbol = @ticker`);
+
+              // B. Zoek op Ticker Symbol
+              if ((!stockResult || stockResult.recordset.length === 0) && cleanTicker) {
+                  stockResult = await pool.request()
+                      .input('ticker', sql.NVarChar, cleanTicker)
+                      .query(`SELECT aandeel_id, ticker_symbol, name, isin FROM Stocks WHERE ticker_symbol = @ticker`);
               }
-              
-              if (stockResult.recordset.length > 0) aandeel_id = stockResult.recordset[0].aandeel_id;
-              else { errors++; continue; } // Aandeel niet in DB
+
+              // C. Zoek op Bedrijfsnaam (voor DeGiro Product namen zoals "APPLE INC.")
+              if ((!stockResult || stockResult.recordset.length === 0) && cleanName) {
+                  stockResult = await pool.request()
+                      .input('namePattern', sql.NVarChar, `%${cleanName}%`)
+                      .query(`SELECT TOP 1 aandeel_id, ticker_symbol, name, isin FROM Stocks WHERE name LIKE @namePattern OR @namePattern LIKE '%' + name + '%'`);
+              }
+
+              // D. Als niet gevonden in DB: Doe realtime lookup via Yahoo Finance search op ISIN of Naam
+              if ((!stockResult || stockResult.recordset.length === 0) && (cleanIsin || cleanName)) {
+                  try {
+                      const lookupQuery = cleanIsin || cleanName;
+                      const yResponse = await axios.get(`https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(lookupQuery)}`, {
+                          headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' },
+                          timeout: 5000
+                      });
+
+                      const firstQuote = yResponse.data?.quotes?.[0];
+                      if (firstQuote && firstQuote.symbol) {
+                          const resolvedSymbol = firstQuote.symbol.toUpperCase();
+                          const resolvedName = firstQuote.shortname || firstQuote.longname || cleanName || resolvedSymbol;
+                          const isEtf = firstQuote.quoteType === 'ETF';
+
+                          // Check of deze resolvedSymbol al in DB bestaat
+                          const checkSym = await pool.request()
+                              .input('sym', sql.NVarChar, resolvedSymbol)
+                              .query(`SELECT aandeel_id, ticker_symbol, isin FROM Stocks WHERE ticker_symbol = @sym`);
+
+                          if (checkSym.recordset.length > 0) {
+                              aandeel_id = checkSym.recordset[0].aandeel_id;
+                              matchedTicker = checkSym.recordset[0].ticker_symbol;
+                              // Update ISIN als die nog leeg was
+                              if (cleanIsin && !checkSym.recordset[0].isin) {
+                                  await pool.request().input('aid', sql.Int, aandeel_id).input('isin', sql.VarChar, cleanIsin)
+                                      .query(`UPDATE Stocks SET isin = @isin WHERE aandeel_id = @aid`);
+                              }
+                          } else {
+                              // Voeg nieuw aandeel toe aan Stocks tabel!
+                              const insertStock = await pool.request()
+                                  .input('ticker', sql.NVarChar, resolvedSymbol)
+                                  .input('name', sql.NVarChar, resolvedName)
+                                  .input('isin', sql.VarChar, cleanIsin || null)
+                                  .input('asset_type_id', sql.Int, isEtf ? 2 : 1)
+                                  .input('stock_exchange_id', sql.Int, 1)
+                                  .query(`
+                                      INSERT INTO Stocks (ticker_symbol, name, isin, asset_type_id, stock_exchange_id, inWatchlist, inIdealePortfolio)
+                                      OUTPUT INSERTED.aandeel_id
+                                      VALUES (@ticker, @name, @isin, @asset_type_id, @stock_exchange_id, 0, 0)
+                                  `);
+                              if (insertStock.recordset.length > 0) {
+                                  aandeel_id = insertStock.recordset[0].aandeel_id;
+                                  matchedTicker = resolvedSymbol;
+                              }
+                          }
+                      }
+                  } catch (yahooErr) {
+                      console.warn('Yahoo ISIN lookup fout:', yahooErr.message);
+                  }
+              }
+
+              if (!aandeel_id && stockResult && stockResult.recordset.length > 0) {
+                  aandeel_id = stockResult.recordset[0].aandeel_id;
+                  matchedTicker = stockResult.recordset[0].ticker_symbol;
+                  // Update ISIN als die nog leeg was in DB
+                  if (cleanIsin && !stockResult.recordset[0].isin) {
+                      await pool.request().input('aid', sql.Int, aandeel_id).input('isin', sql.VarChar, cleanIsin)
+                          .query(`UPDATE Stocks SET isin = @isin WHERE aandeel_id = @aid`);
+                  }
+              }
           }
-          if (!aandeel_id) { errors++; continue; }
 
-          // Duplicaat check
+          if (!isCash && !aandeel_id) { 
+              console.warn(`Kon aandeel niet matchen voor ticker: ${t.ticker}, isin: ${t.isin}`);
+              errors++; 
+              continue; 
+          }
+
+          // 2. Duplicaat check op datum, aandeel, type, qty en prijs
           const duplicateCheck = await pool.request()
-            .input('user_id', sql.Int, t.user_id || 1).input('aandeel_id', sql.Int, aandeel_id).input('transaction_type', sql.VarChar, t.transaction_type)
-            .input('quantity', sql.Decimal(18, 5), t.quantity).input('price', sql.Decimal(18, 4), t.price).input('purchase_time', sql.DateTime, t.purchase_time)
-            .query(`SELECT 1 FROM PF_transactions WHERE user_id = @user_id AND aandeel_id = @aandeel_id AND transaction_type = @transaction_type AND ABS(quantity - @quantity) < 0.0001 AND ABS(price - @price) <= 0.015 AND CAST(purchase_time AS DATE) = CAST(@purchase_time AS DATE)`);
-
-          if (duplicateCheck.recordset.length > 0) { duplicates++; continue; }
-
-          // Invoegen
-          await pool.request()
-            .input('user_id', sql.Int, t.user_id || 1).input('aandeel_id', sql.Int, aandeel_id).input('broker_id', sql.Int, t.broker_id || 1)
-            .input('transaction_type', sql.VarChar, t.transaction_type).input('quantity', sql.Decimal(18, 5), t.quantity).input('currency', sql.VarChar, t.currency || 'USD')
-            .input('price', sql.Decimal(18, 4), t.price).input('purchase_time', sql.DateTime, t.purchase_time)
-            .input('fees', sql.Decimal(18, 4), t.fees || 0).input('taxes', sql.Decimal(18, 4), t.taxes || 0).input('exchange_rate', sql.Decimal(18, 6), t.exchange_rate || 1)
+            .input('user_id', sql.Int, t.user_id || 1)
+            .input('aandeel_id', sql.Int, isCash ? null : aandeel_id)
+            .input('broker_id', sql.Int, t.broker_id || null)
+            .input('transaction_type', sql.VarChar, t.transaction_type)
+            .input('quantity', sql.Decimal(18, 5), Math.abs(t.quantity))
+            .input('price', sql.Decimal(18, 4), isCash ? 1 : Math.abs(t.price))
+            .input('purchase_time', sql.DateTime, t.purchase_time)
             .query(`
-              INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate)
-              VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate)
+              SELECT 1 FROM PF_transactions 
+              WHERE user_id = @user_id 
+              AND ((@aandeel_id IS NULL AND aandeel_id IS NULL) OR (aandeel_id = @aandeel_id))
+              AND (@broker_id IS NULL OR broker_id = @broker_id)
+              AND transaction_type = @transaction_type 
+              AND ABS(quantity - @quantity) < 0.0001 
+              AND ABS(price - @price) <= 0.02 
+              AND CAST(purchase_time AS DATE) = CAST(@purchase_time AS DATE)
             `);
+
+          if (duplicateCheck.recordset.length > 0) { 
+              duplicates++; 
+              continue; 
+          }
+
+          const rowImportSource = t.import_source || req.body.import_source || 'degiro_upload';
+          const externalId = t.external_id || t.order_id || null;
+
+          // 3. Invoegen in PF_transactions
+          await pool.request()
+            .input('user_id', sql.Int, t.user_id || 1)
+            .input('aandeel_id', sql.Int, aandeel_id)
+            .input('broker_id', sql.Int, t.broker_id || 1)
+            .input('transaction_type', sql.VarChar, t.transaction_type)
+            .input('quantity', sql.Decimal(18, 5), Math.abs(t.quantity))
+            .input('currency', sql.VarChar, t.currency || 'USD')
+            .input('price', sql.Decimal(18, 4), Math.abs(t.price))
+            .input('purchase_time', sql.DateTime, t.purchase_time)
+            .input('fees', sql.Decimal(18, 4), t.fees || 0)
+            .input('taxes', sql.Decimal(18, 4), t.taxes || 0)
+            .input('exchange_rate', sql.Decimal(18, 6), t.exchange_rate || 1)
+            .input('import_source', sql.NVarChar, rowImportSource)
+            .input('external_id', sql.NVarChar, externalId)
+            .query(`
+              INSERT INTO PF_transactions (user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees, taxes, exchange_rate, import_source, external_id, created_at, updated_at)
+              VALUES (@user_id, @aandeel_id, @broker_id, @transaction_type, @quantity, @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate, @import_source, @external_id, GETDATE(), GETDATE())
+            `);
+
           added++;
           importedAandeelIds.add(aandeel_id);
       } catch (rowError) {
-          console.error('Fout bij verwerken specifieke rij:', rowError);
+          console.error('Fout bij verwerken specifieke transactierij:', rowError);
           errors++;
       }
     }
@@ -1537,17 +1698,35 @@ const addMultipleTransactions = async (req, res) => {
         fetchAndStorePricesForStock(aandeel_id);
     }
 
-    res.status(200).json({ message: `Import voltooid! Toegevoegd: ${added}, Duplicaten overgeslagen: ${duplicates}, Fouten/Onbekende tickers: ${errors}.` });
+    res.status(200).json({ 
+        message: `Import voltooid! Toegevoegd: ${added}, Duplicaten overgeslagen: ${duplicates}, Fouten/Niet herkend: ${errors}.`,
+        added,
+        duplicates,
+        errors
+    });
   } catch (error) {
     console.error('Fout bij importeren van meerdere transacties:', error);
-    res.status(500).json({ message: 'Serverfout bij bulk import.' });
+    res.status(500).json({ message: 'Serverfout bij bulk import: ' + error.message });
   }
 };
 
 const deleteTransaction = async (req, res) => {
   try {
     const { id } = req.params;
+    const { force = false } = req.query;
     const pool = await sql.connect(config);
+
+    // Controleer of transactie afkomstig is van een broker import
+    const existing = await pool.request().input('id', sql.Int, id).query('SELECT import_source FROM PF_transactions WHERE id = @id');
+    if (existing.recordset.length > 0) {
+      const src = existing.recordset[0].import_source;
+      if (src && src !== 'manual' && String(force) !== 'true') {
+        return res.status(403).json({ 
+          message: `Deze transactie is automatisch geïmporteerd via ${src} en kan niet zomaar worden verwijderd om het grootboek intact te houden.` 
+        });
+      }
+    }
+
     const result = await pool.request()
       .input('id', sql.Int, id)
       .query('DELETE FROM PF_transactions WHERE id = @id');
@@ -2109,6 +2288,746 @@ const getBenchmarkHistory = async (req, res) => {
     }
 };
 
+/**
+ * Genereert de Strategie Assistent data en concrete signalen voor het huidige portfolio van de gebruiker.
+ * Vergelijkt huidige posities met de optimale Super-Kwaliteit strategie (Score 5, intrinsieke waardering <= 1.3x, 200 SMA, lage schuld).
+ */
+const getStrategyAdvisorData = async (req, res) => {
+    try {
+        const userId = req.query.userId || 1;
+        const currency = req.query.currency || 'EUR';
+        const maxPriceToIntrinsic = parseFloat(req.query.maxPriceToIntrinsic || 1.3);
+        const takeProfitRatio = parseFloat(req.query.takeProfitRatio || 2.0);
+        const maxDebtRatio = parseFloat(req.query.maxDebtRatio || 1.0);
+        const isEur = currency === 'EUR';
+
+        const pool = await sql.connect(config);
+
+        // 1. Haal wisselkoers op
+        const fxResult = await pool.request().query(`
+            SELECT TOP 1 rate, date 
+            FROM DailyExchangeRates 
+            WHERE currency_pair = 'EURUSD'
+            ORDER BY date DESC
+        `);
+        const latestFxRate = (fxResult.recordset.length > 0 && fxResult.recordset[0].rate > 0) 
+            ? fxResult.recordset[0].rate 
+            : 1.08;
+
+        // 2. Haal alle huidige actieve posities van de gebruiker op
+        const holdingsQuery = `
+            WITH UserHoldings AS (
+                SELECT
+                    t.aandeel_id,
+                    SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS total_quantity,
+                    SUM(CASE WHEN t.transaction_type = 'BUY' THEN (t.quantity * t.price) WHEN t.transaction_type = 'SELL' THEN -(t.quantity * t.price) ELSE 0 END) AS total_invested
+                FROM PF_transactions t
+                WHERE t.user_id = @userId
+                GROUP BY t.aandeel_id
+                HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
+            ),
+            LatestPrices AS (
+                SELECT aandeel_id, closing_price, date,
+                       ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+                FROM DailyClosingPrices
+            ),
+            LatestTxPrices AS (
+                SELECT aandeel_id, price,
+                       ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY purchase_time DESC) as rn
+                FROM PF_transactions
+                WHERE user_id = @userId
+            )
+            SELECT
+                h.aandeel_id,
+                s.ticker_symbol AS ticker,
+                s.name,
+                ISNULL(at.type_name, 'Aandeel') AS asset_type,
+                s.asset_type_id,
+                h.total_quantity AS quantity,
+                (h.total_invested / NULLIF(h.total_quantity, 0)) AS avg_buy_price_raw,
+                COALESCE(p.closing_price, ltp.price, 0) AS current_price_raw,
+                p.date AS last_price_date
+            FROM UserHoldings h
+            JOIN Stocks s ON h.aandeel_id = s.aandeel_id
+            LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+            LEFT JOIN LatestPrices p ON h.aandeel_id = p.aandeel_id AND p.rn = 1
+            LEFT JOIN LatestTxPrices ltp ON h.aandeel_id = ltp.aandeel_id AND ltp.rn = 1;
+        `;
+
+        const holdingsResult = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(holdingsQuery);
+        
+        const rawHoldings = holdingsResult.recordset;
+
+        // 3. Haal alle individuele kwaliteitsaandelen op (voor analyse holdings én ontdekken nieuwe top-aankoopkandidaten)
+        const stocksQuery = `
+            WITH RankedCalculations AS (
+                SELECT 
+                    sc.stock_id,
+                    sc.waarde_verdeling,
+                    sc.intrinsieke_waarde,
+                    sc.selectiecriteria,
+                    sc.period_end_date,
+                    ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.period_end_date DESC) as rn
+                FROM stock_calculations sc
+            ),
+            LatestStockPrices AS (
+                SELECT aandeel_id, closing_price, date,
+                       ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+                FROM DailyClosingPrices
+            )
+            SELECT 
+                s.aandeel_id,
+                s.ticker_symbol AS ticker,
+                s.name,
+                ISNULL(at.type_name, 'Aandeel') AS asset_type,
+                s.asset_type_id,
+                rc.waarde_verdeling,
+                rc.intrinsieke_waarde,
+                rc.selectiecriteria,
+                rc.period_end_date,
+                lp.closing_price AS current_price,
+                lp.date AS last_price_date
+            FROM Stocks s
+            LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+            LEFT JOIN RankedCalculations rc ON s.aandeel_id = rc.stock_id AND rc.rn = 1
+            LEFT JOIN LatestStockPrices lp ON s.aandeel_id = lp.aandeel_id AND lp.rn = 1
+            WHERE s.asset_type_id = 1 OR s.asset_type_id IS NULL OR s.inWatchlist = 1 OR s.inIdealePortfolio = 1;
+        `;
+
+        const stocksResult = await pool.request().query(stocksQuery);
+        const allStocks = stocksResult.recordset;
+
+        // 4. Haal historische slotkoersen op voor 200 SMA berekening
+        const pricesQuery = `
+            SELECT aandeel_id, closing_price, date
+            FROM DailyClosingPrices
+            ORDER BY aandeel_id, date ASC;
+        `;
+        const pricesResult = await pool.request().query(pricesQuery);
+        const pricesByStock = new Map();
+        for (const row of pricesResult.recordset) {
+            if (!pricesByStock.has(row.aandeel_id)) {
+                pricesByStock.set(row.aandeel_id, []);
+            }
+            pricesByStock.get(row.aandeel_id).push(row);
+        }
+
+        // 5. Haal meest recente fundamentele balansdata op voor schuldgraad
+        const debtQuery = `
+            SELECT stock_id, data_type, value, period_end_date
+            FROM fundamental_data
+            WHERE data_type IN ('LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity')
+            ORDER BY stock_id, period_end_date DESC;
+        `;
+        const debtResult = await pool.request().query(debtQuery);
+        const debtByStock = new Map();
+        for (const row of debtResult.recordset) {
+            if (!debtByStock.has(row.stock_id)) {
+                debtByStock.set(row.stock_id, {});
+            }
+            const stockMap = debtByStock.get(row.stock_id);
+            if (!stockMap[row.data_type]) {
+                stockMap[row.data_type] = row.value;
+            }
+        }
+
+        // Helper: bereken 200 SMA
+        const calculateSma200 = (stockId) => {
+            const history = pricesByStock.get(stockId) || [];
+            if (history.length < 20) return null;
+            const windowSize = Math.min(200, history.length);
+            const slice = history.slice(-windowSize);
+            const sum = slice.reduce((acc, p) => acc + (parseFloat(p.closing_price) || 0), 0);
+            return sum / slice.length;
+        };
+
+        // Helper: bereken schuldgraad (Totale schuld / Eigen vermogen)
+        const calculateDebtRatio = (stockId) => {
+            const data = debtByStock.get(stockId);
+            if (!data) return null;
+            const liab = data['Liabilities'] || data['LiabilitiesCurrent'] || 0;
+            const equity = data['StockholdersEquity'] || 0;
+            if (equity <= 0) return liab > 0 ? 999 : null;
+            return liab / equity;
+        };
+
+        // Helper: valutaconversie
+        const toDisplayCurrency = (val, ticker, assetType) => {
+            if (val === null || val === undefined || isNaN(val)) return 0;
+            const isEurStock = (ticker && (ticker.endsWith('.DE') || ticker.endsWith('.AS') || ticker.endsWith('.BR'))) || assetType === 'ETF';
+            if (isEur) {
+                return isEurStock ? val : val / latestFxRate;
+            } else {
+                return isEurStock ? val * latestFxRate : val;
+            }
+        };
+
+        // 6. Verwerk de huidige holdings van de gebruiker
+        let totalPortfolioValue = 0;
+        let totalPortfolioCost = 0;
+        const evaluatedHoldings = [];
+
+        for (const h of rawHoldings) {
+            const currentPriceConverted = toDisplayCurrency(h.current_price_raw, h.ticker, h.asset_type);
+            const avgBuyPriceConverted = toDisplayCurrency(h.avg_buy_price_raw, h.ticker, h.asset_type);
+            const holdingValue = h.quantity * currentPriceConverted;
+            const holdingCost = h.quantity * avgBuyPriceConverted;
+
+            totalPortfolioValue += holdingValue;
+            totalPortfolioCost += holdingCost;
+
+            const stockDetails = allStocks.find(s => s.aandeel_id === h.aandeel_id);
+            const sma200Raw = calculateSma200(h.aandeel_id);
+            const sma200 = sma200Raw !== null ? toDisplayCurrency(sma200Raw, h.ticker, h.asset_type) : null;
+            const debtRatio = calculateDebtRatio(h.aandeel_id);
+
+            const intrinsicValueRaw = stockDetails?.intrinsieke_waarde || null;
+            const intrinsicValue = intrinsicValueRaw !== null ? toDisplayCurrency(intrinsicValueRaw, h.ticker, h.asset_type) : null;
+            const priceToIntrinsicRatio = (intrinsicValue && intrinsicValue > 0) ? (currentPriceConverted / intrinsicValue) : null;
+            const score = stockDetails?.selectiecriteria ?? 5;
+            const waardeVerdeling = stockDetails?.waarde_verdeling || 0;
+            const isAbove200Sma = sma200 !== null ? (currentPriceConverted >= sma200) : true;
+            const isLowDebt = debtRatio !== null ? (debtRatio <= maxDebtRatio) : true;
+
+            // Bepaal het signaal
+            let actionType = 'HOLD';
+            let actionLabel = '🟡 Behouden';
+            let actionSeverity = 'neutral';
+            let actionReason = 'Positie voldoet aan kwaliteitsstandaarden en ligt netjes binnen de bandbreedte.';
+            let isAligned = true;
+
+            if (h.asset_type === 'ETF' || h.asset_type_id === 2) {
+                actionType = 'ETF_INDEX';
+                actionLabel = 'ℹ️ Index ETF';
+                actionSeverity = 'info';
+                actionReason = 'Brede index-tracker. Geen fundamentele DCF waardering; behoud als veilige kern of herinvesteer geleidelijk in Super-Kwaliteit.';
+                isAligned = true;
+            } else if (priceToIntrinsicRatio !== null && priceToIntrinsicRatio >= takeProfitRatio) {
+                actionType = 'TAKE_PROFIT';
+                actionLabel = '💰 Winstnemen';
+                actionSeverity = 'warning';
+                actionReason = `Koers (${priceToIntrinsicRatio.toFixed(2)}x intrinsiek) is fors overgewaardeerd (> ${takeProfitRatio}x). Neem (deel)winst en herinvesteer in ondergewaardeerde kwaliteitsaandelen.`;
+                isAligned = false;
+            } else if (!isAbove200Sma) {
+                actionType = 'TRIM_DOWNTREND';
+                actionLabel = '🔴 Afbouwen (Trendbreuk)';
+                actionSeverity = 'danger';
+                actionReason = `Koers is onder het 200-daags gemiddelde (${sma200 ? sma200.toFixed(2) : '-'}) gezakt. Beperk neerwaarts marktrisico.`;
+                isAligned = false;
+            } else if (score < 5 || (debtRatio !== null && debtRatio > maxDebtRatio)) {
+                actionType = 'TRIM_FUNDAMENTAL';
+                actionLabel = '🔴 Afbouwen (Zwakker Fundament)';
+                actionSeverity = 'danger';
+                actionReason = `Score (${score}/5) of schuldgraad (${debtRatio ? debtRatio.toFixed(2) : '-'}) voldoet niet aan de Super-Kwaliteit eisen.`;
+                isAligned = false;
+            } else if (score >= 5 && priceToIntrinsicRatio !== null && priceToIntrinsicRatio <= maxPriceToIntrinsic && isAbove200Sma && isLowDebt) {
+                actionType = 'BUY_MORE';
+                actionLabel = '🟢 Kopen / Uitbreiden';
+                actionSeverity = 'success';
+                actionReason = `Topkwaliteit (Score 5/5), ondergewaardeerd (${priceToIntrinsicRatio.toFixed(2)}x intrinsiek) en in stijgende trend. Eerste keuze voor nieuwe inleg!`;
+                isAligned = true;
+            }
+
+            evaluatedHoldings.push({
+                stockId: h.aandeel_id,
+                ticker: h.ticker,
+                name: h.name,
+                assetType: h.asset_type,
+                quantity: h.quantity,
+                avgBuyPrice: avgBuyPriceConverted,
+                currentPrice: currentPriceConverted,
+                holdingValue,
+                holdingCost,
+                profit: holdingValue - holdingCost,
+                profitPct: holdingCost > 0 ? ((holdingValue - holdingCost) / holdingCost) * 100 : 0,
+                intrinsicValue,
+                priceToIntrinsicRatio,
+                sma200,
+                isAbove200Sma,
+                debtRatio,
+                isLowDebt,
+                score,
+                actionType,
+                actionLabel,
+                actionSeverity,
+                actionReason,
+                isAligned
+            });
+        }
+
+        // Voeg gewichten toe aan holdings
+        evaluatedHoldings.forEach(h => {
+            h.weightPct = totalPortfolioValue > 0 ? (h.holdingValue / totalPortfolioValue) * 100 : 0;
+        });
+
+        // 7. Zoek alle Top Aankoopkandidaten van Vandaag uit het hele universum
+        const topBuyCandidates = [];
+        for (const s of allStocks) {
+            // Uitsluitend echte bedrijven (geen ETF's) met een geldige koers
+            if (s.asset_type === 'ETF' || s.asset_type_id === 2 || !s.current_price || s.current_price <= 0) continue;
+
+            const currentPriceConverted = toDisplayCurrency(s.current_price, s.ticker, s.asset_type);
+            const intrinsicValueRaw = s.intrinsieke_waarde;
+            if (!intrinsicValueRaw || intrinsicValueRaw <= 0) continue;
+
+            const intrinsicValueConverted = toDisplayCurrency(intrinsicValueRaw, s.ticker, s.asset_type);
+            const priceToIntrinsicRatio = currentPriceConverted / intrinsicValueConverted;
+            const sma200Raw = calculateSma200(s.aandeel_id);
+            const sma200 = sma200Raw !== null ? toDisplayCurrency(sma200Raw, s.ticker, s.asset_type) : null;
+            const isAbove200Sma = sma200 !== null ? (currentPriceConverted >= sma200) : true;
+            const debtRatio = calculateDebtRatio(s.aandeel_id);
+            const isLowDebt = debtRatio !== null ? (debtRatio <= maxDebtRatio) : true;
+            const score = s.selectiecriteria ?? 5;
+            const waardeVerdeling = s.waarde_verdeling || 0;
+
+            // Kwaliteitscriteria voor Top Aankoop:
+            // Score >= 4 (bij voorkeur 5), koers <= 1.3x intrinsiek, koers > 200 SMA, schuldgraad <= 1.0
+            if (score >= 4 && priceToIntrinsicRatio <= maxPriceToIntrinsic && isAbove200Sma && isLowDebt) {
+                const existingHolding = evaluatedHoldings.find(h => h.stockId === s.aandeel_id);
+                topBuyCandidates.push({
+                    stockId: s.aandeel_id,
+                    ticker: s.ticker,
+                    name: s.name,
+                    score,
+                    waardeVerdeling,
+                    currentPrice: currentPriceConverted,
+                    intrinsicValue: intrinsicValueConverted,
+                    priceToIntrinsicRatio,
+                    discountPct: ((intrinsicValueConverted - currentPriceConverted) / intrinsicValueConverted) * 100,
+                    sma200,
+                    isAbove200Sma,
+                    debtRatio,
+                    currentlyOwned: !!existingHolding,
+                    currentWeightPct: existingHolding ? existingHolding.weightPct : 0,
+                    targetWeightPct: 10.0, // Doelallocatie ~10% per topspreiding
+                    suggestedAction: existingHolding ? 'Positie verder uitbreiden' : 'Nieuwe toppositie openen'
+                });
+            }
+        }
+
+        // Sorteer koopkandidaten op Score (5 eerst) en daarna op de grootste korting op intrinsieke waarde
+        topBuyCandidates.sort((a, b) => {
+            if (b.score !== a.score) return b.score - a.score;
+            return a.priceToIntrinsicRatio - b.priceToIntrinsicRatio;
+        });
+
+        // 8. Bereken het Ideale Portfolio (Top 10 Super-Kwaliteit verdeling)
+        // Selecteer de beste kwaliteitsaandelen uit het universum
+        const idealUniverse = allStocks
+            .filter(s => s.asset_type !== 'ETF' && s.asset_type_id !== 2 && s.current_price > 0 && s.intrinsieke_waarde > 0)
+            .map(s => {
+                const curPrice = toDisplayCurrency(s.current_price, s.ticker, s.asset_type);
+                const intVal = toDisplayCurrency(s.intrinsieke_waarde, s.ticker, s.asset_type);
+                const ratio = curPrice / intVal;
+                const sma = calculateSma200(s.aandeel_id);
+                const debt = calculateDebtRatio(s.aandeel_id);
+                const score = s.selectiecriteria ?? 5;
+                const wv = s.waarde_verdeling || 0;
+                return {
+                    stockId: s.aandeel_id,
+                    ticker: s.ticker,
+                    name: s.name,
+                    score,
+                    waardeVerdeling: wv,
+                    currentPrice: curPrice,
+                    intrinsicValue: intVal,
+                    priceToIntrinsicRatio: ratio,
+                    discountPct: ((intVal - curPrice) / intVal) * 100,
+                    isAbove200Sma: sma !== null ? (curPrice >= toDisplayCurrency(sma, s.ticker, s.asset_type)) : true,
+                    debtRatio: debt
+                };
+            })
+            .filter(s => s.score >= 4 && s.isAbove200Sma && (s.debtRatio === null || s.debtRatio <= maxDebtRatio))
+            .sort((a, b) => {
+                if (b.score !== a.score) return b.score - a.score;
+                return b.waardeVerdeling - a.waardeVerdeling;
+            });
+
+        // 8. Bereken het Ideale Portfolio (Alle Super-Kwaliteit aandelen die aan de criteria voldoen)
+        // Gewogen op basis van de relatieve Waardeverdeling (waarde_verdeling) van de geselecteerde aandelen
+        const topIdealStocks = idealUniverse;
+        const totalIdealWaardeverdeling = topIdealStocks.reduce((sum, s) => sum + (parseFloat(s.waardeVerdeling) > 0 ? parseFloat(s.waardeVerdeling) : 1), 0);
+        
+        const idealPortfolio = topIdealStocks.map(s => {
+            const stockWv = (parseFloat(s.waardeVerdeling) > 0 ? parseFloat(s.waardeVerdeling) : 1);
+            // Proportioneel gewicht naar relatieve Waardeverdeling
+            const targetWeightPct = totalIdealWaardeverdeling > 0 
+                ? ((stockWv / totalIdealWaardeverdeling) * 100) 
+                : (100 / topIdealStocks.length);
+
+            const targetValueEur = totalPortfolioValue > 0 ? (totalPortfolioValue * (targetWeightPct / 100)) : 1000;
+            const targetShares = s.currentPrice > 0 ? (targetValueEur / s.currentPrice) : 0;
+            const currentHolding = evaluatedHoldings.find(h => h.stockId === s.stockId);
+            const currentWeightPct = currentHolding ? currentHolding.weightPct : 0;
+            const currentValueEur = currentHolding ? currentHolding.holdingValue : 0;
+            const currentShares = currentHolding ? currentHolding.quantity : 0;
+
+            return {
+                stockId: s.stockId,
+                ticker: s.ticker,
+                name: s.name,
+                score: s.score,
+                currentPrice: s.currentPrice,
+                intrinsicValue: s.intrinsicValue,
+                discountPct: s.discountPct,
+                priceToIntrinsicRatio: s.priceToIntrinsicRatio,
+                targetWeightPct: parseFloat(targetWeightPct.toFixed(1)),
+                targetValueEur: parseFloat(targetValueEur.toFixed(2)),
+                targetShares: parseFloat(targetShares.toFixed(2)),
+                currentWeightPct: parseFloat(currentWeightPct.toFixed(1)),
+                currentValueEur: parseFloat(currentValueEur.toFixed(2)),
+                currentShares: parseFloat(currentShares.toFixed(2)),
+                diffValueEur: parseFloat((targetValueEur - currentValueEur).toFixed(2)),
+                diffShares: parseFloat((targetShares - currentShares).toFixed(2))
+            };
+        });
+
+        // Helper: formatteer euro
+        const formatEur = (v) => '€ ' + (v || 0).toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+        // 9. Exact Actieplan met concrete Bedragen (€), Stuks en Timing-triggers
+        const exactActions = [];
+
+        // Actie A: Winstnemen (Wanneer koers > 2.0x intrinsiek)
+        const takeProfitHoldings = evaluatedHoldings.filter(h => h.actionType === 'TAKE_PROFIT');
+        takeProfitHoldings.forEach(h => {
+            // Room 50% af als koers tussen 2.0x en 2.5x is, 100% als > 2.5x
+            const sellRatio = (h.priceToIntrinsicRatio >= 2.5) ? 1.0 : 0.5;
+            const sellAmountEur = h.holdingValue * sellRatio;
+            const sellShares = h.quantity * sellRatio;
+
+            exactActions.push({
+                type: 'TAKE_PROFIT',
+                badge: '💰 Winstnemen',
+                ticker: h.ticker,
+                name: h.name,
+                actionVerb: sellRatio === 1.0 ? 'Volledig Verkopen (100%)' : 'Winst Afromen (50%)',
+                amountEur: parseFloat(sellAmountEur.toFixed(2)),
+                shares: parseFloat(sellShares.toFixed(2)),
+                currentPrice: h.currentPrice,
+                currentWeightPct: parseFloat(h.weightPct.toFixed(1)),
+                timingTrigger: `Koers (${h.priceToIntrinsicRatio.toFixed(2)}x intrinsiek) is extreem overgewaardeerd. Voer order in bij de opening.`,
+                rationale: `Stel ${formatEur(sellAmountEur)} veilig om direct te herbeleggen in 5/5 koopkansen.`
+            });
+        });
+
+        // Actie B: Snoeien / Roteren (Alleen gekoppeld aan beschikbare koopkansen!)
+        const trimHoldings = evaluatedHoldings.filter(h => h.actionType.startsWith('TRIM'));
+        trimHoldings.forEach((h, idx) => {
+            // Koppel aan een van de top koopkandidaten (Snoeien voor herinvestering)
+            const targetBuy = topBuyCandidates[idx % Math.max(1, topBuyCandidates.length)];
+            const sellAmountEur = h.holdingValue;
+            const sellShares = h.quantity;
+            const buyShares = targetBuy && targetBuy.currentPrice > 0 ? (sellAmountEur / targetBuy.currentPrice) : 0;
+
+            exactActions.push({
+                type: 'TRIM_ROTATE',
+                badge: '🔄 Snoeien & Roteren',
+                ticker: h.ticker,
+                name: h.name,
+                actionVerb: 'Sluiten & Herinvesteren',
+                amountEur: parseFloat(sellAmountEur.toFixed(2)),
+                shares: parseFloat(sellShares.toFixed(2)),
+                currentPrice: h.currentPrice,
+                currentWeightPct: parseFloat(h.weightPct.toFixed(1)),
+                targetRotateTicker: targetBuy ? targetBuy.ticker : null,
+                targetRotateShares: parseFloat(buyShares.toFixed(2)),
+                timingTrigger: targetBuy 
+                    ? `Snoei ${h.ticker} alleen om DIRECT ${targetBuy.ticker} aan te kopen (wacht op MACD koopsignaal / koers > 200 SMA van ${targetBuy.ticker}).`
+                    : `Snoei ${h.ticker} wegens trendbreuk / zwakker kwartaalresultaat.`,
+                rationale: targetBuy
+                    ? `Verkoop ${parseFloat(sellShares.toFixed(2))} stuks ${h.ticker} (€${sellAmountEur.toFixed(0)}) en koop circa ${parseFloat(buyShares.toFixed(2))} stuks ${targetBuy.ticker} (Score 5/5, ${targetBuy.discountPct.toFixed(0)}% korting).`
+                    : `Beperk risico op verzwakte positie.`
+            });
+        });
+
+        // Actie C: Bijkopen / Uitbreiden van Top Kansen
+        topBuyCandidates.slice(0, 4).forEach(c => {
+            const idealHolding = idealPortfolio.find(i => i.ticker === c.ticker);
+            const targetTotalValue = idealHolding ? idealHolding.targetValueEur : (totalPortfolioValue * 0.10);
+            const currentOwnedValue = c.currentlyOwned ? (evaluatedHoldings.find(h => h.ticker === c.ticker)?.holdingValue || 0) : 0;
+            const neededBuyAmountEur = Math.max(0, targetTotalValue - currentOwnedValue);
+            const neededShares = c.currentPrice > 0 ? (neededBuyAmountEur / c.currentPrice) : 0;
+
+            if (neededBuyAmountEur > 50) {
+                exactActions.push({
+                    type: 'BUY_TARGET',
+                    badge: '🟢 Doel-Aankoop',
+                    ticker: c.ticker,
+                    name: c.name,
+                    actionVerb: c.currentlyOwned ? 'Positie Bijkopen' : 'Nieuwe Positie Openen',
+                    amountEur: parseFloat(neededBuyAmountEur.toFixed(2)),
+                    shares: parseFloat(neededShares.toFixed(2)),
+                    currentPrice: c.currentPrice,
+                    currentWeightPct: parseFloat(c.currentWeightPct.toFixed(1)),
+                    targetWeightPct: parseFloat((idealHolding?.targetWeightPct || 10).toFixed(1)),
+                    timingTrigger: `MACD Instap: Koop zodra de MACD Histogram groen kleurt of bij markt-dip boven de 200 SMA.`,
+                    rationale: `Score 5/5 met ${c.discountPct.toFixed(0)}% intrinsieke korting. Doelstreefbedrag: ${formatEur(targetTotalValue)} (${idealHolding?.targetWeightPct || 10}% van portefeuille conform Waardeverdeling).`
+                });
+            }
+        });
+
+        // 10. Data-Gedreven Meldingen Feed (MACD Alert triggers op exacte datum met Cash-Koppeling)
+        const balanceQuery = `
+            SELECT SUM(amount) as total
+            FROM AvailableBalances ab
+            WHERE ab.update_date = (
+                SELECT MAX(update_date)
+                FROM AvailableBalances ab2
+                WHERE ab2.balance_type_id = ab.balance_type_id
+            )
+        `;
+        const balanceResult = await pool.request().query(balanceQuery);
+        const availableCashBalance = balanceResult.recordset[0]?.total || 0;
+
+        const recentAlertsQuery = `
+            SELECT TOP 50 a.alert_id, a.aandeel_id, s.ticker_symbol, s.name, a.date, a.type_melding, 
+                   a.prijs_op_moment, a.signal_line_value, a.trade_amount
+            FROM [dbo].[MACDAlerts] a
+            JOIN [dbo].[Stocks] s ON a.aandeel_id = s.aandeel_id
+            WHERE (s.inIdealePortfolio = 1 OR s.inWatchlist = 1 OR a.aandeel_id IN (
+                SELECT DISTINCT aandeel_id FROM PF_transactions
+            ))
+            ORDER BY a.date DESC, a.alert_id DESC
+        `;
+        const alertsDbRes = await pool.request().query(recentAlertsQuery);
+        const rawAlerts = alertsDbRes.recordset || [];
+
+        // Bereken de actuele vrije cash
+        let availableCash = availableCashBalance;
+
+        // Bouw concrete datagedreven meldingen
+        const dataDrivenAlerts = [];
+        
+        // 1. KOOPSIGNALEN: Enkel MACD Koopsignalen tonen voor Super-Kwaliteit aandelen (Score >= 4)
+        rawAlerts
+            .filter(a => a.type_melding === 'Koopsignaal')
+            .forEach(rawAlert => {
+                const ticker = rawAlert.ticker_symbol;
+                const alertDateStr = new Date(rawAlert.date).toISOString().split('T')[0];
+                const alertPrice = rawAlert.prijs_op_moment || 0;
+                
+                const idealItem = idealPortfolio.find(i => i.ticker === ticker);
+                const currentHolding = evaluatedHoldings.find(h => h.ticker === ticker);
+                const stockDetails = allStocks.find(s => s.ticker === ticker);
+                const score = idealItem?.score || stockDetails?.waarde_verdeling || 0;
+
+                // Alleen tonen als het aandeel aan de kwaliteitsstandaard voldoet (Score >= 4 of in ideaal universum)
+                if (score < 4 && !idealItem) return;
+
+                // Doelbedrag bepalen
+                const targetEur = idealItem ? idealItem.targetValueEur : (totalPortfolioValue * 0.10);
+                const currentOwned = currentHolding ? currentHolding.holdingValue : 0;
+                let actionAmountEur = Math.max(0, targetEur - currentOwned);
+                if (actionAmountEur < 50 && rawAlert.trade_amount > 0) {
+                    actionAmountEur = rawAlert.trade_amount;
+                }
+                const actionShares = alertPrice > 0 ? (actionAmountEur / alertPrice) : 0;
+
+                if (actionAmountEur <= 10) return;
+
+                let fundingSource = null;
+                let linkedSales = [];
+
+                if (availableCash >= actionAmountEur) {
+                    fundingSource = {
+                        status: 'DIRECT_CASH',
+                        badge: '🟢 Vrije Cash Beschikbaar',
+                        message: `Voldoende vrije cash (€${availableCash.toFixed(2)}) om direct uit te voeren.`
+                    };
+                } else {
+                    const shortfallEur = actionAmountEur - availableCash;
+                    let coveredEur = 0;
+                    const potentialSellCandidates = [
+                        ...takeProfitHoldings.filter(h => h.ticker !== ticker),
+                        ...trimHoldings.filter(h => h.ticker !== ticker)
+                    ];
+
+                    for (const cand of potentialSellCandidates) {
+                        if (coveredEur >= shortfallEur) break;
+                        const neededFromCand = Math.min(cand.holdingValue, shortfallEur - coveredEur);
+                        const candShares = cand.currentPrice > 0 ? (neededFromCand / cand.currentPrice) : 0;
+                        
+                        linkedSales.push({
+                            ticker: cand.ticker,
+                            name: cand.name,
+                            reason: cand.actionType === 'TAKE_PROFIT' ? 'Winst Verzilveren (Overgewaardeerd)' : 'Verlies Beperken (Onder 200 SMA / Zwakker)',
+                            sharesToSell: parseFloat(candShares.toFixed(2)),
+                            amountToSellEur: parseFloat(neededFromCand.toFixed(2)),
+                            currentPrice: cand.currentPrice
+                        });
+                        coveredEur += neededFromCand;
+                    }
+
+                    fundingSource = {
+                        status: 'ROTATION_REQUIRED',
+                        badge: '⚠️ Cash Vrijmaken via Verkoop',
+                        shortfallEur: parseFloat(shortfallEur.toFixed(2)),
+                        message: `Onvoldoende vrije cash (€${availableCash.toFixed(0)} beschikbaar). Voer op ${alertDateStr} onderstaande verkoop uit om €${actionAmountEur.toFixed(0)} vrij te maken:`
+                    };
+                }
+
+                dataDrivenAlerts.push({
+                    alertId: rawAlert.alert_id,
+                    date: alertDateStr,
+                    ticker: ticker,
+                    name: rawAlert.name,
+                    signalType: 'Koopsignaal',
+                    badge: '🟢 Koopsignaal (MACD Golden Cross)',
+                    signalLineValue: rawAlert.signal_line_value,
+                    priceAtAlert: alertPrice,
+                    amountEur: parseFloat(actionAmountEur.toFixed(2)),
+                    shares: parseFloat(actionShares.toFixed(2)),
+                    targetWeightPct: idealItem ? parseFloat(idealItem.targetWeightPct.toFixed(1)) : null,
+                    fundamentalScore: score,
+                    fundingSource: fundingSource,
+                    linkedSales: linkedSales
+                });
+            });
+
+        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Uitsluitend bij fundamentele verslechtering Score < 5 of trendbreuk)
+        // Overgewaardeerde posities worden NOOIT zomaar verkocht, enkel als financiering bij een aankoopkandidaat (linkedSales)
+        evaluatedHoldings.forEach(h => {
+            if (h.actionType === 'TRIM_FUNDAMENTAL') {
+                dataDrivenAlerts.push({
+                    alertId: 91000 + h.stockId,
+                    date: new Date().toISOString().split('T')[0],
+                    ticker: h.ticker,
+                    name: h.name,
+                    signalType: 'Verkoopsignaal',
+                    badge: '🔴 Verkoopsignaal (Score < 5)',
+                    priceAtAlert: h.currentPrice,
+                    amountEur: parseFloat(h.holdingValue.toFixed(2)),
+                    shares: parseFloat(h.quantity.toFixed(2)),
+                    targetWeightPct: 0,
+                    fundamentalScore: h.score,
+                    fundingSource: {
+                        status: 'PROTECT_CAPITAL',
+                        badge: '🛑 Kapitaal Beschermen',
+                        message: `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5 of te hoge schulden). Sluit positie (100%) om kapitaal te beschermen.`
+                    },
+                    linkedSales: []
+                });
+            } else if (h.actionType === 'TRIM_DOWNTREND') {
+                dataDrivenAlerts.push({
+                    alertId: 92000 + h.stockId,
+                    date: new Date().toISOString().split('T')[0],
+                    ticker: h.ticker,
+                    name: h.name,
+                    signalType: 'Verkoopsignaal',
+                    badge: '🔴 Afbouwen (Onder 200 SMA)',
+                    priceAtAlert: h.currentPrice,
+                    amountEur: parseFloat(h.holdingValue.toFixed(2)),
+                    shares: parseFloat(h.quantity.toFixed(2)),
+                    targetWeightPct: 0,
+                    fundamentalScore: h.score,
+                    fundingSource: {
+                        status: 'TREND_PROTECTION',
+                        badge: '📉 Trendbreuk',
+                        message: `Koers is onder het 200-daags gemiddelde gezakt. Snoei deze positie bij voorkeur alleen als er een betere 5/5 koopkans klaarstaat.`
+                    },
+                    linkedSales: []
+                });
+            }
+        });
+
+        // Sorteer alle meldingen op datum nieuwste eerst
+        dataDrivenAlerts.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+        // 10. Bereken de samenvatting en de Strategie Alignment Score
+        const alignedValue = evaluatedHoldings
+            .filter(h => h.isAligned)
+            .reduce((acc, h) => acc + h.holdingValue, 0);
+
+        const alignmentPercentage = totalPortfolioValue > 0 
+            ? (alignedValue / totalPortfolioValue) * 100 
+            : 100;
+
+        const actionSummary = {
+            buyMoreCount: evaluatedHoldings.filter(h => h.actionType === 'BUY_MORE').length,
+            holdCount: evaluatedHoldings.filter(h => h.actionType === 'HOLD' || h.actionType === 'ETF_INDEX').length,
+            takeProfitCount: evaluatedHoldings.filter(h => h.actionType === 'TAKE_PROFIT').length,
+            trimCount: evaluatedHoldings.filter(h => h.actionType.startsWith('TRIM')).length,
+            topBuyCandidatesCount: topBuyCandidates.length
+        };
+
+        // 11. Concrete Actiepunten genereren
+        const actionItems = [];
+        
+        // Stap 1: Winstnemen
+        if (takeProfitHoldings.length > 0) {
+            actionItems.push({
+                step: 1,
+                type: 'TAKE_PROFIT',
+                badge: '💰 Winstnemen',
+                title: `Room winst af op ${takeProfitHoldings.length} overgewaardeerde positie(s)`,
+                description: `Aandelen zoals ${takeProfitHoldings.map(h => h.ticker).join(', ')} noteren fors boven hun intrinsieke waarde (> ${takeProfitRatio}x). Door hier winst te nemen stel je rendement veilig.`,
+                tickers: takeProfitHoldings.map(h => h.ticker)
+            });
+        }
+
+        // Stap 2: Risicobescherming / Afbouw
+        if (trimHoldings.length > 0) {
+            actionItems.push({
+                step: 2,
+                type: 'TRIM',
+                badge: '🔴 Risico Beperken',
+                title: `Bouw ${trimHoldings.length} verzwakte positie(s) af`,
+                description: `Posities zoals ${trimHoldings.map(h => h.ticker).join(', ')} zijn onder hun 200 SMA gezakt of hebben een lagere fundamentele score. Sluit deze om bearmarkt-verliezen te vermijden.`,
+                tickers: trimHoldings.map(h => h.ticker)
+            });
+        }
+
+        // Stap 3: Aankoop & Herallocatie
+        if (topBuyCandidates.length > 0) {
+            const top3 = topBuyCandidates.slice(0, 3);
+            actionItems.push({
+                step: 3,
+                type: 'BUY',
+                badge: '🟢 Doel-Investering',
+                title: `Allokeer nieuwe inleg of vrijgekomen cash naar de Top Koopkansen`,
+                description: `De hoogste verwachte alpha ligt momenteel bij: ${top3.map(c => `${c.ticker} (${c.score}/5, ${c.discountPct > 0 ? c.discountPct.toFixed(0) + '% korting' : c.priceToIntrinsicRatio.toFixed(2) + 'x'})`).join(' • ')}.`,
+                tickers: top3.map(c => c.ticker)
+            });
+        }
+
+        // 12. Data Freshness Status
+        const todayStr = new Date().toISOString().split('T')[0];
+        const lastUpdatedDate = allStocks.reduce((max, s) => {
+            if (!s.last_price_date) return max;
+            const d = new Date(s.last_price_date).toISOString().split('T')[0];
+            return d > max ? d : max;
+        }, '1970-01-01');
+
+        res.json({
+            currency,
+            totalPortfolioValue,
+            totalPortfolioCost,
+            totalProfit: totalPortfolioValue - totalPortfolioCost,
+            totalProfitPct: totalPortfolioCost > 0 ? ((totalPortfolioValue - totalPortfolioCost) / totalPortfolioCost) * 100 : 0,
+            alignmentPercentage,
+            actionSummary,
+            actionItems,
+            exactActions,
+            idealPortfolio,
+            dataDrivenAlerts,
+            holdings: evaluatedHoldings,
+            topBuyCandidates,
+            dataFreshness: {
+                lastUpdatedDate,
+                isUpdatedToday: lastUpdatedDate >= todayStr,
+                fxRate: latestFxRate
+            }
+        });
+
+    } catch (err) {
+        console.error('Fout bij ophalen Strategy Advisor data:', err);
+        res.status(500).json({ message: 'Fout bij genereren Strategy Advisor data', error: err.message });
+    }
+};
+
 module.exports = {
   recalculateAndStorePortfolioHistory,
   getPortfolioValues,
@@ -2125,5 +3044,6 @@ module.exports = {
   markTobPaid,
   forceUpdateExchangeRates,
   applyStockSplit,
-  getBenchmarkHistory
+  getBenchmarkHistory,
+  getStrategyAdvisorData
 };
