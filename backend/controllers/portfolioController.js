@@ -2368,6 +2368,8 @@ const getStrategyAdvisorData = async (req, res) => {
                     sc.waarde_verdeling,
                     sc.intrinsieke_waarde,
                     sc.selectiecriteria,
+                    sc.waardefactor_LTD_equity,
+                    sc.ltd_equity_mean,
                     sc.period_end_date,
                     ROW_NUMBER() OVER(PARTITION BY sc.stock_id ORDER BY sc.period_end_date DESC) as rn
                 FROM stock_calculations sc
@@ -2384,14 +2386,18 @@ const getStrategyAdvisorData = async (req, res) => {
                 ISNULL(at.type_name, 'Aandeel') AS asset_type,
                 s.asset_type_id,
                 rc.waarde_verdeling,
+                rc_prev.waarde_verdeling AS prev_waarde_verdeling,
                 rc.intrinsieke_waarde,
                 rc.selectiecriteria,
+                rc.waardefactor_LTD_equity,
+                rc.ltd_equity_mean,
                 rc.period_end_date,
                 lp.closing_price AS current_price,
                 lp.date AS last_price_date
             FROM Stocks s
             LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
             LEFT JOIN RankedCalculations rc ON s.aandeel_id = rc.stock_id AND rc.rn = 1
+            LEFT JOIN RankedCalculations rc_prev ON s.aandeel_id = rc_prev.stock_id AND rc_prev.rn = 2
             LEFT JOIN LatestStockPrices lp ON s.aandeel_id = lp.aandeel_id AND lp.rn = 1
             WHERE s.asset_type_id = 1 OR s.asset_type_id IS NULL OR s.inWatchlist = 1 OR s.inIdealePortfolio = 1;
         `;
@@ -2414,25 +2420,6 @@ const getStrategyAdvisorData = async (req, res) => {
             pricesByStock.get(row.aandeel_id).push(row);
         }
 
-        // 5. Haal meest recente fundamentele balansdata op voor schuldgraad
-        const debtQuery = `
-            SELECT stock_id, data_type, value, period_end_date
-            FROM fundamental_data
-            WHERE data_type IN ('LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity')
-            ORDER BY stock_id, period_end_date DESC;
-        `;
-        const debtResult = await pool.request().query(debtQuery);
-        const debtByStock = new Map();
-        for (const row of debtResult.recordset) {
-            if (!debtByStock.has(row.stock_id)) {
-                debtByStock.set(row.stock_id, {});
-            }
-            const stockMap = debtByStock.get(row.stock_id);
-            if (!stockMap[row.data_type]) {
-                stockMap[row.data_type] = row.value;
-            }
-        }
-
         // Helper: bereken 200 SMA
         const calculateSma200 = (stockId) => {
             const history = pricesByStock.get(stockId) || [];
@@ -2443,14 +2430,10 @@ const getStrategyAdvisorData = async (req, res) => {
             return sum / slice.length;
         };
 
-        // Helper: bereken schuldgraad (Totale schuld / Eigen vermogen)
-        const calculateDebtRatio = (stockId) => {
-            const data = debtByStock.get(stockId);
-            if (!data) return null;
-            const liab = data['Liabilities'] || data['LiabilitiesCurrent'] || 0;
-            const equity = data['StockholdersEquity'] || 0;
-            if (equity <= 0) return liab > 0 ? 999 : null;
-            return liab / equity;
+        // Helper: bereken schuldgraad (LTD / Eigen Vermogen uit kwartaalberekeningen)
+        const getStockDebtRatio = (stockDetails) => {
+            if (!stockDetails) return 0;
+            return stockDetails.ltd_equity_mean ?? stockDetails.waardefactor_LTD_equity ?? 0;
         };
 
         // Helper: valutaconversie
@@ -2481,15 +2464,20 @@ const getStrategyAdvisorData = async (req, res) => {
             const stockDetails = allStocks.find(s => s.aandeel_id === h.aandeel_id);
             const sma200Raw = calculateSma200(h.aandeel_id);
             const sma200 = sma200Raw !== null ? toDisplayCurrency(sma200Raw, h.ticker, h.asset_type) : null;
-            const debtRatio = calculateDebtRatio(h.aandeel_id);
+            const debtRatio = getStockDebtRatio(stockDetails);
 
             const intrinsicValueRaw = stockDetails?.intrinsieke_waarde || null;
             const intrinsicValue = intrinsicValueRaw !== null ? toDisplayCurrency(intrinsicValueRaw, h.ticker, h.asset_type) : null;
             const priceToIntrinsicRatio = (intrinsicValue && intrinsicValue > 0) ? (currentPriceConverted / intrinsicValue) : null;
             const score = stockDetails?.selectiecriteria ?? 5;
             const waardeVerdeling = stockDetails?.waarde_verdeling || 0;
+            const prevWaardeVerdeling = stockDetails?.prev_waarde_verdeling ?? null;
+            const isWvDropping = (score === 5 && prevWaardeVerdeling !== null && waardeVerdeling < prevWaardeVerdeling && prevWaardeVerdeling > 0);
+            const wvDropFraction = isWvDropping ? Math.min(1, Math.max(0, (prevWaardeVerdeling - waardeVerdeling) / prevWaardeVerdeling)) : 0;
+            const wvDropPct = wvDropFraction * 100;
+
             const isAbove200Sma = sma200 !== null ? (currentPriceConverted >= sma200) : true;
-            const isLowDebt = debtRatio !== null ? (debtRatio <= maxDebtRatio) : true;
+            const isLowDebt = debtRatio <= maxDebtRatio;
 
             // Bepaal het signaal
             let actionType = 'HOLD';
@@ -2508,19 +2496,25 @@ const getStrategyAdvisorData = async (req, res) => {
                 actionType = 'TAKE_PROFIT';
                 actionLabel = '💰 Winstnemen';
                 actionSeverity = 'warning';
-                actionReason = `Koers (${priceToIntrinsicRatio.toFixed(2)}x intrinsiek) is fors overgewaardeerd (> ${takeProfitRatio}x). Neem (deel)winst en herinvesteer in ondergewaardeerde kwaliteitsaandelen.`;
+                actionReason = `Koers (${priceToIntrinsicRatio.toFixed(2)}x intrinsiek) is fors overgewaardeerd (> ${takeProfitRatio}x). Behoud als sterke winnaar, of room af bij rotatie naar een nieuw ondergewaardeerd 5/5 aandeel.`;
+                isAligned = true;
+            } else if (score < 5) {
+                actionType = 'TRIM_FUNDAMENTAL';
+                actionLabel = '🔴 Afbouwen (Score < 5)';
+                actionSeverity = 'danger';
+                actionReason = `Score (${score}/5) voldoet niet meer aan de Super-Kwaliteit eisen. Sluit positie om kapitaal te beschermen.`;
+                isAligned = false;
+            } else if (isWvDropping && wvDropPct >= 2.0) {
+                actionType = 'PARTIAL_TRIM_WV';
+                actionLabel = `🔴 Deelverkoop (-${wvDropPct.toFixed(1)}%)`;
+                actionSeverity = 'warning';
+                actionReason = `Score is 5/5, maar de Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(1)}% naar ${waardeVerdeling.toFixed(1)}% (-${wvDropPct.toFixed(1)}%). Verkoop ${wvDropPct.toFixed(1)}% van deze positie conform de strategie.`;
                 isAligned = false;
             } else if (!isAbove200Sma) {
                 actionType = 'TRIM_DOWNTREND';
                 actionLabel = '🔴 Afbouwen (Trendbreuk)';
                 actionSeverity = 'danger';
-                actionReason = `Koers is onder het 200-daags gemiddelde (${sma200 ? sma200.toFixed(2) : '-'}) gezakt. Beperk neerwaarts marktrisico.`;
-                isAligned = false;
-            } else if (score < 5 || (debtRatio !== null && debtRatio > maxDebtRatio)) {
-                actionType = 'TRIM_FUNDAMENTAL';
-                actionLabel = '🔴 Afbouwen (Zwakker Fundament)';
-                actionSeverity = 'danger';
-                actionReason = `Score (${score}/5) of schuldgraad (${debtRatio ? debtRatio.toFixed(2) : '-'}) voldoet niet aan de Super-Kwaliteit eisen.`;
+                actionReason = `Koers is onder het 200-daags gemiddelde (${sma200 ? sma200.toFixed(2) : '-'}) gezakt. Beperk neerwaarts marktrisico bij rotatie.`;
                 isAligned = false;
             } else if (score >= 5 && priceToIntrinsicRatio !== null && priceToIntrinsicRatio <= maxPriceToIntrinsic && isAbove200Sma && isLowDebt) {
                 actionType = 'BUY_MORE';
@@ -2549,6 +2543,10 @@ const getStrategyAdvisorData = async (req, res) => {
                 debtRatio,
                 isLowDebt,
                 score,
+                waardeVerdeling,
+                prevWaardeVerdeling,
+                wvDropFraction,
+                wvDropPct,
                 actionType,
                 actionLabel,
                 actionSeverity,
@@ -2577,8 +2575,8 @@ const getStrategyAdvisorData = async (req, res) => {
             const sma200Raw = calculateSma200(s.aandeel_id);
             const sma200 = sma200Raw !== null ? toDisplayCurrency(sma200Raw, s.ticker, s.asset_type) : null;
             const isAbove200Sma = sma200 !== null ? (currentPriceConverted >= sma200) : true;
-            const debtRatio = calculateDebtRatio(s.aandeel_id);
-            const isLowDebt = debtRatio !== null ? (debtRatio <= maxDebtRatio) : true;
+            const debtRatio = getStockDebtRatio(s);
+            const isLowDebt = debtRatio <= maxDebtRatio;
             const score = s.selectiecriteria ?? 5;
             const waardeVerdeling = s.waarde_verdeling || 0;
 
@@ -2613,8 +2611,8 @@ const getStrategyAdvisorData = async (req, res) => {
             return a.priceToIntrinsicRatio - b.priceToIntrinsicRatio;
         });
 
-        // 8. Bereken het Ideale Portfolio (Top 10 Super-Kwaliteit verdeling)
-        // Selecteer de beste kwaliteitsaandelen uit het universum
+        // 8. Bereken het Ideale Portfolio (Alle Super-Kwaliteit aandelen met Score 5 / >= 4)
+        // Selecteer alle kwaliteitsaandelen uit het universum
         const idealUniverse = allStocks
             .filter(s => s.asset_type !== 'ETF' && s.asset_type_id !== 2 && s.current_price > 0 && s.intrinsieke_waarde > 0)
             .map(s => {
@@ -2622,7 +2620,7 @@ const getStrategyAdvisorData = async (req, res) => {
                 const intVal = toDisplayCurrency(s.intrinsieke_waarde, s.ticker, s.asset_type);
                 const ratio = curPrice / intVal;
                 const sma = calculateSma200(s.aandeel_id);
-                const debt = calculateDebtRatio(s.aandeel_id);
+                const debt = getStockDebtRatio(s);
                 const score = s.selectiecriteria ?? 5;
                 const wv = s.waarde_verdeling || 0;
                 return {
@@ -2639,7 +2637,7 @@ const getStrategyAdvisorData = async (req, res) => {
                     debtRatio: debt
                 };
             })
-            .filter(s => s.score >= 4 && s.isAbove200Sma && (s.debtRatio === null || s.debtRatio <= maxDebtRatio))
+            .filter(s => s.score >= 4)
             .sort((a, b) => {
                 if (b.score !== a.score) return b.score - a.score;
                 return b.waardeVerdeling - a.waardeVerdeling;
@@ -2887,8 +2885,7 @@ const getStrategyAdvisorData = async (req, res) => {
                 });
             });
 
-        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Uitsluitend bij fundamentele verslechtering Score < 5 of trendbreuk)
-        // Overgewaardeerde posities worden NOOIT zomaar verkocht, enkel als financiering bij een aankoopkandidaat (linkedSales)
+        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Uitsluitend bij fundamentele verslechtering Score < 5, Waardeverdeling-daling of trendbreuk)
         evaluatedHoldings.forEach(h => {
             if (h.actionType === 'TRIM_FUNDAMENTAL') {
                 dataDrivenAlerts.push({
@@ -2906,7 +2903,29 @@ const getStrategyAdvisorData = async (req, res) => {
                     fundingSource: {
                         status: 'PROTECT_CAPITAL',
                         badge: '🛑 Kapitaal Beschermen',
-                        message: `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5 of te hoge schulden). Sluit positie (100%) om kapitaal te beschermen.`
+                        message: `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5). Sluit positie (100%) om kapitaal te beschermen.`
+                    },
+                    linkedSales: []
+                });
+            } else if (h.actionType === 'PARTIAL_TRIM_WV') {
+                const sellShares = h.quantity * (h.wvDropFraction || 0.1);
+                const sellAmount = h.holdingValue * (h.wvDropFraction || 0.1);
+                dataDrivenAlerts.push({
+                    alertId: 93000 + h.stockId,
+                    date: new Date().toISOString().split('T')[0],
+                    ticker: h.ticker,
+                    name: h.name,
+                    signalType: 'Verkoopsignaal',
+                    badge: h.actionLabel,
+                    priceAtAlert: h.currentPrice,
+                    amountEur: parseFloat(sellAmount.toFixed(2)),
+                    shares: parseFloat(sellShares.toFixed(2)),
+                    targetWeightPct: parseFloat((h.weightPct * (1 - (h.wvDropFraction || 0.1))).toFixed(1)),
+                    fundamentalScore: h.score,
+                    fundingSource: {
+                        status: 'PARTIAL_TRIM',
+                        badge: '📉 Waardeverdeling Daling',
+                        message: h.actionReason
                     },
                     linkedSales: []
                 });
