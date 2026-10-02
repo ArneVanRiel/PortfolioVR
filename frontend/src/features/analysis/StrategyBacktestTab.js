@@ -150,7 +150,32 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
 
   const applyPreset = (presetType) => {
     setActivePreset(presetType);
-    if (presetType === 'super_quality') {
+    if (presetType === 'current_strategy') {
+      setUsePortfolioRelativeWeight(true);
+      setEnableActiveRebalance(true);
+      setSellOnScoreDrop(true);
+      setUseWaardeverdelingSell(true);
+      setUseTrendFilter200Sma(false); // Kopen onder 200 SMA toegestaan via MACD Golden Cross bodemherstel
+      setMaxPriceToIntrinsicRatio(1.3);
+      setTakeProfitAtIntrinsicRatio(0);
+      setMaxDebtRatio(0);
+      setStopLossPct(0);
+      setMaxPositions(0);
+      setUseMacdSell(false);
+      handleRunBacktest({
+        usePortfolioRelativeWeight: true,
+        enableActiveRebalance: true,
+        sellOnScoreDrop: true,
+        useWaardeverdelingSell: true,
+        useTrendFilter200Sma: false,
+        maxPriceToIntrinsicRatio: 1.3,
+        takeProfitAtIntrinsicRatio: 0,
+        maxDebtRatio: 0,
+        stopLossPct: 0,
+        maxPositions: 0,
+        useMacdSell: false
+      });
+    } else if (presetType === 'super_quality') {
       setUsePortfolioRelativeWeight(true);
       setEnableActiveRebalance(true);
       setSellOnScoreDrop(true);
@@ -723,6 +748,17 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
               </div>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => applyPreset('current_strategy')}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-black transition-all flex items-center gap-1.5 ${
+                  activePreset === 'current_strategy'
+                    ? 'bg-blue-600 text-white shadow-md ring-2 ring-blue-300'
+                    : 'bg-blue-50 text-blue-900 hover:bg-blue-100 border border-blue-300'
+                }`}
+              >
+                <i className="ph-fill ph-star text-amber-400"></i>
+                ⭐ Huidige Live Strategie (+212%)
+              </button>
               <button
                 onClick={() => applyPreset('super_quality')}
                 className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${

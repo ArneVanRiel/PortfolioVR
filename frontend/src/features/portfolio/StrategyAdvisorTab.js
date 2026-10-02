@@ -12,13 +12,103 @@ import { Doughnut } from 'react-chartjs-2';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
+// Sparkline Component voor Kwartaal Waardeverdeling Trend
+const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDropping, compact = false }) => {
+  if (!history || history.length === 0) {
+    if (currentWv !== undefined && currentWv !== null) {
+      return <span className="font-bold text-gray-700">{Number(currentWv).toFixed(1)}%</span>;
+    }
+    return <span className="text-gray-400">-</span>;
+  }
+
+  const values = history.map(h => Number(h.waardeVerdeling) || 0);
+  const minVal = Math.min(...values);
+  const maxVal = Math.max(...values);
+  const min = Math.max(0, minVal * 0.85);
+  const max = maxVal * 1.15 || 1;
+  const range = max - min || 1;
+  
+  const width = compact ? 90 : 130;
+  const height = compact ? 26 : 34;
+  const padding = 3;
+
+  const points = values.map((val, idx) => {
+    const x = padding + (idx / Math.max(1, values.length - 1)) * (width - 2 * padding);
+    const y = height - padding - ((val - min) / range) * (height - 2 * padding);
+    return { x, y, val, date: history[idx]?.date };
+  });
+
+  const pathD = points.reduce((acc, p, idx) => (
+    idx === 0 ? `M ${p.x.toFixed(1)} ${p.y.toFixed(1)}` : `${acc} L ${p.x.toFixed(1)} ${p.y.toFixed(1)}`
+  ), '');
+
+  const areaD = `${pathD} L ${points[points.length - 1].x.toFixed(1)} ${height} L ${points[0].x.toFixed(1)} ${height} Z`;
+
+  const strokeColor = isDropping ? '#ef4444' : '#10b981';
+  const gradId = `wv-grad-${Math.random().toString(36).substring(2, 8)}`;
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between gap-1.5 flex-wrap">
+        <span className="text-[11px] font-bold text-gray-800">
+          WV: <strong className={isDropping ? 'text-rose-600 font-black' : 'text-emerald-700 font-black'}>
+            {Number(currentWv || values[values.length - 1]).toFixed(1)}%
+          </strong>
+        </span>
+        {prevWv !== null && prevWv !== undefined && (
+          <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 ${
+            isDropping ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+          }`}>
+            {isDropping ? '📉' : '📈'} {wvDiff > 0 ? `+${wvDiff.toFixed(1)}%` : `${wvDiff?.toFixed(1)}%`} ({wvDiffPct > 0 ? `+${wvDiffPct.toFixed(1)}%` : `${wvDiffPct?.toFixed(1)}%`})
+          </span>
+        )}
+      </div>
+
+      <div className="relative group flex items-center">
+        <svg width={width} height={height} className="overflow-visible">
+          <defs>
+            <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stopColor={strokeColor} stopOpacity={0.25} />
+              <stop offset="100%" stopColor={strokeColor} stopOpacity={0.0} />
+            </linearGradient>
+          </defs>
+          <path d={areaD} fill={`url(#${gradId})`} />
+          <path d={pathD} fill="none" stroke={strokeColor} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+          {points.map((p, i) => (
+            <circle
+              key={i}
+              cx={p.x.toFixed(1)}
+              cy={p.y.toFixed(1)}
+              r={i === points.length - 1 ? "3.5" : "2"}
+              fill={i === points.length - 1 ? strokeColor : "#ffffff"}
+              stroke={strokeColor}
+              strokeWidth="1.5"
+            >
+              <title>{`${p.date ? new Date(p.date).toLocaleDateString('nl-BE') : 'Kwartaal'}: ${p.val.toFixed(1)}%`}</title>
+            </circle>
+          ))}
+        </svg>
+      </div>
+      
+      {/* Historie kwartaal labels */}
+      {history.length > 1 && (
+        <div className="flex justify-between text-[9px] text-gray-400 font-semibold px-0.5">
+          <span>{history[0]?.date ? new Date(history[0].date).getFullYear() : ''}</span>
+          <span>{history[history.length - 1]?.date ? new Date(history[history.length - 1].date).toLocaleDateString('nl-BE', { month: 'short', year: '2-digit' }) : ''}</span>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const StrategyAdvisorTab = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
   const [activeViewMode, setActiveViewMode] = useState('alerts'); // 'alerts' | 'charts' | 'matrix'
-  const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'BUY' | 'SELL' | 'ROTATION'
+  const [alertLayoutMode, setAlertLayoutMode] = useState('COLUMNS'); // 'COLUMNS' (2-koloms groen/geel) | 'TIMELINE' (lijst)
+  const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'ACTIONABLE' | 'CAUTION' | 'SELL' | 'ROTATION'
   const [matrixFilter, setMatrixFilter] = useState('ALL');
   const [showTimingRules, setShowTimingRules] = useState(false);
 
@@ -179,11 +269,22 @@ const StrategyAdvisorTab = () => {
     if (!matchesSearch) return false;
 
     if (alertFilter === 'ALL') return true;
-    if (alertFilter === 'BUY') return a.signalType === 'Koopsignaal';
+    if (alertFilter === 'ACTIONABLE') return a.isActionableBuy;
+    if (alertFilter === 'CAUTION') return a.isCautionBuy;
     if (alertFilter === 'SELL') return a.signalType === 'Verkoopsignaal';
     if (alertFilter === 'ROTATION') return a.fundingSource?.status === 'ROTATION_REQUIRED';
     return true;
   });
+
+  const actionableBuyAlerts = filteredAlerts.filter(a => a.isActionableBuy && a.signalType === 'Koopsignaal');
+  const cautionBuyAlerts = filteredAlerts.filter(a => a.isCautionBuy && a.signalType === 'Koopsignaal');
+  const sellAlerts = filteredAlerts.filter(a => a.signalType === 'Verkoopsignaal');
+
+  const buyAlertsCount = dataDrivenAlerts.filter(a => a.signalType === 'Koopsignaal').length;
+  const actionableCount = dataDrivenAlerts.filter(a => a.isActionableBuy && a.signalType === 'Koopsignaal').length;
+  const cautionCount = dataDrivenAlerts.filter(a => a.isCautionBuy && a.signalType === 'Koopsignaal').length;
+  const sellAlertsCount = dataDrivenAlerts.filter(a => a.signalType === 'Verkoopsignaal').length;
+  const rotationNeededCount = dataDrivenAlerts.filter(a => a.fundingSource?.status === 'ROTATION_REQUIRED').length;
 
   const filteredHoldings = holdings.filter(h => {
     const matchesSearch = h.ticker.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -199,9 +300,267 @@ const StrategyAdvisorTab = () => {
     return true;
   });
 
-  const buyAlertsCount = dataDrivenAlerts.filter(a => a.signalType === 'Koopsignaal').length;
-  const sellAlertsCount = dataDrivenAlerts.filter(a => a.signalType === 'Verkoopsignaal').length;
-  const rotationNeededCount = dataDrivenAlerts.filter(a => a.fundingSource?.status === 'ROTATION_REQUIRED').length;
+  // Reusable Alert Card Component
+  const renderAlertCard = (alert) => {
+    const isBuy = alert.signalType === 'Koopsignaal';
+    const isActionable = alert.isActionableBuy;
+    const hasLinkedSales = alert.linkedSales && alert.linkedSales.length > 0;
+    const isWvDropping = alert.isWvDown || (alert.wvDiff < 0);
+
+    return (
+      <div
+        key={alert.alertId}
+        className={`bg-white rounded-3xl p-5 border transition-all shadow-xs hover:shadow-md flex flex-col justify-between ${
+          !isBuy 
+            ? 'border-rose-200/90 hover:border-rose-300' 
+            : isActionable 
+            ? 'border-emerald-200 hover:border-emerald-300 bg-gradient-to-b from-white to-emerald-50/20' 
+            : 'border-amber-200 hover:border-amber-300 bg-gradient-to-b from-white to-amber-50/20'
+        }`}
+      >
+        <div className="space-y-4">
+          {/* Top Row: Date, Ticker, Badges */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className={`w-11 h-11 rounded-2xl flex flex-col items-center justify-center font-bold text-center shrink-0 ${
+                !isBuy 
+                  ? 'bg-rose-100 text-rose-800' 
+                  : isActionable 
+                  ? 'bg-emerald-100 text-emerald-800' 
+                  : 'bg-amber-100 text-amber-900'
+              }`}>
+                <span className="text-[9px] uppercase tracking-wider">{new Date(alert.date).toLocaleDateString('nl-BE', { month: 'short' })}</span>
+                <span className="text-sm font-black leading-none">{new Date(alert.date).getDate()}</span>
+              </div>
+
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-lg font-black text-gray-900">{alert.ticker}</span>
+                  <span className="text-xs text-gray-500 font-medium truncate max-w-[140px]" title={alert.name}>{alert.name}</span>
+                  <span className="px-2 py-0.5 bg-amber-100 text-amber-900 rounded font-black text-[10px]">
+                    ★ 5/5
+                  </span>
+                </div>
+                <div className="text-[11px] text-gray-500 mt-0.5">
+                  Signaaldatum: <strong>{alert.date}</strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Badges */}
+            <span className={`px-2.5 py-1 rounded-full text-[11px] font-black border shrink-0 ${
+              !isBuy 
+                ? 'bg-rose-100 text-rose-800 border-rose-200' 
+                : isActionable 
+                ? 'bg-emerald-100 text-emerald-800 border-emerald-200' 
+                : 'bg-amber-100 text-amber-900 border-amber-200'
+            }`}>
+              {isBuy ? (isActionable ? '🟢 Direct Kopen' : '⚠️ Aandacht / Toezicht') : '🔴 Verkoop'}
+            </span>
+          </div>
+
+          {/* Waardeverdeling Sparkline & Daling Inzicht */}
+          <div className="p-3 bg-slate-50/90 rounded-2xl border border-slate-200/80 space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-[11px] font-bold text-gray-700 flex items-center gap-1.5">
+                <i className="ph-bold ph-chart-line text-indigo-600"></i>
+                Waardeverdeling Trend (Kwartalen):
+              </span>
+              {alert.latestQuarterDate && (
+                <span className="text-[10px] text-gray-500">
+                  Laatste kwartaal: <strong>{new Date(alert.latestQuarterDate).toLocaleDateString('nl-BE')}</strong>
+                </span>
+              )}
+            </div>
+
+            <WvSparkline
+              history={alert.wvHistory || []}
+              currentWv={alert.waardeVerdeling}
+              prevWv={alert.prevWaardeVerdeling}
+              wvDiff={alert.wvDiff}
+              wvDiffPct={alert.wvDiffPct}
+              isDropping={isWvDropping}
+            />
+
+            {/* Expliciete Waarschuwing bij Daling */}
+            {isWvDropping && alert.prevWaardeVerdeling !== null && (
+              <div className="p-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-[11px] flex items-start gap-1.5 leading-tight">
+                <i className="ph-fill ph-trend-down text-rose-600 text-sm shrink-0 mt-0.5"></i>
+                <span>
+                  <strong>Waardeverdeling gezakt:</strong> Van {alert.prevWaardeVerdeling.toFixed(1)}% naar {alert.waardeVerdeling.toFixed(1)}% 
+                  <strong className="text-rose-700"> ({alert.wvDiff < 0 ? alert.wvDiff.toFixed(1) : `-${alert.wvDiff}`}% / {alert.wvDiffPct.toFixed(1)}%)</strong>.
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* Waardering Status & Waarschuwing */}
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className="bg-white p-2.5 rounded-xl border border-gray-200 flex flex-col justify-between">
+              <span className="text-[10px] text-gray-400 font-bold uppercase">Koers op Signaal</span>
+              <span className="font-bold text-gray-900">{formatCurrency(alert.priceAtAlert)}</span>
+            </div>
+
+            <div className="bg-white p-2.5 rounded-xl border border-gray-200 flex flex-col justify-between">
+              <span className="text-[10px] text-gray-400 font-bold uppercase">Waardering (x Intr.)</span>
+              <span className={`font-black ${
+                alert.priceToIntrinsicRatio <= 1.0 
+                  ? 'text-emerald-700' 
+                  : alert.priceToIntrinsicRatio <= 1.3 
+                  ? 'text-teal-700' 
+                  : 'text-amber-800'
+              }`}>
+                {alert.priceToIntrinsicRatio ? `${alert.priceToIntrinsicRatio.toFixed(2)}x` : '-'}
+                {alert.isOvervalued && <span className="text-[10px] font-bold text-amber-700 block">(Overgewaardeerd)</span>}
+              </span>
+            </div>
+          </div>
+
+          {/* Live Koersvergelijking & Late Koopkans Inzicht */}
+          {alert.currentPrice && (
+            <div className={`p-3 rounded-2xl border text-xs space-y-2 ${
+              alert.isCheaperNow 
+                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-950' 
+                : 'bg-slate-50 border-slate-200 text-slate-800'
+            }`}>
+              <div className="flex items-center justify-between flex-wrap gap-1">
+                <span className="font-extrabold flex items-center gap-1.5">
+                  <i className={`ph-fill ${alert.isCheaperNow ? 'ph-sparkle text-emerald-600' : 'ph-clock text-slate-500'}`}></i>
+                  {alert.isLatestAlertForStock ? '⭐ Laatste Koopsignaal' : 'Signaal vs Huidige Koers'}
+                </span>
+                {alert.currentPriceDate && (
+                  <span className="text-[10px] text-gray-500">
+                    Laatste slotkoers van: <strong>{new Date(alert.currentPriceDate).toLocaleDateString('nl-BE')}</strong>
+                  </span>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-0.5">
+                <div className="bg-white/90 p-2 rounded-xl border border-gray-200/80">
+                  <span className="text-[9px] text-gray-400 font-bold uppercase block">Op Signaaldatum ({alert.date})</span>
+                  <span className="font-bold text-gray-800">{formatCurrency(alert.priceAtAlert)}</span>
+                </div>
+
+                <div className="bg-white/90 p-2 rounded-xl border border-gray-200/80">
+                  <span className="text-[9px] text-gray-400 font-bold uppercase block">Huidige Slotkoers</span>
+                  <span className={`font-black ${alert.isCheaperNow ? 'text-emerald-700 font-black' : 'text-gray-900'}`}>
+                    {formatCurrency(alert.currentPrice)}
+                  </span>
+                </div>
+
+                <div className={`p-2 rounded-xl border col-span-2 sm:col-span-1 flex flex-col justify-between ${
+                  alert.isCheaperNow ? 'bg-emerald-100/70 border-emerald-300' : 'bg-white/90 border-gray-200/80'
+                }`}>
+                  <span className="text-[9px] text-gray-500 font-bold uppercase block">Koersverschil</span>
+                  <span className={`font-black text-xs ${alert.isCheaperNow ? 'text-emerald-800' : 'text-slate-700'}`}>
+                    {alert.priceDiffSinceAlertPct > 0 ? `+${alert.priceDiffSinceAlertPct.toFixed(1)}%` : `${alert.priceDiffSinceAlertPct?.toFixed(1)}%`}
+                    {alert.isCheaperNow ? ' (Goedkoper!)' : ''}
+                  </span>
+                </div>
+              </div>
+
+              {/* Late Koopkans Toelichting */}
+              {alert.isLateBuyOpportunity && (
+                <div className="p-2 rounded-xl bg-emerald-100/90 border border-emerald-300 text-emerald-900 text-[11px] flex items-center gap-1.5 font-semibold">
+                  <i className="ph-fill ph-check-circle text-emerald-700 text-sm shrink-0"></i>
+                  <span>
+                    <strong>Late Koopkans:</strong> Noteert momenteel {Math.abs(alert.priceDiffSinceAlertPct).toFixed(1)}% goedkoper dan op de signaaldatum zonder nieuwe kwartaalwijzigingen.
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {alert.warning && (
+            <div className="px-3 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5 leading-snug">
+              <i className="ph-fill ph-warning text-amber-600 text-sm shrink-0 mt-0.5"></i>
+              <span>{alert.warning}</span>
+            </div>
+          )}
+
+          {/* Positiegrootte Inzicht: Bezit op meldingsdatum vs Ideaal Doel */}
+          {isBuy && alert.targetValueEur !== null && (
+            <div className="p-2.5 bg-indigo-50/70 rounded-xl border border-indigo-100/90 text-xs flex items-center justify-between">
+              <div>
+                <span className="text-[10px] text-indigo-600 font-bold uppercase tracking-wider block">
+                  In bezit op {alert.date}:
+                </span>
+                <span className="font-bold text-gray-900">
+                  {alert.currentShares > 0 
+                    ? `${alert.currentShares} stuks (${formatCurrency(alert.currentOwnedEur)})` 
+                    : '0 stuks (Nog niet in bezit)'}
+                </span>
+              </div>
+              <div className="text-right">
+                <span className="text-[10px] text-indigo-600 font-bold uppercase tracking-wider block">
+                  Streefdoel ({alert.targetWeightPct}%):
+                </span>
+                <span className="font-extrabold text-indigo-900">
+                  {alert.targetShares ? `${alert.targetShares} stuks` : '-'} ({formatCurrency(alert.targetValueEur)})
+                </span>
+              </div>
+            </div>
+          )}
+
+          {/* Transactie Box */}
+          <div className="bg-slate-900 text-white p-3.5 rounded-2xl flex items-center justify-between">
+            <div>
+              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Aankooporder</div>
+              <div className="text-sm font-black text-emerald-400">
+                KOOP {alert.shares} stuks
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Totaal Bedrag</div>
+              <div className="text-base font-black text-white privacy-blur">
+                {isIncognito ? '€ ••••••' : formatCurrency(alert.amountEur)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Financiering & Rotatie Logica */}
+        {isBuy && alert.fundingSource && (
+          <div className="mt-3 pt-3 border-t border-gray-100">
+            {alert.fundingSource.status === 'DIRECT_CASH' ? (
+              <div className="bg-emerald-50 text-emerald-900 p-2.5 rounded-xl border border-emerald-200 text-[11px] flex items-center gap-2">
+                <i className="ph-fill ph-check-circle text-emerald-600 text-sm shrink-0"></i>
+                <span className="font-semibold">{alert.fundingSource.message}</span>
+              </div>
+            ) : (
+              <div className="bg-amber-50 rounded-xl p-3 border border-amber-200 space-y-2">
+                <div className="flex items-center gap-1.5 text-[11px] font-bold text-amber-900">
+                  <i className="ph-fill ph-warning text-amber-600 text-sm shrink-0"></i>
+                  <span>{alert.fundingSource.message}</span>
+                </div>
+
+                {hasLinkedSales && (
+                  <div className="space-y-1.5 pt-1">
+                    {alert.linkedSales.map((sale) => (
+                      <div key={sale.ticker} className="bg-white p-2 rounded-lg border border-amber-200 text-[11px] flex items-center justify-between">
+                        <div>
+                          <div className="font-bold text-gray-900">
+                            <span className="text-rose-600 font-black">VERKOOP</span> {sale.ticker}
+                          </div>
+                          <div className="text-[10px] text-gray-500">{sale.reason}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="font-bold text-amber-900">{sale.sharesToSell} stuks</div>
+                          <div className="font-black text-gray-900 privacy-blur">
+                            {isIncognito ? '€ ••••••' : formatCurrency(sale.amountToSellEur)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -227,7 +586,7 @@ const StrategyAdvisorTab = () => {
               Data-Gedreven Beslissingen & Meldingen op Datum
             </h1>
             <p className="text-slate-300 text-sm sm:text-base max-w-2xl leading-relaxed">
-              Beslissingen direct gebaseerd op <strong>MACD crossovers op exacte datums</strong>. Bij een koopsignaal met te weinig cash berekent het systeem direct de benodigde verkooporders om de transactie te financieren.
+              Beslissingen direct gebaseerd op <strong>MACD crossovers op exacte datums</strong>. Groene koopsignalen (ondergewaardeerd & sterke waardeverdeling) staan gescheiden van gele toezichtssignalen.
             </p>
           </div>
 
@@ -261,21 +620,21 @@ const StrategyAdvisorTab = () => {
             </div>
           </div>
           <div className="bg-emerald-950/30 p-3.5 rounded-xl border border-emerald-800/40">
-            <div className="text-xs text-emerald-400 font-medium">🟢 MACD Koopsignalen</div>
+            <div className="text-xs text-emerald-400 font-medium">🟢 Directe Koopkansen</div>
             <div className="text-lg font-bold text-emerald-300 mt-1">
-              {buyAlertsCount} meldingen
+              {actionableCount} meldingen
+            </div>
+          </div>
+          <div className="bg-amber-950/30 p-3.5 rounded-xl border border-amber-800/40">
+            <div className="text-xs text-amber-400 font-medium">⚠️ Aandacht / Overgewaardeerd</div>
+            <div className="text-lg font-bold text-amber-300 mt-1">
+              {cautionCount} meldingen
             </div>
           </div>
           <div className="bg-rose-950/30 p-3.5 rounded-xl border border-rose-800/40">
             <div className="text-xs text-rose-400 font-medium">🔴 Verkoopsignalen</div>
             <div className="text-lg font-bold text-rose-300 mt-1">
               {sellAlertsCount} meldingen
-            </div>
-          </div>
-          <div className="bg-amber-950/30 p-3.5 rounded-xl border border-amber-800/40">
-            <div className="text-xs text-amber-400 font-medium">⚠️ Verkooprotatie Nodig</div>
-            <div className="text-lg font-bold text-amber-300 mt-1">
-              {rotationNeededCount} orders
             </div>
           </div>
         </div>
@@ -324,7 +683,7 @@ const StrategyAdvisorTab = () => {
           className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl border border-indigo-200/80 transition-all flex items-center gap-1.5"
         >
           <i className="ph-fill ph-info text-indigo-600"></i>
-          {showTimingRules ? 'Verberg Timing-Regels' : '📖 Data-Regels: MACD Crossover / Cash Rotatie'}
+          {showTimingRules ? 'Verberg Uitleg' : '📖 Uitleg: Groen vs Geel & MACD Data'}
         </button>
       </div>
 
@@ -333,37 +692,37 @@ const StrategyAdvisorTab = () => {
         <div className="bg-gradient-to-r from-blue-50/80 via-indigo-50/60 to-purple-50/80 rounded-2xl p-6 border border-indigo-200/80 space-y-4 animate-fade-in shadow-xs">
           <div className="flex items-center gap-2 text-indigo-900 font-extrabold text-sm">
             <i className="ph-fill ph-book-open-text text-xl text-indigo-600"></i>
-            Data-Gedreven Beslissingsregels: Hoe werkt het systeem?
+            Data-Gedreven Beslissingsregels: Hoe worden de meldingen gegenereerd?
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs text-gray-700">
-            <div className="bg-white p-4 rounded-xl border border-blue-200 shadow-2xs space-y-2">
-              <div className="font-bold text-blue-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
-                <i className="ph-fill ph-chart-line-up text-blue-600 text-base"></i>
-                1. MACD Koopsignaal op Vaste Datum
+            <div className="bg-white p-4 rounded-xl border border-emerald-200 shadow-2xs space-y-2">
+              <div className="font-bold text-emerald-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
+                <i className="ph-fill ph-check-circle text-emerald-600 text-base"></i>
+                🟢 Kolom 1: Directe Koopkansen
               </div>
               <p className="leading-relaxed">
-                Op de exacte beursdag dat de <strong>MACD-lijn de signaallijn opwaarts kruist</strong> (onder de nullijn) en de score $\ge 4$ is, genereert het systeem een <strong>Koopmelding</strong> met het exacte aantal stuks en bedrag volgens de Waardeverdeling.
+                MACD koopsignalen voor <strong>Score 5/5</strong> aandelen die <strong>ondergewaardeerd zijn ($\le 1.3\times$ intrinsieke waarde)</strong> én waarvan de Waardeverdeling stabiel is of stijgt. Dit zijn de eerste keuzes voor nieuwe inleg.
               </p>
             </div>
 
             <div className="bg-white p-4 rounded-xl border border-amber-200 shadow-2xs space-y-2">
               <div className="font-bold text-amber-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
-                <i className="ph-fill ph-arrows-left-right text-amber-600 text-base"></i>
-                2. Automatische Verkoop bij Te Weinig Cash
+                <i className="ph-fill ph-warning text-amber-600 text-base"></i>
+                ⚠️ Kolom 2: Aandacht / Overgewaardeerd
               </div>
               <p className="leading-relaxed">
-                Is er op de signaaldatum <strong>onvoldoende vrije cash</strong>? Dan berekent het systeem direct op die datum welke overgewaardeerde of verzwakte posities verkocht moeten worden om de transactie te financieren.
+                MACD crossovers van aandelen die <strong>overgewaardeerd zijn ($> 1.3\times$)</strong> of waarvan de <strong>Waardeverdeling recent gedaald is</strong>. Deze staan onder toezicht en worden in de strategie defensief geremd.
               </p>
             </div>
 
-            <div className="bg-white p-4 rounded-xl border border-emerald-200 shadow-2xs space-y-2">
-              <div className="font-bold text-emerald-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
-                <i className="ph-fill ph-file-text text-emerald-600 text-base"></i>
-                3. Kwartaal & Trendbreuk Verkoopsignalen
+            <div className="bg-white p-4 rounded-xl border border-blue-200 shadow-2xs space-y-2">
+              <div className="font-bold text-blue-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
+                <i className="ph-fill ph-database text-blue-600 text-base"></i>
+                Historische Reikwijdte & Opslag
               </div>
               <p className="leading-relaxed">
-                Zodra een positie <strong>onder de 200 SMA zakt</strong> of na nieuwe SEC kwartaalcijfers fundamenteel verslechtert, verschijnt direct een gedateerd verkoopsignaal om kapitaal te beschermen.
+                Meldingen worden <strong>permanent opgeslagen in de database</strong> zodra een MACD crossover plaatsvindt. De historie reikt terug over de afgelopen 2 jaar (sinds juni 2024).
               </p>
             </div>
           </div>
@@ -374,36 +733,65 @@ const StrategyAdvisorTab = () => {
       {activeViewMode === 'alerts' && (
         <div className="space-y-6">
           
-          {/* Filter & Zoekbalk */}
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-200 shadow-2xs">
-            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+          {/* Filter & Weergave Toggle */}
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-200 shadow-2xs">
+            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+              {/* Layout Mode Toggle */}
+              <div className="flex bg-slate-100 p-1 rounded-xl mr-2">
+                <button
+                  onClick={() => setAlertLayoutMode('COLUMNS')}
+                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                    alertLayoutMode === 'COLUMNS'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                  title="Toon aparte kolommen voor groene vs gele koopsignalen"
+                >
+                  <i className="ph-bold ph-columns text-sm"></i>
+                  2 Kolommen (Groen vs Geel)
+                </button>
+                <button
+                  onClick={() => setAlertLayoutMode('TIMELINE')}
+                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                    alertLayoutMode === 'TIMELINE'
+                      ? 'bg-white text-indigo-700 shadow-xs'
+                      : 'text-gray-600 hover:text-gray-900'
+                  }`}
+                  title="Toon chronologische lijst"
+                >
+                  <i className="ph-bold ph-list-dashes text-sm"></i>
+                  Lijstweergave
+                </button>
+              </div>
+
+              {/* Status Filters */}
               <button
                 onClick={() => setAlertFilter('ALL')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'ALL' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
               >
-                Alle Signalen ({dataDrivenAlerts.length})
+                Alles ({dataDrivenAlerts.length})
               </button>
               <button
-                onClick={() => setAlertFilter('BUY')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'BUY' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
+                onClick={() => setAlertFilter('ACTIONABLE')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'ACTIONABLE' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
               >
-                🟢 Koopsignalen ({buyAlertsCount})
+                🟢 Directe Koop ({actionableCount})
+              </button>
+              <button
+                onClick={() => setAlertFilter('CAUTION')}
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'CAUTION' ? 'bg-amber-600 text-white shadow-xs' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
+              >
+                ⚠️ Aandacht ({cautionCount})
               </button>
               <button
                 onClick={() => setAlertFilter('SELL')}
                 className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'SELL' ? 'bg-rose-600 text-white shadow-xs' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
               >
-                🔴 Verkoopsignalen ({sellAlertsCount})
-              </button>
-              <button
-                onClick={() => setAlertFilter('ROTATION')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'ROTATION' ? 'bg-amber-600 text-white shadow-xs' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
-              >
-                ⚠️ Met Verkoopkoppeling ({rotationNeededCount})
+                🔴 Verkoop ({sellAlertsCount})
               </button>
             </div>
 
-            <div className="w-full sm:w-64 relative">
+            <div className="w-full md:w-64 relative">
               <i className="ph-bold ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
               <input
                 type="text"
@@ -415,119 +803,102 @@ const StrategyAdvisorTab = () => {
             </div>
           </div>
 
-          {/* Meldingen Lijst */}
+          {/* Meldingen Weergave */}
           {filteredAlerts.length === 0 ? (
             <div className="bg-white rounded-3xl p-12 text-center border border-gray-200 text-gray-500 space-y-2">
               <i className="ph-fill ph-bell-slash text-4xl text-gray-300"></i>
               <div className="font-bold text-base text-gray-700">Geen meldingen gevonden</div>
               <p className="text-xs text-gray-400">Er zijn momenteel geen signalen die voldoen aan de geselecteerde filters.</p>
             </div>
-          ) : (
-            <div className="space-y-4">
-              {filteredAlerts.map((alert) => {
-                const isBuy = alert.signalType === 'Koopsignaal';
-                const hasLinkedSales = alert.linkedSales && alert.linkedSales.length > 0;
-
-                return (
-                  <div
-                    key={alert.alertId}
-                    className={`bg-white rounded-3xl p-5 sm:p-6 border transition-all shadow-xs hover:shadow-md ${
-                      isBuy ? 'border-emerald-200/90 hover:border-emerald-300' : 'border-rose-200/90 hover:border-rose-300'
-                    }`}
-                  >
-                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-gray-100">
-                      
-                      {/* Linkerkant: Datum, Ticker & Type */}
-                      <div className="flex items-start sm:items-center gap-3">
-                        <div className={`w-12 h-12 rounded-2xl flex flex-col items-center justify-center font-bold text-center shrink-0 ${
-                          isBuy ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                        }`}>
-                          <span className="text-[10px] uppercase">{new Date(alert.date).toLocaleDateString('nl-BE', { month: 'short' })}</span>
-                          <span className="text-base font-black leading-none">{new Date(alert.date).getDate()}</span>
-                        </div>
-
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-xl font-black text-gray-900">{alert.ticker}</span>
-                            <span className="text-xs text-gray-500 font-medium truncate max-w-[200px]">{alert.name}</span>
-                            {alert.fundamentalScore && (
-                              <span className="px-2 py-0.5 bg-amber-100 text-amber-900 rounded font-black text-[11px]">
-                                ★ {alert.fundamentalScore}/5
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${
-                              isBuy ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                            }`}>
-                              {alert.badge}
-                            </span>
-                            <span className="text-xs text-gray-400">
-                              Signaaldatum: <strong>{alert.date}</strong> • Koers op signaal: <strong>{formatCurrency(alert.priceAtAlert)}</strong>
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Rechterkant: Transactie Bedrag & Aantal stuks */}
-                      <div className="bg-gray-50 p-3 rounded-2xl border border-gray-200/80 flex items-center justify-between sm:justify-end gap-6 text-right">
-                        <div>
-                          <div className="text-[10px] text-gray-400 font-bold uppercase">Transactie</div>
-                          <div className={`text-sm font-black ${isBuy ? 'text-emerald-700' : 'text-rose-700'}`}>
-                            {isBuy ? `KOOP ${alert.shares} stuks` : `VERKOOP ${alert.shares} stuks`}
-                          </div>
-                        </div>
-                        <div className="border-l border-gray-200 pl-4">
-                          <div className="text-[10px] text-gray-400 font-bold uppercase">Totaal Bedrag</div>
-                          <div className="text-lg font-black text-gray-900 privacy-blur">
-                            {isIncognito ? '€ ••••••' : formatCurrency(alert.amountEur)}
-                          </div>
-                        </div>
-                      </div>
+          ) : alertLayoutMode === 'COLUMNS' && alertFilter !== 'SELL' ? (
+            <div className="space-y-8">
+              {/* 2-Koloms Weergave: Groen (Directe Koop) vs Geel (Aandacht / Overgewaardeerd) */}
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+                
+                {/* Kolom 1: 🟢 DIRECTE KOOPKANSEN */}
+                <div className="space-y-4">
+                  <div className="bg-emerald-50 border border-emerald-200/90 rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-sm font-black text-emerald-900 flex items-center gap-2">
+                        <i className="ph-fill ph-check-circle text-emerald-600 text-lg"></i>
+                        🟢 Directe Koopkansen ({actionableBuyAlerts.length})
+                      </h2>
+                      <p className="text-[11px] text-emerald-700 mt-0.5">
+                        Ondergewaardeerd ($\le 1.3\times$) & stabiele/stijgende Waardeverdeling
+                      </p>
                     </div>
-
-                    {/* Financiering & Rotatie Logica */}
-                    {isBuy && alert.fundingSource && (
-                      <div className="mt-4 pt-3">
-                        {alert.fundingSource.status === 'DIRECT_CASH' ? (
-                          <div className="bg-emerald-50/80 text-emerald-900 p-3.5 rounded-2xl border border-emerald-200 text-xs flex items-center gap-2">
-                            <i className="ph-fill ph-check-circle text-emerald-600 text-base"></i>
-                            <span className="font-semibold">{alert.fundingSource.message}</span>
-                          </div>
-                        ) : (
-                          <div className="bg-amber-50/80 rounded-2xl p-4 border border-amber-200/80 space-y-3">
-                            <div className="flex items-center gap-2 text-xs font-bold text-amber-900">
-                              <i className="ph-fill ph-warning text-amber-600 text-base"></i>
-                              <span>{alert.fundingSource.message}</span>
-                            </div>
-
-                            {hasLinkedSales && (
-                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-                                {alert.linkedSales.map((sale) => (
-                                  <div key={sale.ticker} className="bg-white p-3 rounded-xl border border-amber-200 shadow-2xs flex items-center justify-between text-xs">
-                                    <div>
-                                      <div className="font-black text-gray-900 flex items-center gap-1.5">
-                                        <span className="text-rose-600">VERKOOP</span> {sale.ticker} ({sale.name})
-                                      </div>
-                                      <div className="text-[11px] text-gray-500">{sale.reason}</div>
-                                    </div>
-                                    <div className="text-right">
-                                      <div className="font-extrabold text-amber-900">{sale.sharesToSell} stuks</div>
-                                      <div className="font-bold text-xs text-gray-700 privacy-blur">
-                                        {isIncognito ? '€ ••••••' : formatCurrency(sale.amountToSellEur)}
-                                      </div>
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    )}
+                    <span className="px-2.5 py-1 bg-emerald-600 text-white font-black text-xs rounded-xl shadow-xs">
+                      {actionableBuyAlerts.length} signalen
+                    </span>
                   </div>
-                );
-              })}
+
+                  {actionableBuyAlerts.length === 0 ? (
+                    <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
+                      Geen directe groene koopkansen in deze selectie.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {actionableBuyAlerts.map(renderAlertCard)}
+                    </div>
+                  )}
+                </div>
+
+                {/* Kolom 2: ⚠️ AANDACHT / OVERGEWAARDEERD / WV DALING */}
+                <div className="space-y-4">
+                  <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-sm font-black text-amber-900 flex items-center gap-2">
+                        <i className="ph-fill ph-warning text-amber-600 text-lg"></i>
+                        ⚠️ Koopsignalen onder Toezicht ({cautionBuyAlerts.length})
+                      </h2>
+                      <p className="text-[11px] text-amber-800 mt-0.5">
+                        Overgewaardeerd ($> 1.3\times$) of dalende Waardeverdeling
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 bg-amber-600 text-white font-black text-xs rounded-xl shadow-xs">
+                      {cautionBuyAlerts.length} signalen
+                    </span>
+                  </div>
+
+                  {cautionBuyAlerts.length === 0 ? (
+                    <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
+                      Geen aandachts-koopsignalen in deze selectie.
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {cautionBuyAlerts.map(renderAlertCard)}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Verkoopsignalen onderaan in 2-koloms modus */}
+              {sellAlerts.length > 0 && (
+                <div className="space-y-4 pt-4 border-t border-gray-200">
+                  <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center justify-between">
+                    <div>
+                      <h2 className="text-sm font-black text-rose-900 flex items-center gap-2">
+                        <i className="ph-fill ph-x-circle text-rose-600 text-lg"></i>
+                        🔴 Verkoopsignalen ({sellAlerts.length})
+                      </h2>
+                      <p className="text-[11px] text-rose-700 mt-0.5">
+                        Posities met structurele score-daling (&lt; 5/5) na kwartaalrapportage
+                      </p>
+                    </div>
+                    <span className="px-2.5 py-1 bg-rose-600 text-white font-black text-xs rounded-xl">
+                      {sellAlerts.length} meldingen
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {sellAlerts.map(renderAlertCard)}
+                  </div>
+                </div>
+              )}
+            </div>
+          ) : (
+            /* Lijstweergave (Chronologisch) */
+            <div className="space-y-4">
+              {filteredAlerts.map(renderAlertCard)}
             </div>
           )}
         </div>
@@ -574,7 +945,7 @@ const StrategyAdvisorTab = () => {
                       <i className="ph-fill ph-sparkle text-amber-500"></i>
                       Ideale Portefeuille (Gewogen naar Waardeverdeling)
                     </h3>
-                    <p className="text-xs text-gray-500">Top 10 Super-Kwaliteit aandelen proportioneel verdeeld</p>
+                    <p className="text-xs text-gray-500">Top Super-Kwaliteit aandelen (Score 5/5) proportioneel verdeeld</p>
                   </div>
                   <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full">
                     100% Super-Kwaliteit
@@ -602,7 +973,7 @@ const StrategyAdvisorTab = () => {
                   Doelverdeling & Streefbedragen per Aandeel (Conform Waardeverdeling)
                 </h3>
                 <p className="text-xs text-gray-500">
-                  Exacte allocatie per positie op basis van relatief Waardeverdelings-gewicht.
+                  Exacte allocatie per positie inclusief kwartaaltrend van de Waardeverdeling.
                 </p>
               </div>
             </div>
@@ -612,10 +983,11 @@ const StrategyAdvisorTab = () => {
                 <thead className="bg-slate-50 text-gray-500 font-bold uppercase tracking-wider border-b border-gray-200">
                   <tr>
                     <th className="py-3 px-4">Aandeel</th>
-                    <th className="py-3 px-3 text-center">Score / WV</th>
+                    <th className="py-3 px-3 text-center">Score</th>
+                    <th className="py-3 px-3 text-center">Waardeverdeling Trend</th>
                     <th className="py-3 px-3 text-right">Huidige Koers</th>
                     <th className="py-3 px-3 text-right">Intrinsieke Waarde</th>
-                    <th className="py-3 px-3 text-center">Doelgewicht %</th>
+                    <th className="py-3 px-3 text-center">Doel %</th>
                     <th className="py-3 px-3 text-right">Doelbedrag (€)</th>
                     <th className="py-3 px-3 text-right">Doel Stuks</th>
                     <th className="py-3 px-3 text-right">Huidig Bezit</th>
@@ -632,6 +1004,17 @@ const StrategyAdvisorTab = () => {
                         <span className="px-2 py-0.5 bg-amber-100 text-amber-900 rounded font-black text-xs">
                           ⭐ {item.score}
                         </span>
+                      </td>
+                      <td className="py-2 px-3 text-center min-w-[140px]">
+                        <WvSparkline
+                          history={item.wvHistory || []}
+                          currentWv={item.waardeVerdeling}
+                          prevWv={item.prevWaardeVerdeling}
+                          wvDiff={item.wvDiff}
+                          wvDiffPct={item.wvDiffPct}
+                          isDropping={item.isWvDropping}
+                          compact={true}
+                        />
                       </td>
                       <td className="py-3 px-3 text-right font-bold text-gray-900">
                         {formatCurrency(item.currentPrice)}
@@ -707,6 +1090,7 @@ const StrategyAdvisorTab = () => {
                   { id: 'HOLD', label: `🟡 Houden (${actionSummary.holdCount})` },
                   { id: 'TAKE_PROFIT', label: `💰 Winst (${actionSummary.takeProfitCount})` },
                   { id: 'TRIM', label: `🔴 Afbouwen (${actionSummary.trimCount})` },
+                  { id: 'ETF', label: `🌐 ETF` }
                 ].map(tab => (
                   <button
                     key={tab.id}
@@ -732,6 +1116,7 @@ const StrategyAdvisorTab = () => {
                   <th className="py-3 px-4">Aandeel</th>
                   <th className="py-3 px-3 text-right">Positie & Waarde</th>
                   <th className="py-3 px-3 text-right">Gewicht</th>
+                  <th className="py-3 px-3 text-center">Waardeverdeling Trend</th>
                   <th className="py-3 px-3 text-right">Huidige Koers</th>
                   <th className="py-3 px-3 text-right">Intrinsieke Waarde</th>
                   <th className="py-3 px-3 text-center">Waardering (x)</th>
@@ -780,6 +1165,23 @@ const StrategyAdvisorTab = () => {
                     {/* Gewicht */}
                     <td className="py-3.5 px-3 text-right font-bold text-gray-700">
                       {h.weightPct.toFixed(1)}%
+                    </td>
+
+                    {/* Waardeverdeling Trend Sparkline */}
+                    <td className="py-2 px-3 text-center min-w-[130px]">
+                      {h.assetType === 'ETF' ? (
+                        <span className="text-gray-400 text-[11px] italic">Index ETF</span>
+                      ) : (
+                        <WvSparkline
+                          history={h.wvHistory || []}
+                          currentWv={h.waardeVerdeling}
+                          prevWv={h.prevWaardeVerdeling}
+                          wvDiff={h.wvDiff}
+                          wvDiffPct={h.wvDiffPct}
+                          isDropping={h.isWvDropping}
+                          compact={true}
+                        />
+                      )}
                     </td>
 
                     {/* Koers */}
