@@ -2547,6 +2547,7 @@ const getStrategyAdvisorData = async (req, res) => {
                 prevWaardeVerdeling,
                 wvDropFraction,
                 wvDropPct,
+                periodEndDate: stockDetails?.period_end_date ? (stockDetails.period_end_date instanceof Date ? stockDetails.period_end_date.toISOString().split('T')[0] : String(stockDetails.period_end_date).split('T')[0]) : null,
                 actionType,
                 actionLabel,
                 actionSeverity,
@@ -2885,12 +2886,14 @@ const getStrategyAdvisorData = async (req, res) => {
                 });
             });
 
-        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Uitsluitend bij fundamentele verslechtering Score < 5, Waardeverdeling-daling of trendbreuk)
+        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Uitsluitend bij fundamentele verslechtering Score < 5)
+        // Posities onder de 200 SMA of met lichte dalingen worden NOOIT los verkocht; enkel als financiering bij een kooporder wanneer er cash tekort is.
         evaluatedHoldings.forEach(h => {
             if (h.actionType === 'TRIM_FUNDAMENTAL') {
+                const alertDate = h.periodEndDate || new Date().toISOString().split('T')[0];
                 dataDrivenAlerts.push({
                     alertId: 91000 + h.stockId,
-                    date: new Date().toISOString().split('T')[0],
+                    date: alertDate,
                     ticker: h.ticker,
                     name: h.name,
                     signalType: 'Verkoopsignaal',
@@ -2903,49 +2906,7 @@ const getStrategyAdvisorData = async (req, res) => {
                     fundingSource: {
                         status: 'PROTECT_CAPITAL',
                         badge: '🛑 Kapitaal Beschermen',
-                        message: `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5). Sluit positie (100%) om kapitaal te beschermen.`
-                    },
-                    linkedSales: []
-                });
-            } else if (h.actionType === 'PARTIAL_TRIM_WV') {
-                const sellShares = h.quantity * (h.wvDropFraction || 0.1);
-                const sellAmount = h.holdingValue * (h.wvDropFraction || 0.1);
-                dataDrivenAlerts.push({
-                    alertId: 93000 + h.stockId,
-                    date: new Date().toISOString().split('T')[0],
-                    ticker: h.ticker,
-                    name: h.name,
-                    signalType: 'Verkoopsignaal',
-                    badge: h.actionLabel,
-                    priceAtAlert: h.currentPrice,
-                    amountEur: parseFloat(sellAmount.toFixed(2)),
-                    shares: parseFloat(sellShares.toFixed(2)),
-                    targetWeightPct: parseFloat((h.weightPct * (1 - (h.wvDropFraction || 0.1))).toFixed(1)),
-                    fundamentalScore: h.score,
-                    fundingSource: {
-                        status: 'PARTIAL_TRIM',
-                        badge: '📉 Waardeverdeling Daling',
-                        message: h.actionReason
-                    },
-                    linkedSales: []
-                });
-            } else if (h.actionType === 'TRIM_DOWNTREND') {
-                dataDrivenAlerts.push({
-                    alertId: 92000 + h.stockId,
-                    date: new Date().toISOString().split('T')[0],
-                    ticker: h.ticker,
-                    name: h.name,
-                    signalType: 'Verkoopsignaal',
-                    badge: '🔴 Afbouwen (Onder 200 SMA)',
-                    priceAtAlert: h.currentPrice,
-                    amountEur: parseFloat(h.holdingValue.toFixed(2)),
-                    shares: parseFloat(h.quantity.toFixed(2)),
-                    targetWeightPct: 0,
-                    fundamentalScore: h.score,
-                    fundingSource: {
-                        status: 'TREND_PROTECTION',
-                        badge: '📉 Trendbreuk',
-                        message: `Koers is onder het 200-daags gemiddelde gezakt. Snoei deze positie bij voorkeur alleen als er een betere 5/5 koopkans klaarstaat.`
+                        message: `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5 bij kwartaalrapport van ${alertDate}). Sluit positie (100%) om kapitaal te beschermen.`
                     },
                     linkedSales: []
                 });
