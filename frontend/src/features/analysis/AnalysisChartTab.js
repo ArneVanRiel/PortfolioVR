@@ -65,17 +65,60 @@ const AnalysisChartTab = ({ selectedStock }) => {
         const macdMap = new Map(macdHistory.map(m => [new Date(m.date).toISOString().split('T')[0], m]));
         const calcMap = new Map(calcs.map(c => [new Date(c.period_end_date).toISOString().split('T')[0], c.waarde_verdeling]));
         
+        // Hulpfunctie om de dichtstbijzijnde koers te vinden als de exacte datum (bv. kwartaalweekend) geen beurskoers heeft
+        const getPriceForDate = (targetDateStr) => {
+            if (priceMap.has(targetDateStr)) return priceMap.get(targetDateStr);
+            const targetTime = new Date(targetDateStr).getTime();
+            let closestPrice = null;
+            let minDiff = Infinity;
+            for (let i = 0; i < prices.length; i++) {
+                const diff = Math.abs(new Date(prices[i].date).getTime() - targetTime);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closestPrice = prices[i].closing_price;
+                }
+            }
+            return closestPrice;
+        };
+
         const alertsMap = new Map();
         
-        // 1. Voeg alerts toe
+        // 1. Voeg MACD alerts toe (Koopsignalen onder 0-lijn)
         alerts.forEach(a => {
-            // Filter oude MACD verkoopsignalen eruit (die hebben een signal_line_value)
             if (a.type_melding === 'Verkoopsignaal' && a.signal_line_value != null) return;
-            
             const d = new Date(a.date).toISOString().split('T')[0];
             if (!alertsMap.has(d)) alertsMap.set(d, []);
             alertsMap.get(d).push(a);
         });
+
+        // 2. Fundamentele Verkoopsignalen (Score < 5 of Daling Waardeverdeling)
+        const sortedCalcs = [...calcs].sort((a, b) => new Date(a.period_end_date) - new Date(b.period_end_date));
+        for (let i = 0; i < sortedCalcs.length; i++) {
+            const c = sortedCalcs[i];
+            const prevC = i > 0 ? sortedCalcs[i - 1] : null;
+            const d = new Date(c.period_end_date).toISOString().split('T')[0];
+
+            const score = Number(c.selectiecriteria);
+            const prevScore = prevC ? Number(prevC.selectiecriteria) : null;
+            const wv = Number(c.waarde_verdeling);
+            const prevWv = prevC ? Number(prevC.waarde_verdeling) : null;
+
+            const isScoreDrop = (score < 5 && score > 0) || (prevScore === 5 && score < 5);
+            const isWvDrop = (prevWv != null && wv != null && wv < prevWv && (prevWv - wv) >= 0.05);
+
+            if (isScoreDrop || isWvDrop) {
+                if (!alertsMap.has(d)) alertsMap.set(d, []);
+                const calcPrice = getPriceForDate(d);
+                alertsMap.get(d).push({
+                    type_melding: 'Verkoopsignaal',
+                    isMandatorySell: true,
+                    reason: isScoreDrop 
+                        ? `Verplichte verkoop (Score ${score}/5)`
+                        : `Verplichte deelverkoop (WV daling ${prevWv?.toFixed(1)}% ➔ ${wv?.toFixed(1)}%)`,
+                    prijs_op_moment: calcPrice
+                });
+            }
+        }
 
         const priceData = [];
         const waardeverdelingData = [];
@@ -106,11 +149,10 @@ const AnalysisChartTab = ({ selectedStock }) => {
                 daysAlerts.forEach(a => {
                     // STRATEGIE KOPEN: Alleen als signal line < 0
                     if (a.type_melding === 'Koopsignaal' && a.signal_line_value < 0) {
-                        buyVal = a.prijs_op_moment || priceMap.get(date); // Fallback naar dagprijs
+                        buyVal = a.prijs_op_moment || getPriceForDate(date);
                     } else if (a.type_melding === 'Verkoopsignaal') {
-                        // Voor verkoopsignalen (kwartaaldata) is de exacte prijs op moment soms niet opgeslagen in calculations
-                        // We gebruiken de slotkoers van die dag uit de priceMap als fallback
-                        sellVal = a.prijs_op_moment || priceMap.get(date);
+                        // Verkoopsignaal (score daling of waardeverdeling daling)
+                        sellVal = a.prijs_op_moment || getPriceForDate(date);
                     }
                 });
             }
@@ -261,6 +303,28 @@ const AnalysisChartTab = ({ selectedStock }) => {
       plugins: {
           legend: { position: 'top' },
           title: { display: true, text: `Prijs, Waardeverdeling & MACD - ${selectedStock?.ticker || ''}` },
+          tooltip: {
+              callbacks: {
+                  label: (context) => {
+                      const dsLabel = context.dataset.label;
+                      const val = context.parsed.y;
+                      if (val == null) return null;
+                      if (dsLabel === 'Koopsignaal') {
+                          return `🟢 Koopsignaal (MACD onder 0-lijn): €${val.toFixed(2)}`;
+                      }
+                      if (dsLabel === 'Verkoopsignaal') {
+                          return `🔴 Verplicht Verkoopsignaal: €${val.toFixed(2)}`;
+                      }
+                      if (dsLabel === 'Waardeverdeling') {
+                          return `Waardeverdeling: ${val.toFixed(1)}%`;
+                      }
+                      if (dsLabel === 'Prijs') {
+                          return `Prijs: €${val.toFixed(2)}`;
+                      }
+                      return `${dsLabel}: ${val.toFixed(2)}`;
+                  }
+              }
+          },
           zoom: {
               pan: {
                   enabled: true,

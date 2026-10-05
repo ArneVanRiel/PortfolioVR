@@ -88,8 +88,56 @@ const OverviewTab = ({
     }
   }), [formatCurrency]);
 
+  // Bereken eerstvolgende vermogensmijlpaal (De Belegger feature)
+  const milestone = React.useMemo(() => {
+    if (!totalValue || totalValue <= 0) return { target: 10000, progress: 0, remaining: 10000 };
+    let target = 10000;
+    if (totalValue >= 500000) target = Math.ceil((totalValue + 1) / 100000) * 100000;
+    else if (totalValue >= 100000) target = Math.ceil((totalValue + 1) / 50000) * 50000;
+    else if (totalValue >= 50000) target = 100000;
+    else if (totalValue >= 25000) target = 50000;
+    else if (totalValue >= 10000) target = 25000;
+    else target = 10000;
+
+    const progress = Math.min(100, Math.max(0, (totalValue / target) * 100));
+    const remaining = Math.max(0, target - totalValue);
+    return { target, progress, remaining };
+  }, [totalValue]);
+
   return (
     <div className="space-y-6">
+      {/* Milestone Progress Bar (De Belegger Stijl) */}
+      <div className="bg-white p-4 sm:p-5 rounded-xl shadow-sm border border-gray-200">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-base border border-amber-100 shadow-xs">
+              <i className="ph-fill ph-trophy"></i>
+            </div>
+            <div>
+              <h4 className="text-sm font-bold text-gray-900">
+                Op weg naar {formatCurrency(milestone.target)}
+              </h4>
+              <span className="text-xs text-gray-400">
+                Nog {formatCurrency(milestone.remaining)} te gaan tot het volgende doel
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">
+              {milestone.progress.toFixed(1)}% Voltooid
+            </span>
+          </div>
+        </div>
+
+        {/* Bar */}
+        <div className="w-full bg-gray-100 rounded-full h-3 overflow-hidden p-0.5 border border-gray-200/60">
+          <div 
+            className="bg-gradient-to-r from-blue-500 to-indigo-600 h-full rounded-full transition-all duration-700 ease-out shadow-xs" 
+            style={{ width: `${milestone.progress}%` }}
+          />
+        </div>
+      </div>
+
       {/* Category Allocation Grid (Snowball Style) */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: Donut Chart Card */}

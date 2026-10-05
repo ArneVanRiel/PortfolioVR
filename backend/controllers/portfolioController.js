@@ -605,6 +605,7 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
       }
     }
 
+    clearPortfolioCache(userId);
     write({ type: 'complete', message: 'Portfolio waarden succesvol herberekend en opgeslagen.' });
     res.end();
   } catch (error) {
@@ -800,9 +801,46 @@ const parseDateRange = (period, customStartDate, customEndDate) => {
     return { startDate, endDate };
 };
 
+const portfolioValuesCache = new Map();
+const CACHE_TTL_MS = 180000; // 3 minuten cache
+
+const advisorDataCache = new Map();
+const ADVISOR_CACHE_TTL_MS = 120000; // 2 minuten cache
+
+const clearAdvisorCache = (userId) => {
+  if (!userId) {
+    advisorDataCache.clear();
+    return;
+  }
+  for (const key of advisorDataCache.keys()) {
+    if (key.includes(`_${userId}_`)) {
+      advisorDataCache.delete(key);
+    }
+  }
+};
+
+const clearPortfolioCache = (userId) => {
+  clearAdvisorCache(userId);
+  if (!userId) {
+    portfolioValuesCache.clear();
+    return;
+  }
+  for (const key of portfolioValuesCache.keys()) {
+    if (key.includes(`_${userId}_`)) {
+      portfolioValuesCache.delete(key);
+    }
+  }
+};
+
 const getPortfolioValues = async (req, res) => {
   try {
     const { userId, period, assetTypes, customStartDate, customEndDate, currency } = req.query;
+    const cacheKey = `pv_${userId || 1}_${period || 'All'}_${assetTypes || 'all'}_${customStartDate || ''}_${customEndDate || ''}_${currency || 'USD'}`;
+    const cached = portfolioValuesCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+      return res.status(200).json(cached.data);
+    }
+
     const pool = await sql.connect(config);
     const isEur = currency === 'EUR' ? 1 : 0;
     const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
@@ -826,6 +864,7 @@ const getPortfolioValues = async (req, res) => {
       request.input('isEur', sql.Bit, isEur);
       
       const result = await request.query(query);
+      portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: result.recordset });
       return res.status(200).json(result.recordset);
     }
 
@@ -1472,6 +1511,7 @@ const addTransaction = async (req, res) => {
     if (aandeel_id) {
       fetchAndStorePricesForStock(aandeel_id);
     }
+    clearPortfolioCache(user_id);
 
     res.status(201).json({ message: 'Transactie succesvol toegevoegd' });
   } catch (error) {
@@ -1513,6 +1553,7 @@ const updateTransaction = async (req, res) => {
     if (result.rowsAffected[0] > 0) {
       // Synchroniseer prijzen op de achtergrond
       fetchAndStorePricesForStock(aandeel_id);
+      clearPortfolioCache(user_id);
 
       res.status(200).json({ message: 'Transactie succesvol bijgewerkt' });
     }
@@ -1698,6 +1739,8 @@ const addMultipleTransactions = async (req, res) => {
         fetchAndStorePricesForStock(aandeel_id);
     }
 
+    clearPortfolioCache();
+
     res.status(200).json({ 
         message: `Import voltooid! Toegevoegd: ${added}, Duplicaten overgeslagen: ${duplicates}, Fouten/Niet herkend: ${errors}.`,
         added,
@@ -1732,6 +1775,7 @@ const deleteTransaction = async (req, res) => {
       .query('DELETE FROM PF_transactions WHERE id = @id');
 
     if (result.rowsAffected[0] > 0) {
+      clearPortfolioCache();
       res.status(200).json({ message: 'Transactie succesvol verwijderd.' });
     } else {
       res.status(404).json({ message: 'Transactie niet gevonden.' });
@@ -2301,6 +2345,12 @@ const getStrategyAdvisorData = async (req, res) => {
         const maxDebtRatio = parseFloat(req.query.maxDebtRatio || 1.0);
         const isEur = currency === 'EUR';
 
+        const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}`;
+        const cached = advisorDataCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
+            return res.json(cached.data);
+        }
+
         const pool = await sql.connect(config);
 
         // 1. Haal wisselkoers op
@@ -2424,10 +2474,16 @@ const getStrategyAdvisorData = async (req, res) => {
             });
         }
 
-        // 5. Haal historische slotkoersen op voor 200 SMA berekening
+        // 5. Haal recente slotkoersen op voor 200 SMA berekening (Geoptimaliseerd: enkel laatste 200 rijen per aandeel!)
         const pricesQuery = `
+            WITH RecentPrices AS (
+                SELECT aandeel_id, closing_price, date,
+                       ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
+                FROM DailyClosingPrices
+            )
             SELECT aandeel_id, closing_price, date
-            FROM DailyClosingPrices
+            FROM RecentPrices
+            WHERE rn <= 200
             ORDER BY aandeel_id, date ASC;
         `;
         const pricesResult = await pool.request().query(pricesQuery);
@@ -2491,7 +2547,7 @@ const getStrategyAdvisorData = async (req, res) => {
             const score = stockDetails?.selectiecriteria ?? 5;
             const waardeVerdeling = stockDetails?.waarde_verdeling || 0;
             const prevWaardeVerdeling = stockDetails?.prev_waarde_verdeling ?? null;
-            const isWvDropping = (score === 5 && prevWaardeVerdeling !== null && waardeVerdeling < prevWaardeVerdeling && prevWaardeVerdeling > 0);
+            const isWvDropping = (prevWaardeVerdeling !== null && waardeVerdeling < prevWaardeVerdeling && prevWaardeVerdeling > 0);
             const wvDropFraction = isWvDropping ? Math.min(1, Math.max(0, (prevWaardeVerdeling - waardeVerdeling) / prevWaardeVerdeling)) : 0;
             const wvDropPct = wvDropFraction * 100;
 
@@ -2511,32 +2567,37 @@ const getStrategyAdvisorData = async (req, res) => {
                 actionSeverity = 'info';
                 actionReason = 'Brede index-tracker. Geen fundamentele DCF waardering; behoud als veilige kern of herinvesteer geleidelijk in Super-Kwaliteit.';
                 isAligned = true;
+            } else if (score < 5) {
+                // 1. Verplichte verkoop bij Score < 5 (bijv. 5/5 -> 4/5)
+                actionType = 'MANDATORY_SELL_SCORE';
+                actionLabel = '🔴 Verplichte Verkoop (Score < 5)';
+                actionSeverity = 'danger';
+                actionReason = `Score (${score}/5) voldoet niet meer aan de Super-Kwaliteit criteria. Sluit positie (100%) verplicht om kapitaal te beschermen.`;
+                isAligned = false;
+            } else if (isWvDropping && wvDropPct >= 1.0) {
+                // 2. Verplichte deelverkoop bij daling van Waardeverdeling
+                actionType = 'MANDATORY_PARTIAL_SELL_WV';
+                actionLabel = `🔴 Verplichte Deelverkoop (-${wvDropPct.toFixed(1)}%)`;
+                actionSeverity = 'danger';
+                actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(1)}% naar ${waardeVerdeling.toFixed(1)}% (-${wvDropPct.toFixed(1)}%). Verkoop ${wvDropPct.toFixed(1)}% van deze positie verplicht conform de strategie.`;
+                isAligned = false;
             } else if (priceToIntrinsicRatio !== null && priceToIntrinsicRatio >= takeProfitRatio) {
                 actionType = 'TAKE_PROFIT';
                 actionLabel = '💰 Winstnemen';
                 actionSeverity = 'warning';
                 actionReason = `Koers (${priceToIntrinsicRatio.toFixed(2)}x intrinsiek) is fors overgewaardeerd (> ${takeProfitRatio}x). Behoud als sterke winnaar, of room af bij rotatie naar een nieuw ondergewaardeerd 5/5 aandeel.`;
                 isAligned = true;
-            } else if (score < 5) {
-                actionType = 'TRIM_FUNDAMENTAL';
-                actionLabel = '🔴 Afbouwen (Score < 5)';
-                actionSeverity = 'danger';
-                actionReason = `Score (${score}/5) voldoet niet meer aan de Super-Kwaliteit eisen. Sluit positie om kapitaal te beschermen.`;
-                isAligned = false;
-            } else if (isWvDropping && wvDropPct >= 2.0) {
-                actionType = 'PARTIAL_TRIM_WV';
-                actionLabel = `🔴 Deelverkoop (-${wvDropPct.toFixed(1)}%)`;
-                actionSeverity = 'warning';
-                actionReason = `Score is 5/5, maar de Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(1)}% naar ${waardeVerdeling.toFixed(1)}% (-${wvDropPct.toFixed(1)}%). Verkoop ${wvDropPct.toFixed(1)}% van deze positie conform de strategie.`;
-                isAligned = false;
             } else if (!isAbove200Sma) {
                 actionType = 'TRIM_DOWNTREND';
                 actionLabel = '🔴 Afbouwen (Trendbreuk)';
-                actionSeverity = 'danger';
+                actionSeverity = 'warning';
                 actionReason = `Koers is onder het 200-daags gemiddelde (${sma200 ? sma200.toFixed(2) : '-'}) gezakt. Beperk neerwaarts marktrisico bij rotatie.`;
                 isAligned = false;
             } else if (score >= 5 && priceToIntrinsicRatio !== null && priceToIntrinsicRatio <= maxPriceToIntrinsic && isAbove200Sma && isLowDebt) {
                 actionType = 'BUY_MORE';
+                actionLabel = '🟢 Uitbreiden (Koopkans)';
+                actionSeverity = 'success';
+                actionReason = 'Voldoet aan alle 5/5 criteria, koers boven 200 SMA en noteert onder intrinsieke waarde.';
                 isAligned = true;
             }
 
@@ -2725,7 +2786,35 @@ const getStrategyAdvisorData = async (req, res) => {
         // 9. Exact Actieplan met concrete Bedragen (€), Stuks en Timing-triggers
         const exactActions = [];
 
-        // Actie A: Winstnemen (Wanneer koers > 2.0x intrinsiek)
+        // Actie 1: VERPLICHTE VERKOOPORDERS (Score < 5 of Daling Waardeverdeling)
+        const mandatorySellHoldings = evaluatedHoldings.filter(h => h.actionType === 'MANDATORY_SELL_SCORE' || h.actionType === 'MANDATORY_PARTIAL_SELL_WV');
+        mandatorySellHoldings.forEach(h => {
+            const isFullSell = h.actionType === 'MANDATORY_SELL_SCORE';
+            const sellRatio = isFullSell ? 1.0 : Math.max(0.01, Math.min(1.0, h.wvDropFraction || 0.1));
+            const sellAmountEur = h.holdingValue * sellRatio;
+            const sellShares = h.quantity * sellRatio;
+
+            exactActions.push({
+                type: isFullSell ? 'MANDATORY_SELL' : 'MANDATORY_PARTIAL_SELL',
+                isMandatory: true,
+                badge: isFullSell ? '🔴 Verplichte Verkoop (Score < 5)' : `🔴 Verplichte Deelverkoop (-${h.wvDropPct.toFixed(1)}%)`,
+                ticker: h.ticker,
+                name: h.name,
+                actionVerb: isFullSell ? 'Volledig Verkopen (100%)' : `Deelverkoop (${h.wvDropPct.toFixed(1)}%)`,
+                amountEur: parseFloat(sellAmountEur.toFixed(2)),
+                shares: parseFloat(sellShares.toFixed(2)),
+                currentPrice: h.currentPrice,
+                currentWeightPct: parseFloat(h.weightPct.toFixed(1)),
+                timingTrigger: isFullSell 
+                    ? `Kwartaalupdate: Score is gezakt naar ${h.score}/5. Verkooporder direct inleggen.`
+                    : `Kwartaalupdate: Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Verkoop ${parseFloat(sellShares.toFixed(2))} stuks.`,
+                rationale: isFullSell
+                    ? `Sluit de positie van ${formatEur(h.holdingValue)} om kapitaal te beschermen tegen fundamentele verzwakking.`
+                    : `Verkoop ${parseFloat(sellShares.toFixed(2))} stuks (${formatEur(sellAmountEur)}) om de positie terug te brengen naar de lagere waardeverdeling.`
+            });
+        });
+
+        // Actie 2: Winstnemen (Wanneer koers > 2.0x intrinsiek)
         const takeProfitHoldings = evaluatedHoldings.filter(h => h.actionType === 'TAKE_PROFIT');
         takeProfitHoldings.forEach(h => {
             // Room 50% af als koers tussen 2.0x en 2.5x is, 100% als > 2.5x
@@ -2748,10 +2837,9 @@ const getStrategyAdvisorData = async (req, res) => {
             });
         });
 
-        // Actie B: Snoeien / Roteren (Alleen gekoppeld aan beschikbare koopkansen!)
-        const trimHoldings = evaluatedHoldings.filter(h => h.actionType.startsWith('TRIM'));
+        // Actie 3: Snoeien / Roteren bij trendbreuk (Alleen gekoppeld aan beschikbare koopkansen!)
+        const trimHoldings = evaluatedHoldings.filter(h => h.actionType === 'TRIM_DOWNTREND');
         trimHoldings.forEach((h, idx) => {
-            // Koppel aan een van de top koopkandidaten (Snoeien voor herinvestering)
             const targetBuy = topBuyCandidates[idx % Math.max(1, topBuyCandidates.length)];
             const sellAmountEur = h.holdingValue;
             const sellShares = h.quantity;
@@ -2771,14 +2859,14 @@ const getStrategyAdvisorData = async (req, res) => {
                 targetRotateShares: parseFloat(buyShares.toFixed(2)),
                 timingTrigger: targetBuy 
                     ? `Snoei ${h.ticker} alleen om DIRECT ${targetBuy.ticker} aan te kopen (wacht op MACD koopsignaal / koers > 200 SMA van ${targetBuy.ticker}).`
-                    : `Snoei ${h.ticker} wegens trendbreuk / zwakker kwartaalresultaat.`,
+                    : `Snoei ${h.ticker} wegens trendbreuk onder 200 SMA.`,
                 rationale: targetBuy
                     ? `Verkoop ${parseFloat(sellShares.toFixed(2))} stuks ${h.ticker} (€${sellAmountEur.toFixed(0)}) en koop circa ${parseFloat(buyShares.toFixed(2))} stuks ${targetBuy.ticker} (Score 5/5, ${targetBuy.discountPct.toFixed(0)}% korting).`
-                    : `Beperk risico op verzwakte positie.`
+                    : `Beperk risico op positie onder de 200 SMA.`
             });
         });
 
-        // Actie C: Bijkopen / Uitbreiden van Top Kansen
+        // Actie 4: Bijkopen / Uitbreiden van Top Kansen
         topBuyCandidates.slice(0, 4).forEach(c => {
             const idealHolding = idealPortfolio.find(i => i.ticker === c.ticker);
             const targetTotalValue = idealHolding ? idealHolding.targetValueEur : (totalPortfolioValue * 0.10);
@@ -2936,23 +3024,19 @@ const getStrategyAdvisorData = async (req, res) => {
                 }
 
                 // Aankoopbedrag berekening (Conform de +369% Backteststrategie):
-                // Rekent met de positiegrootte OP DAT MOMENT
                 const targetEur = idealItem.targetValueEur;
                 const baseNeededEur = Math.max(0, targetEur - currentOwnedEurAtAlertDate);
 
-                // Waarderingsfactor: Hoe goedkoper het aandeel noteert tov intrinsieke waarde, hoe hoger de allocatie-opportuniteit (factor 0.4x tot 1.5x)
                 const valuationFactor = (intrinsicVal && intrinsicVal > 0 && alertPrice > 0)
                     ? Math.max(0.4, Math.min(1.5, intrinsicVal / alertPrice))
                     : 1.0;
 
                 let actionAmountEur = baseNeededEur > 0 ? (baseNeededEur * valuationFactor) : (targetEur * 0.5 * valuationFactor);
                 
-                // Indien het aandeel nog niet in bezit is en het berekende bedrag laag is, gebruik trade_amount gewogen naar waardering
                 if (actionAmountEur < 50 && rawAlert.trade_amount > 0) {
                     actionAmountEur = toDisplayCurrency(rawAlert.trade_amount, ticker, stockDetails?.asset_type) * valuationFactor;
                 }
                 
-                // Voorkom dat een aankoop de maximale streefallocatie van het aandeel overschrijdt
                 if (currentOwnedEurAtAlertDate + actionAmountEur > targetEur * 1.3) {
                     actionAmountEur = Math.max(0, targetEur * 1.3 - currentOwnedEurAtAlertDate);
                 }
@@ -2974,7 +3058,7 @@ const getStrategyAdvisorData = async (req, res) => {
                     let coveredEur = 0;
                     const potentialSellCandidates = [
                         ...takeProfitHoldings.filter(h => h.ticker !== ticker),
-                        ...trimHoldings.filter(h => h.ticker !== ticker)
+                        ...mandatorySellHoldings.filter(h => h.ticker !== ticker)
                     ];
 
                     for (const cand of potentialSellCandidates) {
@@ -2985,7 +3069,7 @@ const getStrategyAdvisorData = async (req, res) => {
                         linkedSales.push({
                             ticker: cand.ticker,
                             name: cand.name,
-                            reason: cand.actionType === 'TAKE_PROFIT' ? 'Winst Verzilveren (Overgewaardeerd)' : 'Verlies Beperken (Onder 200 SMA / Zwakker)',
+                            reason: cand.actionType === 'TAKE_PROFIT' ? 'Winst Verzilveren (Overgewaardeerd)' : 'Verplichte Verkoop (Score < 5 of Daling Waardeverdeling)',
                             sharesToSell: parseFloat(candShares.toFixed(2)),
                             amountToSellEur: parseFloat(neededFromCand.toFixed(2)),
                             currentPrice: cand.currentPrice
@@ -3052,28 +3136,44 @@ const getStrategyAdvisorData = async (req, res) => {
                 });
             });
 
-        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Uitsluitend bij fundamentele verslechtering Score < 5)
-        // Posities onder de 200 SMA of met lichte dalingen worden NOOIT los verkocht; enkel als financiering bij een kooporder wanneer er cash tekort is.
+        // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Verplicht bij Score < 5 of Daling Waardeverdeling)
         evaluatedHoldings.forEach(h => {
-            if (h.actionType === 'TRIM_FUNDAMENTAL') {
+            if (h.actionType === 'MANDATORY_SELL_SCORE' || h.actionType === 'MANDATORY_PARTIAL_SELL_WV') {
+                const isFullSell = h.actionType === 'MANDATORY_SELL_SCORE';
                 const alertDate = h.periodEndDate || new Date().toISOString().split('T')[0];
+                const sellRatio = isFullSell ? 1.0 : Math.max(0.01, Math.min(1.0, h.wvDropFraction || 0.1));
+                const sellAmountEur = h.holdingValue * sellRatio;
+                const sellShares = h.quantity * sellRatio;
+
                 dataDrivenAlerts.push({
                     alertId: 91000 + h.stockId,
                     date: alertDate,
                     ticker: h.ticker,
                     name: h.name,
                     signalType: 'Verkoopsignaal',
-                    badge: '🔴 Verkoopsignaal (Score < 5)',
+                    isMandatorySell: true,
+                    badge: isFullSell ? '🔴 Verkoopsignaal (Score < 5)' : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`,
+                    severity: 'danger',
                     priceAtAlert: h.currentPrice,
-                    amountEur: parseFloat(h.holdingValue.toFixed(2)),
-                    shares: parseFloat(h.quantity.toFixed(2)),
-                    targetWeightPct: 0,
+                    currentPrice: h.currentPrice,
+                    amountEur: parseFloat(sellAmountEur.toFixed(2)),
+                    shares: parseFloat(sellShares.toFixed(2)),
+                    totalOwnedShares: parseFloat(h.quantity.toFixed(2)),
+                    totalHoldingValueEur: parseFloat(h.holdingValue.toFixed(2)),
+                    targetWeightPct: isFullSell ? 0 : parseFloat(((h.weightPct || 0) * (1 - sellRatio)).toFixed(1)),
                     fundamentalScore: h.score,
+                    waardeVerdeling: h.waardeVerdeling,
+                    prevWaardeVerdeling: h.prevWaardeVerdeling,
+                    wvDiff: h.wvDiff,
+                    wvDiffPct: h.wvDiffPct,
+                    wvHistory: h.wvHistory,
                     latestQuarterDate: h.periodEndDate,
                     fundingSource: {
                         status: 'PROTECT_CAPITAL',
-                        badge: '🛑 Kapitaal Beschermen',
-                        message: `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5 bij kwartaalrapport van ${alertDate}). Sluit positie (100%) om kapitaal te beschermen.`
+                        badge: isFullSell ? '🛑 100% Verkoop' : `🛑 Deelverkoop (-${h.wvDropPct.toFixed(1)}%)`,
+                        message: isFullSell 
+                            ? `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5 bij kwartaalrapport van ${alertDate}). Sluit positie (100%) om kapitaal te beschermen.`
+                            : `Waardeverdeling is gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Verkoop ${parseFloat(sellShares.toFixed(2))} stuks (${formatEur(sellAmountEur)}) verplicht conform strategie.`
                     },
                     linkedSales: []
                 });
@@ -3093,20 +3193,33 @@ const getStrategyAdvisorData = async (req, res) => {
             : 100;
 
         const actionSummary = {
+            mandatorySellCount: mandatorySellHoldings.length,
             buyMoreCount: evaluatedHoldings.filter(h => h.actionType === 'BUY_MORE').length,
             holdCount: evaluatedHoldings.filter(h => h.actionType === 'HOLD' || h.actionType === 'ETF_INDEX').length,
             takeProfitCount: evaluatedHoldings.filter(h => h.actionType === 'TAKE_PROFIT').length,
-            trimCount: evaluatedHoldings.filter(h => h.actionType.startsWith('TRIM')).length,
+            trimCount: evaluatedHoldings.filter(h => h.actionType === 'TRIM_DOWNTREND').length,
             topBuyCandidatesCount: topBuyCandidates.length
         };
 
         // 11. Concrete Actiepunten genereren
         const actionItems = [];
         
-        // Stap 1: Winstnemen
-        if (takeProfitHoldings.length > 0) {
+        // Stap 1: Verplichte Verkooporders
+        if (mandatorySellHoldings.length > 0) {
             actionItems.push({
                 step: 1,
+                type: 'MANDATORY_SELL',
+                badge: '🔴 Verplichte Verkoop',
+                title: `Voer ${mandatorySellHoldings.length} verplichte verkooporder(s) uit`,
+                description: `Posities zoals ${mandatorySellHoldings.map(h => `${h.ticker} (${h.actionLabel})`).join(', ')} vereisen directe verkoop conform de strategie regels (score < 5 of gedaalde waardeverdeling).`,
+                tickers: mandatorySellHoldings.map(h => h.ticker)
+            });
+        }
+
+        // Stap 2: Winstnemen
+        if (takeProfitHoldings.length > 0) {
+            actionItems.push({
+                step: actionItems.length + 1,
                 type: 'TAKE_PROFIT',
                 badge: '💰 Winstnemen',
                 title: `Room winst af op ${takeProfitHoldings.length} overgewaardeerde positie(s)`,
@@ -3115,23 +3228,11 @@ const getStrategyAdvisorData = async (req, res) => {
             });
         }
 
-        // Stap 2: Risicobescherming / Afbouw
-        if (trimHoldings.length > 0) {
-            actionItems.push({
-                step: 2,
-                type: 'TRIM',
-                badge: '🔴 Risico Beperken',
-                title: `Bouw ${trimHoldings.length} verzwakte positie(s) af`,
-                description: `Posities zoals ${trimHoldings.map(h => h.ticker).join(', ')} zijn onder hun 200 SMA gezakt of hebben een lagere fundamentele score. Sluit deze om bearmarkt-verliezen te vermijden.`,
-                tickers: trimHoldings.map(h => h.ticker)
-            });
-        }
-
         // Stap 3: Aankoop & Herallocatie
         if (topBuyCandidates.length > 0) {
             const top3 = topBuyCandidates.slice(0, 3);
             actionItems.push({
-                step: 3,
+                step: actionItems.length + 1,
                 type: 'BUY',
                 badge: '🟢 Doel-Investering',
                 title: `Allokeer nieuwe inleg of vrijgekomen cash naar de Top Koopkansen`,
@@ -3148,7 +3249,7 @@ const getStrategyAdvisorData = async (req, res) => {
             return d > max ? d : max;
         }, '1970-01-01');
 
-        res.json({
+        const responseData = {
             currency,
             totalPortfolioValue,
             totalPortfolioCost,
@@ -3167,7 +3268,10 @@ const getStrategyAdvisorData = async (req, res) => {
                 isUpdatedToday: lastUpdatedDate >= todayStr,
                 fxRate: latestFxRate
             }
-        });
+        };
+
+        advisorDataCache.set(cacheKey, { timestamp: Date.now(), data: responseData });
+        res.json(responseData);
 
     } catch (err) {
         console.error('Fout bij ophalen Strategy Advisor data:', err);

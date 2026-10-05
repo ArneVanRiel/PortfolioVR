@@ -1,16 +1,12 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Suspense, lazy, startTransition } from 'react';
 import http from '../../http-common';
-import * as XLSX from 'xlsx';
-import TransactionForm from './TransactionForm';
-import TaxesTab from './TaxesTab';
-
 import OverviewTab from './components/OverviewTab';
 import DiversificationTab from './components/DiversificationTab';
 import DividendsTab from './components/DividendsTab';
 import TransactionsTab from './components/TransactionsTab';
 import GrowthTab from './components/GrowthTab';
 import StrategyAdvisorTab from './StrategyAdvisorTab';
-import BrokerSyncModal from './BrokerSyncModal';
+import TaxesTab from './TaxesTab';
 
 import { useIncognito } from '../../hooks/useIncognito';
 import {
@@ -29,6 +25,17 @@ import {
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend, ArcElement, Filler, BarElement
+);
+
+// Code-splitting voor zware modals
+const TransactionForm = lazy(() => import('./TransactionForm'));
+const BrokerSyncModal = lazy(() => import('./BrokerSyncModal'));
+
+const ModalLoadingFallback = () => (
+  <div className="flex flex-col items-center justify-center p-8 space-y-3 bg-white rounded-2xl shadow-xl min-h-[200px]">
+    <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin"></div>
+    <span className="text-xs font-medium text-gray-500">Venster openen...</span>
+  </div>
 );
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
@@ -851,7 +858,8 @@ const PortfolioManager = () => {
   };
 
   // --- Download Excel Template ---
-  const handleDownloadTemplate = () => {
+  const handleDownloadTemplate = async () => {
+    const XLSX = await import('xlsx');
     const ws = XLSX.utils.json_to_sheet([
       { Ticker: 'AAPL', Type: 'BUY', Date: '2025-01-15 10:30', Broker: 'Etoro', Quantity: 10, Price: 150.50, Fees: 1.50, Taxes: 0.00, Currency: 'USD', 'Exchange Rate': 1 },
       { Ticker: 'MSFT', Type: 'SELL', Date: '2025-01-20 15:45', Broker: 'Degiro', Quantity: 5, Price: 310.20, Fees: 0.50, Taxes: 0.10, Currency: 'USD', 'Exchange Rate': 0.92 },
@@ -878,6 +886,7 @@ const PortfolioManager = () => {
     const reader = new FileReader();
     reader.onload = async (evt) => {
         try {
+            const XLSX = await import('xlsx');
             const bstr = evt.target.result;
             const wb = XLSX.read(bstr, { type: 'binary' });
             const wsname = wb.SheetNames[0];
@@ -1822,7 +1831,7 @@ const PortfolioManager = () => {
             {TABS.map(tab => (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
+                onClick={() => startTransition(() => setActiveTab(tab.id))}
                 className={`whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
                   activeTab === tab.id 
                     ? 'border-blue-600 text-blue-600' 
@@ -2132,6 +2141,8 @@ const PortfolioManager = () => {
           formatCurrency={formatCurrency}
           isIncognito={isIncognito}
           loading={loading}
+          processedHoldings={processedHoldings}
+          displayCurrency={displayCurrency}
         />
       )}
 
@@ -2157,168 +2168,51 @@ const PortfolioManager = () => {
           />
       )}
 
-      {/* Modal Overlay voor Add Transaction */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center p-4">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-2xl">
-            <h3 className="text-2xl font-bold mb-2 text-gray-800">Nieuwe Transactie</h3>
-            <TransactionForm
-              onSuccess={(txDate) => { setIsAddModalOpen(false); fetchPortfolioData(); handleRecalculateHistory(true, txDate); }}
-              onCancel={() => setIsAddModalOpen(false)}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Modal Overlay voor Edit Transaction */}
-      {isEditModalOpen && transactionToEdit && (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center p-4">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-2xl">
-            <h3 className="text-2xl font-bold mb-2 text-gray-800">Transactie Bewerken</h3>
-            <TransactionForm
-              transactionToEdit={transactionToEdit}
-              onSuccess={(txDate) => { 
-                setIsEditModalOpen(false); 
-                const earliestDate = new Date(Math.min(new Date(txDate), new Date(transactionToEdit.purchase_time))).toISOString().split('T')[0];
-                setTransactionToEdit(null); 
-                fetchPortfolioData(); 
-                handleRecalculateHistory(true, earliestDate); 
-              }}
-              onCancel={() => { setIsEditModalOpen(false); setTransactionToEdit(null); }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Modal Overlay voor Verwijderen Bevestigen */}
-      {transactionToDelete && (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center p-4">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
-            <h3 className="text-xl font-bold mb-4 text-gray-800">Transactie Verwijderen</h3>
-            <p className="text-gray-600 mb-6 text-sm">
-              Weet je zeker dat je de <strong>{transactionToDelete.transaction_type}</strong> transactie van <strong>{transactionToDelete.ticker_symbol || `ID: ${transactionToDelete.aandeel_id}`}</strong> op <strong>{new Date(transactionToDelete.purchase_time).toLocaleDateString('nl-BE')}</strong> wilt verwijderen?<br/><br/>Deze actie kan niet ongedaan worden gemaakt.
-            </p>
-            <div className="flex justify-end space-x-3">
-              <button onClick={() => setTransactionToDelete(null)} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium">Annuleren</button>
-              <button onClick={confirmDeleteTransaction} className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 font-medium shadow-md transition-colors">Verwijderen</button>
+      <Suspense fallback={<ModalLoadingFallback />}>
+        {/* Modal Overlay voor Add Transaction */}
+        {isAddModalOpen && (
+          <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center p-4">
+            <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-2xl">
+              <h3 className="text-2xl font-bold mb-2 text-gray-800">Nieuwe Transactie</h3>
+              <TransactionForm
+                onSuccess={(txDate) => { setIsAddModalOpen(false); fetchPortfolioData(); handleRecalculateHistory(true, txDate); }}
+                onCancel={() => setIsAddModalOpen(false)}
+              />
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Modal Overlay voor Import Review (Duplicaat check) */}
-      {showImportReviewModal && (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center p-4">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-5xl">
-            <h3 className="text-2xl font-bold mb-2 text-gray-800">Controleer Import</h3>
-            <p className="text-gray-600 mb-4 text-sm">Controleer de onderstaande rijen. Rijen die rood gemarkeerd zijn, lijken al in de database te staan op basis van Ticker, Datum en Aantal. Vink de rijen aan die je definitief wilt toevoegen.</p>
-            
-            <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-lg mb-4">
-                <table className="min-w-full divide-y divide-gray-200 text-sm">
-                    <thead className="bg-gray-50 sticky top-0">
-                        <tr>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Import</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Status</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Date</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Ticker</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Type</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Broker</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Aantal</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Prijs</th>
-                            <th className="px-4 py-2 text-left font-medium text-gray-500">Kosten / Taks</th>
-                        </tr>
-                    </thead>
-                    <tbody className="bg-white divide-y divide-gray-100">
-                        {importPreviewData.map((row, idx) => (
-                            <tr key={idx} className={row._isDuplicate ? 'bg-red-50' : 'hover:bg-gray-50'}>
-                                <td className="px-4 py-2 text-center">
-                                    <input type="checkbox" checked={row._selected} onChange={() => toggleImportRow(idx)} className="w-4 h-4 text-blue-600 rounded" />
-                                </td>
-                                <td className="px-4 py-2 font-medium">
-                                    {row._isDuplicate ? (
-                                        <div title={`Identieke match gevonden in DB (Prijs: ${row._duplicateMatch?.price}, Aantal: ${row._duplicateMatch?.quantity}).\n\nAndere transacties op deze dag:\n${row._dayReferences.map(t => `- ${t.transaction_type} ${t.quantity} stuks @ ${t.price}`).join('\n')}`}>
-                                            <span className="text-red-600 text-xs bg-red-100 px-2 py-1 rounded block w-max">Mogelijk Duplicaat</span>
-                                            <span className="text-[10px] text-gray-400 block mt-1 leading-tight font-normal">Zit al in DB ({row._duplicateMatch?.quantity} stuks)</span>
-                                        </div>
-                                    ) : row._dayReferences && row._dayReferences.length > 0 ? (
-                                        <div title={`Let op: Er zijn al andere transacties voor dit aandeel op deze dag:\n${row._dayReferences.map(t => `- ${t.transaction_type} ${t.quantity} stuks @ ${t.price}`).join('\n')}`}>
-                                            <span className="text-yellow-600 text-xs bg-yellow-100 px-2 py-1 rounded block w-max">Extra Vandaag</span>
-                                            <span className="text-[10px] text-gray-400 block mt-1 leading-tight font-normal">Bekijk tooltip</span>
-                                        </div>
-                                    ) : (
-                                        <span className="text-green-600 text-xs bg-green-100 px-2 py-1 rounded">Nieuw</span>
-                                    )}
-                                </td>
-                                <td className="px-4 py-2 text-gray-600">
-                                    {new Date(row.purchase_time).toLocaleDateString('nl-BE')} 
-                                    <span className="text-xs text-gray-400 ml-1">{new Date(row.purchase_time).toLocaleTimeString('nl-BE', {hour: '2-digit', minute:'2-digit'})}</span>
-                                </td>
-                                <td className="px-4 py-2 font-semibold text-gray-800" title={row.isin ? `ISIN: ${row.isin}` : ''}>{row.ticker || <span className="text-gray-400 text-xs">{row.isin}</span>}</td>
-                                <td className="px-4 py-2 text-gray-600">{row.transaction_type}</td>
-                                <td className="px-4 py-2 text-gray-600 capitalize">{row._brokerName}</td>
-                                <td className="px-4 py-2 text-gray-600">{row.quantity}</td>
-                                <td className="px-4 py-2 text-gray-600">{formatCurrency(row.price)}</td>
-                                <td className="px-4 py-2 text-gray-600 text-xs">F: {row.fees} / T: {row.taxes}</td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-            
-            <div className="flex justify-between items-center mt-4 pt-4 border-t border-gray-200">
-                <span className="text-sm text-gray-500">Geselecteerd: {importPreviewData.filter(r => r._selected).length} van de {importPreviewData.length} transacties.</span>
-                <div className="space-x-3">
-                    <button onClick={() => setShowImportReviewModal(false)} className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 font-medium">Annuleren</button>
-                    <button onClick={confirmImport} className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm transition-colors">Bevestig Import</button>
-                </div>
+        {/* Modal Overlay voor Edit Transaction */}
+        {isEditModalOpen && transactionToEdit && (
+          <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[9999] flex items-center justify-center p-4">
+            <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-2xl">
+              <h3 className="text-2xl font-bold mb-2 text-gray-800">Transactie Bewerken</h3>
+              <TransactionForm
+                transactionToEdit={transactionToEdit}
+                onSuccess={(txDate) => { 
+                  setIsEditModalOpen(false); 
+                  const earliestDate = new Date(Math.min(new Date(txDate), new Date(transactionToEdit.purchase_time))).toISOString().split('T')[0];
+                  setTransactionToEdit(null); 
+                  fetchPortfolioData(); 
+                  handleRecalculateHistory(true, earliestDate); 
+                }}
+                onCancel={() => { setIsEditModalOpen(false); setTransactionToEdit(null); }}
+              />
             </div>
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Log Modal for Recalculate/Repair */}
-      {showLogModal && (
-        <div className="fixed inset-0 bg-gray-900 bg-opacity-60 overflow-y-auto h-full w-full z-[10000] flex items-center justify-center p-4">
-          <div className="bg-white p-6 rounded-xl shadow-2xl w-full max-w-3xl">
-            <h3 className="text-xl font-bold mb-4 text-gray-800">{logModalTitle}</h3>
-            <div className="max-h-96 overflow-y-auto border border-gray-200 rounded-lg p-4 bg-gray-50 font-mono text-xs">
-              {logMessages.map((log, index) => {
-                let colorClass = 'text-gray-600';
-                if (log.type === 'error') colorClass = 'text-red-600 font-semibold';
-                else if (log.type === 'warn') colorClass = 'text-yellow-600';
-                else if (log.type === 'info') colorClass = 'text-blue-600';
-                else if (log.type === 'complete') colorClass = 'text-green-600 font-bold';
-                
-                return <p key={index} className={colorClass} style={{ whiteSpace: 'pre-wrap', margin: 0 }}>{log.message}</p>
-              })}
-            </div>
-            <div className="flex justify-end mt-6">
-              <button 
-                onClick={() => {
-                  setShowLogModal(false);
-                  setIsRecalculating(false);
-                  setIsRepairing(false);
-                }} 
-                disabled={isRecalculating || isRepairing}
-                className="px-5 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium shadow-sm transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {(isRecalculating || isRepairing) ? 'Bezig...' : 'Sluiten'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Broker Synchronisatie & Import Modal (De Belegger stijl) */}
-      <BrokerSyncModal
-        isOpen={isBrokerSyncOpen}
-        onClose={() => setIsBrokerSyncOpen(false)}
-        onImportSuccess={() => {
-          fetchPortfolioData();
-          handleRecalculateHistory(true, '1970-01-01');
-        }}
-        allExistingTransactions={rawTransactions}
-      />
+        {/* Broker Synchronisatie & Import Modal (De Belegger stijl) */}
+        <BrokerSyncModal
+          isOpen={isBrokerSyncOpen}
+          onClose={() => setIsBrokerSyncOpen(false)}
+          onImportSuccess={() => {
+            fetchPortfolioData();
+            handleRecalculateHistory(true, '1970-01-01');
+          }}
+          allExistingTransactions={rawTransactions}
+        />
+      </Suspense>
     </div>
   );
 };

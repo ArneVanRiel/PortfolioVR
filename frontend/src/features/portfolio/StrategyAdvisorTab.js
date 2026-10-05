@@ -503,15 +503,19 @@ const StrategyAdvisorTab = () => {
           )}
 
           {/* Transactie Box */}
-          <div className="bg-slate-900 text-white p-3.5 rounded-2xl flex items-center justify-between">
+          <div className={`${!isBuy ? 'bg-rose-950 border border-rose-800/80' : 'bg-slate-900'} text-white p-3.5 rounded-2xl flex items-center justify-between`}>
             <div>
-              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Aankooporder</div>
-              <div className="text-sm font-black text-emerald-400">
-                KOOP {alert.shares} stuks
+              <div className={`text-[10px] ${!isBuy ? 'text-rose-300' : 'text-slate-400'} font-bold uppercase tracking-wider`}>
+                {!isBuy ? '🚨 Verplichte Verkooporder' : 'Aankooporder'}
+              </div>
+              <div className={`text-sm font-black ${!isBuy ? 'text-rose-300' : 'text-emerald-400'}`}>
+                {!isBuy ? 'VERKOOP' : 'KOOP'} {alert.shares} stuks {!isBuy && alert.totalOwnedShares ? `(van ${alert.totalOwnedShares})` : ''}
               </div>
             </div>
             <div className="text-right">
-              <div className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Totaal Bedrag</div>
+              <div className={`text-[10px] ${!isBuy ? 'text-rose-300' : 'text-slate-400'} font-bold uppercase tracking-wider`}>
+                {!isBuy ? 'Vrijkomend Kapitaal' : 'Totaal Bedrag'}
+              </div>
               <div className="text-base font-black text-white privacy-blur">
                 {isIncognito ? '€ ••••••' : formatCurrency(alert.amountEur)}
               </div>
@@ -519,7 +523,22 @@ const StrategyAdvisorTab = () => {
           </div>
         </div>
 
-        {/* Financiering & Rotatie Logica */}
+        {/* Toelichting & Verkoopreden / Financiering */}
+        {!isBuy && alert.fundingSource && (
+          <div className="mt-3 pt-3 border-t border-rose-100">
+            <div className="bg-rose-50 text-rose-950 p-3 rounded-xl border border-rose-200 text-xs space-y-1">
+              <div className="font-black text-rose-900 flex items-center gap-1.5">
+                <i className="ph-fill ph-warning-octagon text-rose-600 text-base"></i>
+                {alert.fundingSource.badge || 'Verplichte Strategie Verkoop'}
+              </div>
+              <p className="text-[11px] text-rose-800 leading-relaxed font-medium">
+                {alert.fundingSource.message}
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Financiering & Rotatie Logica voor Aankoop */}
         {isBuy && alert.fundingSource && (
           <div className="mt-3 pt-3 border-t border-gray-100">
             {alert.fundingSource.status === 'DIRECT_CASH' ? (
@@ -716,13 +735,13 @@ const StrategyAdvisorTab = () => {
               </p>
             </div>
 
-            <div className="bg-white p-4 rounded-xl border border-blue-200 shadow-2xs space-y-2">
-              <div className="font-bold text-blue-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
-                <i className="ph-fill ph-database text-blue-600 text-base"></i>
-                Historische Reikwijdte & Opslag
+            <div className="bg-white p-4 rounded-xl border border-rose-200 shadow-2xs space-y-2">
+              <div className="font-bold text-rose-900 flex items-center gap-1.5 text-xs uppercase tracking-wider">
+                <i className="ph-fill ph-x-circle text-rose-600 text-base"></i>
+                🔴 Kolom 3: Verplichte Verkooporders
               </div>
               <p className="leading-relaxed">
-                Meldingen worden <strong>permanent opgeslagen in de database</strong> zodra een MACD crossover plaatsvindt. De historie reikt terug over de afgelopen 2 jaar (sinds juni 2024).
+                Posities in portefeuille met <strong>Score &lt; 5/5</strong> (100% verkoop) of <strong>dalende Waardeverdeling</strong> (proportionele deelverkoop). Dienen verplicht verkocht te worden om kapitaal te beschermen en te heralloceren.
               </p>
             </div>
           </div>
@@ -745,10 +764,10 @@ const StrategyAdvisorTab = () => {
                       ? 'bg-white text-indigo-700 shadow-xs'
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
-                  title="Toon aparte kolommen voor groene vs gele koopsignalen"
+                  title="Toon 3 aparte kolommen voor groen, geel en rood"
                 >
                   <i className="ph-bold ph-columns text-sm"></i>
-                  2 Kolommen (Groen vs Geel)
+                  3 Kolommen (Groen, Geel & Rood)
                 </button>
                 <button
                   onClick={() => setAlertLayoutMode('TIMELINE')}
@@ -811,89 +830,93 @@ const StrategyAdvisorTab = () => {
               <p className="text-xs text-gray-400">Er zijn momenteel geen signalen die voldoen aan de geselecteerde filters.</p>
             </div>
           ) : alertLayoutMode === 'COLUMNS' && alertFilter !== 'SELL' ? (
-            <div className="space-y-8">
-              {/* 2-Koloms Weergave: Groen (Directe Koop) vs Geel (Aandacht / Overgewaardeerd) */}
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-                
-                {/* Kolom 1: 🟢 DIRECTE KOOPKANSEN */}
-                <div className="space-y-4">
-                  <div className="bg-emerald-50 border border-emerald-200/90 rounded-2xl p-4 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-sm font-black text-emerald-900 flex items-center gap-2">
-                        <i className="ph-fill ph-check-circle text-emerald-600 text-lg"></i>
-                        🟢 Directe Koopkansen ({actionableBuyAlerts.length})
-                      </h2>
-                      <p className="text-[11px] text-emerald-700 mt-0.5">
-                        Ondergewaardeerd ($\le 1.3\times$) & stabiele/stijgende Waardeverdeling
-                      </p>
-                    </div>
-                    <span className="px-2.5 py-1 bg-emerald-600 text-white font-black text-xs rounded-xl shadow-xs">
-                      {actionableBuyAlerts.length} signalen
-                    </span>
+            /* 3-KOLOMS WEERGAVE: GROEN | GEEL | ROOD */
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
+              
+              {/* Kolom 1: 🟢 DIRECTE KOOPKANSEN */}
+              <div className="space-y-4">
+                <div className="bg-emerald-50 border border-emerald-200/90 rounded-2xl p-4 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-black text-emerald-900 flex items-center gap-2">
+                      <i className="ph-fill ph-check-circle text-emerald-600 text-lg"></i>
+                      🟢 Directe Koop ({actionableBuyAlerts.length})
+                    </h2>
+                    <p className="text-[11px] text-emerald-700 mt-0.5">
+                      Ondergewaardeerd & stabiele/stijgende WV
+                    </p>
                   </div>
-
-                  {actionableBuyAlerts.length === 0 ? (
-                    <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
-                      Geen directe groene koopkansen in deze selectie.
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {actionableBuyAlerts.map(renderAlertCard)}
-                    </div>
-                  )}
+                  <span className="px-2.5 py-1 bg-emerald-600 text-white font-black text-xs rounded-xl shadow-xs">
+                    {actionableBuyAlerts.length}
+                  </span>
                 </div>
 
-                {/* Kolom 2: ⚠️ AANDACHT / OVERGEWAARDEERD / WV DALING */}
-                <div className="space-y-4">
-                  <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-sm font-black text-amber-900 flex items-center gap-2">
-                        <i className="ph-fill ph-warning text-amber-600 text-lg"></i>
-                        ⚠️ Koopsignalen onder Toezicht ({cautionBuyAlerts.length})
-                      </h2>
-                      <p className="text-[11px] text-amber-800 mt-0.5">
-                        Overgewaardeerd ($> 1.3\times$) of dalende Waardeverdeling
-                      </p>
-                    </div>
-                    <span className="px-2.5 py-1 bg-amber-600 text-white font-black text-xs rounded-xl shadow-xs">
-                      {cautionBuyAlerts.length} signalen
-                    </span>
+                {actionableBuyAlerts.length === 0 ? (
+                  <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
+                    Geen directe groene koopkansen in deze selectie.
                   </div>
-
-                  {cautionBuyAlerts.length === 0 ? (
-                    <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
-                      Geen aandachts-koopsignalen in deze selectie.
-                    </div>
-                  ) : (
-                    <div className="space-y-4">
-                      {cautionBuyAlerts.map(renderAlertCard)}
-                    </div>
-                  )}
-                </div>
+                ) : (
+                  <div className="space-y-4">
+                    {actionableBuyAlerts.map(renderAlertCard)}
+                  </div>
+                )}
               </div>
 
-              {/* Verkoopsignalen onderaan in 2-koloms modus */}
-              {sellAlerts.length > 0 && (
-                <div className="space-y-4 pt-4 border-t border-gray-200">
-                  <div className="bg-rose-50 border border-rose-200 rounded-2xl p-4 flex items-center justify-between">
-                    <div>
-                      <h2 className="text-sm font-black text-rose-900 flex items-center gap-2">
-                        <i className="ph-fill ph-x-circle text-rose-600 text-lg"></i>
-                        🔴 Verkoopsignalen ({sellAlerts.length})
-                      </h2>
-                      <p className="text-[11px] text-rose-700 mt-0.5">
-                        Posities met structurele score-daling (&lt; 5/5) na kwartaalrapportage
-                      </p>
-                    </div>
-                    <span className="px-2.5 py-1 bg-rose-600 text-white font-black text-xs rounded-xl">
-                      {sellAlerts.length} meldingen
-                    </span>
+              {/* Kolom 2: ⚠️ AANDACHT / OVERGEWAARDEERD / TOEZICHT */}
+              <div className="space-y-4">
+                <div className="bg-amber-50 border border-amber-200/90 rounded-2xl p-4 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-black text-amber-900 flex items-center gap-2">
+                      <i className="ph-fill ph-warning text-amber-600 text-lg"></i>
+                      ⚠️ Onder Toezicht ({cautionBuyAlerts.length})
+                    </h2>
+                    <p className="text-[11px] text-amber-800 mt-0.5">
+                      Overgewaardeerd ($> 1.3\times$)
+                    </p>
                   </div>
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                  <span className="px-2.5 py-1 bg-amber-600 text-white font-black text-xs rounded-xl shadow-xs">
+                    {cautionBuyAlerts.length}
+                  </span>
+                </div>
+
+                {cautionBuyAlerts.length === 0 ? (
+                  <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
+                    Geen aandachts-koopsignalen in deze selectie.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {cautionBuyAlerts.map(renderAlertCard)}
+                  </div>
+                )}
+              </div>
+
+              {/* Kolom 3: 🔴 VERPLICHTE VERKOOPORDERS */}
+              <div className="space-y-4">
+                <div className="bg-rose-50 border border-rose-200/90 rounded-2xl p-4 flex items-center justify-between">
+                  <div>
+                    <h2 className="text-sm font-black text-rose-950 flex items-center gap-2">
+                      <i className="ph-fill ph-x-circle text-rose-600 text-lg"></i>
+                      🔴 Verplichte Verkoop ({sellAlerts.length})
+                    </h2>
+                    <p className="text-[11px] text-rose-800 mt-0.5">
+                      Score &lt; 5/5 of dalende Waardeverdeling
+                    </p>
+                  </div>
+                  <span className="px-2.5 py-1 bg-rose-600 text-white font-black text-xs rounded-xl shadow-xs">
+                    {sellAlerts.length}
+                  </span>
+                </div>
+
+                {sellAlerts.length === 0 ? (
+                  <div className="bg-white rounded-2xl p-8 border border-gray-200 text-center text-gray-400 text-xs">
+                    Geen verplichte verkooporders in deze selectie.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
                     {sellAlerts.map(renderAlertCard)}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
+
             </div>
           ) : (
             /* Lijstweergave (Chronologisch) */
