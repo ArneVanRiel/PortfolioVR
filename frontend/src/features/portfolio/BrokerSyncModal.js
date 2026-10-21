@@ -28,9 +28,41 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
   const [previewData, setPreviewData] = useState([]);
   const [showReview, setShowReview] = useState(false);
   const [detectedCash, setDetectedCash] = useState(null);
+  const [syncMeta, setSyncMeta] = useState(null);
 
   const fileInputRef = useRef(null);
   const uid = localStorage.getItem('userID') || 1;
+
+  // Datum & tijd helpers voor versheid
+  const formatTimeAgo = (dateStr) => {
+    if (!dateStr) return 'Nog nooit geüpload';
+    const date = new Date(dateStr);
+    const now = new Date();
+    const diffMs = now - date;
+    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+    const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
+    const diffMins = Math.floor(diffMs / (1000 * 60));
+
+    if (diffMins < 1) return 'Zojuist';
+    if (diffMins < 60) return `${diffMins} min geleden`;
+    if (diffHours < 24) return `${diffHours} uur geleden`;
+    if (diffDays === 1) return 'Gisteren';
+    if (diffDays < 7) return `${diffDays} dagen geleden`;
+    if (diffDays < 30) return `${Math.floor(diffDays / 7)} weken geleden`;
+    return `${diffDays} dagen geleden`;
+  };
+
+  const formatDateFull = (dateStr) => {
+    if (!dateStr) return 'Geen datum beschikbaar';
+    const d = new Date(dateStr);
+    return d.toLocaleDateString('nl-BE', { day: 'numeric', month: 'short', year: 'numeric' }) + 
+           ' om ' + d.toLocaleTimeString('nl-BE', { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const formatDateShort = (dateStr) => {
+    if (!dateStr) return '-';
+    return new Date(dateStr).toLocaleDateString('nl-BE', { day: 'numeric', month: 'short', year: 'numeric' });
+  };
 
   // Haal opgeslagen instellingen op
   const fetchSettings = async () => {
@@ -41,6 +73,16 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
         res.data.forEach(item => {
           map[item.broker_name.toLowerCase()] = item;
         });
+
+        if (res.data.length > 0) {
+          const first = res.data[0];
+          setSyncMeta({
+            overallLatestImport: first.overall_latest_import,
+            overallLatestTrade: first.overall_latest_trade,
+            overallTotalTx: first.overall_total_tx,
+            latestPriceDate: first.latest_price_date
+          });
+        }
       }
       setBrokerSettings(map);
       if (map['etoro']?.cash_balance !== undefined) {
@@ -107,6 +149,15 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
         cashBalance: parseFloat(cashVal),
         cashCurrency: curr
       });
+
+      // Synchroniseer direct naar AvailableBalances & UI
+      try {
+        await http.post('/balance/available/auto-sync-brokers', { userId: uid });
+        window.dispatchEvent(new Event('availableBalanceUpdated'));
+      } catch (e) {
+        console.warn('Auto balance sync error:', e);
+      }
+
       toast.success(`${brokerName} cash saldo succesvol bijgewerkt naar ${curr === 'USD' ? '$' : '€'}${parseFloat(cashVal).toFixed(2)}!`);
       await fetchSettings();
       if (onImportSuccess) onImportSuccess();
@@ -143,6 +194,10 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
         toast.success(res.data?.message || 'eToro data succesvol gesynchroniseerd!', { id: 'etoro-sync' });
       }
       await fetchSettings();
+      try {
+        await http.post('/balance/available/auto-sync-brokers', { userId: uid });
+        window.dispatchEvent(new Event('availableBalanceUpdated'));
+      } catch (e) {}
       if (onImportSuccess) onImportSuccess();
     } catch (err) {
       console.error('Fout bij sync:', err);
@@ -787,9 +842,18 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
         }
       }
 
+      // 3. Synchroniseer altijd automatisch AvailableBalances en meld aan UI
+      try {
+        await http.post('/balance/available/auto-sync-brokers', { userId: uid });
+        window.dispatchEvent(new Event('availableBalanceUpdated'));
+      } catch (syncErr) {
+        console.warn('Auto sync balance error:', syncErr);
+      }
+
       setShowReview(false);
       onClose();
       if (onImportSuccess) onImportSuccess();
+      window.dispatchEvent(new Event('availableBalanceUpdated'));
     } catch (err) {
       console.error('Fout bij definitief importeren:', err);
       toast.error(err.response?.data?.message || 'Serverfout bij importeren van transacties.');
@@ -843,6 +907,60 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
               )}
             </button>
           ))}
+        </div>
+
+        {/* Platform Data-Versheid & Leeftijd Banner */}
+        <div className="bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white px-6 py-4 border-b border-indigo-900/40">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-start sm:items-center gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 flex items-center justify-center shrink-0 text-xl shadow-inner">
+                <i className="ph-fill ph-clock-countdown text-amber-400"></i>
+              </div>
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-black uppercase tracking-wider text-indigo-300">Data-Status Platform</span>
+                  <span className="px-2 py-0.5 rounded-full text-[10px] font-extrabold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                    🟢 {syncMeta?.overallTotalTx || allExistingTransactions?.length || 0} transacties in database
+                  </span>
+                </div>
+                <div className="text-xs text-slate-300 mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span>
+                    Laatste export geüpload: <strong className="text-white font-bold">{syncMeta?.overallLatestImport ? formatDateFull(syncMeta.overallLatestImport) : 'Onbekend'}</strong>{' '}
+                    <span className="text-amber-300 font-semibold">({formatTimeAgo(syncMeta?.overallLatestImport)})</span>
+                  </span>
+                  <span className="text-slate-500 hidden sm:inline">•</span>
+                  <span>
+                    Meest recente transactie: <strong className="text-white font-bold">{syncMeta?.overallLatestTrade ? formatDateShort(syncMeta.overallLatestTrade) : '-'}</strong>
+                  </span>
+                  {syncMeta?.latestPriceDate && (
+                    <>
+                      <span className="text-slate-500 hidden sm:inline">•</span>
+                      <span>
+                        Beurskoersen: <strong className="text-emerald-400 font-bold">{formatDateShort(syncMeta.latestPriceDate)}</strong> <span className="text-emerald-300 text-[10px]">(Actueel)</span>
+                      </span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 self-start md:self-center shrink-0">
+              <span className="text-[11px] text-amber-200/95 bg-amber-500/15 border border-amber-500/30 px-3 py-1.5 rounded-xl flex items-center gap-1.5 font-semibold">
+                <i className="ph-fill ph-shield-check text-amber-400 text-sm"></i>
+                <span>Slimme duplicaatfilter actief</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Uitleg over exportdatum en duplicaten */}
+        <div className="px-6 py-2.5 bg-blue-50/80 border-b border-blue-100/90 flex items-center justify-between text-xs text-blue-950">
+          <div className="flex items-center gap-2">
+            <i className="ph-fill ph-info text-blue-600 text-sm shrink-0"></i>
+            <span>
+              <strong>Tip bij een nieuwe export:</strong> Je hoeft bij je broker <u>niet</u> te filteren op datum. Upload gerust een overlappende periode of je volledige rekeningoverzicht; alle reeds bekende transacties worden automatisch herkend en overgeslagen.
+            </span>
+          </div>
         </div>
 
         {/* Modal Body */}
@@ -1002,6 +1120,38 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
             /* WEERGAVE 2: ETORO REKENINGOVERZICHT & API KOPPELING */
             <div className="max-w-2xl mx-auto space-y-6">
               
+              {/* eToro Data Status Info */}
+              <div className="p-4 bg-white rounded-2xl border border-gray-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-3">
+                  <span className="w-9 h-9 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-lg font-bold">
+                    <i className="ph-bold ph-clock-counter-clockwise"></i>
+                  </span>
+                  <div>
+                    <span className="text-gray-500 block text-[11px] font-medium">Laatste import / upload eToro:</span>
+                    <strong className="text-gray-900 font-bold">
+                      {brokerSettings['etoro']?.latest_imported_at ? formatDateFull(brokerSettings['etoro'].latest_imported_at) : 'Nog geen export geüpload'}
+                    </strong>
+                    {brokerSettings['etoro']?.latest_imported_at && (
+                      <span className="text-gray-400 text-[11px] ml-1.5 font-normal">({formatTimeAgo(brokerSettings['etoro'].latest_imported_at)})</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 text-[11px]">
+                  <div>
+                    <span className="text-gray-400 block">Meest recente transactie:</span>
+                    <span className="font-bold text-gray-800">
+                      {brokerSettings['etoro']?.latest_trade_date ? formatDateShort(brokerSettings['etoro'].latest_trade_date) : '-'}
+                    </span>
+                  </div>
+                  <div className="border-l border-gray-200 pl-3">
+                    <span className="text-gray-400 block">Transacties in DB:</span>
+                    <span className="font-bold text-indigo-600">
+                      {brokerSettings['etoro']?.tx_count || 0}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               {/* 1. DIRECTE CASH SALDO AANPASSING */}
               <div className="p-5 bg-gradient-to-r from-emerald-50 via-teal-50 to-emerald-50 rounded-3xl border border-emerald-200 shadow-2xs space-y-3">
                 <div className="flex items-center justify-between">
@@ -1182,6 +1332,38 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
             /* WEERGAVE 3: DEGIRO MET CASH SALDO EN BESTANDSUPLOAD */
             <div className="max-w-2xl mx-auto space-y-6">
               
+              {/* DeGiro Data Status Info */}
+              <div className="p-4 bg-white rounded-2xl border border-gray-200 shadow-2xs flex flex-wrap items-center justify-between gap-3 text-xs">
+                <div className="flex items-center gap-3">
+                  <span className="w-9 h-9 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-lg font-bold">
+                    <i className="ph-bold ph-clock-counter-clockwise"></i>
+                  </span>
+                  <div>
+                    <span className="text-gray-500 block text-[11px] font-medium">Laatste import / upload DeGiro:</span>
+                    <strong className="text-gray-900 font-bold">
+                      {brokerSettings['degiro']?.latest_imported_at ? formatDateFull(brokerSettings['degiro'].latest_imported_at) : 'Nog geen export geüpload'}
+                    </strong>
+                    {brokerSettings['degiro']?.latest_imported_at && (
+                      <span className="text-gray-400 text-[11px] ml-1.5 font-normal">({formatTimeAgo(brokerSettings['degiro'].latest_imported_at)})</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-4 text-[11px]">
+                  <div>
+                    <span className="text-gray-400 block">Meest recente transactie:</span>
+                    <span className="font-bold text-gray-800">
+                      {brokerSettings['degiro']?.latest_trade_date ? formatDateShort(brokerSettings['degiro'].latest_trade_date) : '-'}
+                    </span>
+                  </div>
+                  <div className="border-l border-gray-200 pl-3">
+                    <span className="text-gray-400 block">Transacties in DB:</span>
+                    <span className="font-bold text-indigo-600">
+                      {brokerSettings['degiro']?.tx_count || 0}
+                    </span>
+                  </div>
+                </div>
+              </div>
+
               {/* Directe DeGiro Cash Saldo Aanpassing */}
               <div className="p-5 bg-gradient-to-r from-blue-50 via-indigo-50 to-blue-50 rounded-3xl border border-blue-200 shadow-2xs space-y-3">
                 <div className="flex items-center justify-between">

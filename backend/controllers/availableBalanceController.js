@@ -233,109 +233,152 @@ const getBrokerCash = async (req, res) => {
     }
 };
 
+// Interne functie om platform cash automatisch te synchroniseren naar AvailableBalances
+const autoSyncBrokerBalancesInternal = async (userId = 1) => {
+    const pool = await sql.connect(config);
+
+    // 1. Haal laatste EUR/USD wisselkoers op
+    const fxResult = await pool.request().query(`
+        SELECT TOP 1 rate 
+        FROM DailyExchangeRates 
+        WHERE currency_pair = 'EURUSD' 
+        ORDER BY date DESC
+    `);
+    const fxRate = fxResult.recordset[0]?.rate ? parseFloat(fxResult.recordset[0].rate) : 1.13;
+
+    // 2. Haal berekende grootboek cash per broker uit PF_transactions
+    const ledgerCashResult = await pool.request()
+        .input('user_id', sql.Int, userId)
+        .query(`
+            SELECT 
+                broker_id,
+                SUM(
+                    CASE 
+                        WHEN transaction_type IN ('DEPOSIT', 'SELL', 'DIVIDEND') THEN (quantity * price)
+                        WHEN transaction_type IN ('BUY', 'WITHDRAWAL') THEN -(quantity * price)
+                        ELSE 0 
+                    END
+                    - ISNULL(fees, 0)
+                    - ISNULL(taxes, 0)
+                ) AS calculated_cash,
+                COUNT(CASE WHEN transaction_type IN ('DEPOSIT', 'WITHDRAWAL') THEN 1 END) AS cash_trans_count
+            FROM PF_transactions
+            WHERE user_id = @user_id
+            GROUP BY broker_id
+        `);
+
+    const ledgerCashMap = {};
+    ledgerCashResult.recordset.forEach(r => {
+        ledgerCashMap[r.broker_id] = {
+            calculatedCash: parseFloat(r.calculated_cash) || 0,
+            cashTransCount: parseInt(r.cash_trans_count, 10) || 0
+        };
+    });
+
+    // 3. Haal broker credentials & cash op
+    const credResult = await pool.request()
+        .input('user_id', sql.Int, userId)
+        .query(`
+            SELECT broker_name, cash_balance, cash_currency
+            FROM UserBrokerCredentials
+            WHERE user_id = @user_id
+        `);
+
+    let etoroEur = 1.58;
+    let degiroEur = 316.84;
+
+    credResult.recordset.forEach(row => {
+        const bName = (row.broker_name || '').toLowerCase();
+        const bal = row.cash_balance !== null && row.cash_balance !== undefined ? parseFloat(row.cash_balance) : 0;
+        const curr = row.cash_currency || 'EUR';
+        const valEur = curr === 'USD' ? (bal / fxRate) : bal;
+
+        if (bName.includes('etoro')) {
+            etoroEur = Math.round(valEur * 100) / 100;
+        } else if (bName.includes('degiro')) {
+            const degiroLedger = ledgerCashMap[2];
+            if (degiroLedger && degiroLedger.cashTransCount > 0) {
+                degiroEur = Math.round(degiroLedger.calculatedCash * 100) / 100;
+            } else if (row.cash_balance !== null && row.cash_balance !== undefined) {
+                degiroEur = Math.round(valEur * 100) / 100;
+            }
+        }
+    });
+
+    // 4. Haal de laatste waarden van alle saldo types op
+    const latestBalancesResult = await pool.request().query(`
+        SELECT ab.balance_type_id, ab.amount
+        FROM AvailableBalances ab
+        WHERE ab.update_date IN (
+            SELECT MAX(update_date)
+            FROM AvailableBalances
+            WHERE balance_type_id = ab.balance_type_id
+            GROUP BY balance_type_id
+        )
+    `);
+
+    const balanceMap = {};
+    latestBalancesResult.recordset.forEach(row => {
+        balanceMap[row.balance_type_id] = parseFloat(row.amount);
+    });
+
+    // Overschrijf types 1 & 2 met de platform cash
+    balanceMap[1] = etoroEur; // Etoro Cash
+    balanceMap[2] = degiroEur; // Degiro Cash
+
+    // Haal alle balance types op om te zorgen dat elk type bestaat
+    const typesResult = await pool.request().query(`SELECT balance_type_id FROM AvailableBalanceTypes`);
+    const allTypeIds = typesResult.recordset.map(t => t.balance_type_id);
+
+    const updateDate = new Date();
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+
+    try {
+        for (const typeId of allTypeIds) {
+            const amount = balanceMap[typeId] !== undefined ? balanceMap[typeId] : 0;
+            await transaction.request()
+                .input('balance_type_id', sql.Int, typeId)
+                .input('amount', sql.Decimal(18, 2), amount)
+                .input('update_date', sql.Date, updateDate)
+                .query(`
+                    MERGE INTO AvailableBalances AS target
+                    USING (SELECT @balance_type_id AS balance_type_id, @update_date AS update_date) AS source
+                    ON target.balance_type_id = source.balance_type_id AND target.update_date = source.update_date
+                    WHEN MATCHED THEN
+                        UPDATE SET amount = @amount
+                    WHEN NOT MATCHED THEN
+                        INSERT (balance_type_id, amount, update_date)
+                        VALUES (@balance_type_id, @amount, @update_date);
+                `);
+        }
+        await transaction.commit();
+
+        return {
+            success: true,
+            syncedBalances: {
+                etoroCashEur: etoroEur,
+                degiroCashEur: degiroEur,
+                totalBrokerCashEur: Math.round((etoroEur + degiroEur) * 100) / 100
+            },
+            updateDate: updateDate
+        };
+    } catch (txErr) {
+        await transaction.rollback();
+        throw txErr;
+    }
+};
+
 // Functie om platform cash automatisch in AvailableBalances te syncen
 const autoSyncBrokerBalances = async (req, res) => {
     try {
         const userId = req.user?.userID || req.user?.id || req.body.userId || 1;
-        const pool = await sql.connect(config);
-
-        // 1. Haal laatste EUR/USD wisselkoers op
-        const fxResult = await pool.request().query(`
-            SELECT TOP 1 rate 
-            FROM DailyExchangeRates 
-            WHERE currency_pair = 'EURUSD' 
-            ORDER BY date DESC
-        `);
-        const fxRate = fxResult.recordset[0]?.rate ? parseFloat(fxResult.recordset[0].rate) : 1.13;
-
-        // 2. Haal broker credentials & cash op
-        const credResult = await pool.request()
-            .input('user_id', sql.Int, userId)
-            .query(`
-                SELECT broker_name, cash_balance, cash_currency
-                FROM UserBrokerCredentials
-                WHERE user_id = @user_id
-            `);
-
-        let etoroEur = 1.58;
-        let degiroEur = 316.84;
-
-        credResult.recordset.forEach(row => {
-            const bName = (row.broker_name || '').toLowerCase();
-            const bal = row.cash_balance !== null && row.cash_balance !== undefined ? parseFloat(row.cash_balance) : 0;
-            const curr = row.cash_currency || 'EUR';
-            const valEur = curr === 'USD' ? (bal / fxRate) : bal;
-
-            if (bName.includes('etoro')) {
-                etoroEur = Math.round(valEur * 100) / 100;
-            } else if (bName.includes('degiro')) {
-                degiroEur = Math.round(valEur * 100) / 100;
-            }
+        const result = await autoSyncBrokerBalancesInternal(userId);
+        res.status(200).json({
+            message: 'Platform cash succesvol gesynchroniseerd en opgeslagen in beschikbaar vermogen!',
+            syncedBalances: result.syncedBalances,
+            updateDate: result.updateDate
         });
-
-        // 3. Haal de laatste waarden van alle saldo types op
-        const latestBalancesResult = await pool.request().query(`
-            SELECT ab.balance_type_id, ab.amount
-            FROM AvailableBalances ab
-            WHERE ab.update_date IN (
-                SELECT MAX(update_date)
-                FROM AvailableBalances
-                WHERE balance_type_id = ab.balance_type_id
-                GROUP BY balance_type_id
-            )
-        `);
-
-        const balanceMap = {};
-        latestBalancesResult.recordset.forEach(row => {
-            balanceMap[row.balance_type_id] = parseFloat(row.amount);
-        });
-
-        // Overschrijf types 1 & 2 met de platform cash
-        balanceMap[1] = etoroEur; // Etoro Cash
-        balanceMap[2] = degiroEur; // Degiro Cash
-
-        // Haal alle balance types op om te zorgen dat elk type bestaat
-        const typesResult = await pool.request().query(`SELECT balance_type_id FROM AvailableBalanceTypes`);
-        const allTypeIds = typesResult.recordset.map(t => t.balance_type_id);
-
-        const updateDate = new Date();
-        const transaction = new sql.Transaction(pool);
-        await transaction.begin();
-
-        try {
-            for (const typeId of allTypeIds) {
-                const amount = balanceMap[typeId] !== undefined ? balanceMap[typeId] : 0;
-                await transaction.request()
-                    .input('balance_type_id', sql.Int, typeId)
-                    .input('amount', sql.Decimal(18, 2), amount)
-                    .input('update_date', sql.Date, updateDate)
-                    .query(`
-                        MERGE INTO AvailableBalances AS target
-                        USING (SELECT @balance_type_id AS balance_type_id, @update_date AS update_date) AS source
-                        ON target.balance_type_id = source.balance_type_id AND target.update_date = source.update_date
-                        WHEN MATCHED THEN
-                            UPDATE SET amount = @amount
-                        WHEN NOT MATCHED THEN
-                            INSERT (balance_type_id, amount, update_date)
-                            VALUES (@balance_type_id, @amount, @update_date);
-                    `);
-            }
-            await transaction.commit();
-
-            res.status(200).json({
-                message: 'Platform cash succesvol gesynchroniseerd en opgeslagen in beschikbaar vermogen!',
-                syncedBalances: {
-                    etoroCashEur: etoroEur,
-                    degiroCashEur: degiroEur,
-                    totalBrokerCashEur: Math.round((etoroEur + degiroEur) * 100) / 100
-                },
-                updateDate: updateDate
-            });
-        } catch (txErr) {
-            await transaction.rollback();
-            throw txErr;
-        }
-
     } catch (err) {
         console.error('Fout bij auto-sync broker balances:', err);
         res.status(500).json({ message: 'Fout bij automatische synchronisatie van platform cash.', error: err.message });
@@ -347,5 +390,6 @@ module.exports = {
     getLatestAvailableBalance,
     addOrUpdateAvailableBalance,
     getBrokerCash,
-    autoSyncBrokerBalances
+    autoSyncBrokerBalances,
+    autoSyncBrokerBalancesInternal
 };

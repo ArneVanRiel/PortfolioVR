@@ -561,6 +561,57 @@ const PortfolioManager = () => {
     return result;
   }, [rawTransactions, selectedTypes, chartPeriod, customStartDate, customEndDate]);
 
+  // Bereken hoe vers de data in het portfolio is (laatste transactiedatum en laatste importtijdstip)
+  const portfolioFreshness = useMemo(() => {
+    if (!rawTransactions || rawTransactions.length === 0) return null;
+    let latestTrade = null;
+    let latestImport = null;
+
+    for (const t of rawTransactions) {
+      if (t.purchase_time) {
+        const d = new Date(t.purchase_time);
+        if (!isNaN(d.getTime())) {
+          if (!latestTrade || d > latestTrade) latestTrade = d;
+        }
+      }
+      if (t.created_at) {
+        const c = new Date(t.created_at);
+        if (!isNaN(c.getTime())) {
+          if (!latestImport || c > latestImport) latestImport = c;
+        }
+      }
+    }
+
+    if (!latestTrade) return null;
+
+    const now = new Date();
+    const tradeAgeDays = Math.floor((now - latestTrade) / (1000 * 60 * 60 * 24));
+
+    const formatAgo = (date) => {
+      if (!date) return '-';
+      const diffMs = now - date;
+      const mins = Math.floor(diffMs / (1000 * 60));
+      if (mins < 60) return `${Math.max(1, mins)}m geleden`;
+      const hours = Math.floor(mins / 60);
+      if (hours < 24) return `${hours}u geleden`;
+      const days = Math.floor(hours / 24);
+      if (days === 1) return 'gisteren';
+      if (days < 30) return `${days}d geleden`;
+      return date.toLocaleDateString('nl-BE', { day: 'numeric', month: 'short' });
+    };
+
+    return {
+      latestTrade,
+      latestImport,
+      tradeDateFormatted: latestTrade.toLocaleDateString('nl-BE', { day: 'numeric', month: 'short', year: 'numeric' }),
+      latestTradeStr: latestTrade.toLocaleDateString('nl-BE'),
+      latestImportStr: latestImport ? latestImport.toLocaleString('nl-BE') : 'Onbekend',
+      importAgoFormatted: latestImport ? formatAgo(latestImport) : 'Onbekend',
+      tradeAgeDays,
+      isRecent: tradeAgeDays <= 7,
+    };
+  }, [rawTransactions]);
+
   // --- Sorteer Logica ---
   const handleHoldingsSort = (key) => {
     let direction = 'asc';
@@ -1665,6 +1716,28 @@ const PortfolioManager = () => {
                     EUR (€)
                   </button>
                 </div>
+
+                {/* Data Leeftijd & Versheid Badge */}
+                {portfolioFreshness && (
+                  <button
+                    type="button"
+                    onClick={() => setIsBrokerSyncOpen(true)}
+                    className="hidden sm:inline-flex items-center gap-2 bg-slate-100 hover:bg-slate-200/90 text-slate-700 border border-slate-200/90 font-medium px-3 py-1.5 rounded-xl text-xs transition-all mr-2 group shadow-2xs"
+                    title={`Meest recente transactie: ${portfolioFreshness.latestTradeStr} (${portfolioFreshness.tradeAgeDays}d oud)\nLaatste import: ${portfolioFreshness.latestImportStr}\nKlik om nieuwe exports te uploaden of cash aan te passen`}
+                  >
+                    <span className="relative flex h-2 w-2">
+                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${portfolioFreshness.isRecent ? 'bg-emerald-400 opacity-75' : 'bg-amber-400 opacity-75'}`}></span>
+                      <span className={`relative inline-flex rounded-full h-2 w-2 ${portfolioFreshness.isRecent ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                    </span>
+                    <span className="text-[11px] font-semibold text-slate-800">
+                      Data: <span className="font-bold">{portfolioFreshness.tradeDateFormatted}</span>
+                    </span>
+                    <span className="text-slate-300 text-[10px] hidden md:inline">|</span>
+                    <span className="text-slate-500 text-[11px] hidden md:inline">
+                      Upload: <span className="font-medium text-slate-700">{portfolioFreshness.importAgoFormatted}</span>
+                    </span>
+                  </button>
+                )}
 
                 {/* Brokers & Synchronisatie Knop (Altijd zichtbaar) */}
                 <button

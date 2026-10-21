@@ -62,6 +62,8 @@ const getBrokerSettings = async (req, res) => {
     try {
         const userId = req.user?.userID || req.user?.id || req.query.userId || 1;
         const pool = await sql.connect(config);
+
+        // 1. Credentials
         const result = await pool.request()
             .input('user_id', sql.Int, userId)
             .query(`
@@ -79,7 +81,67 @@ const getBrokerSettings = async (req, res) => {
                 FROM UserBrokerCredentials
                 WHERE user_id = @user_id
             `);
-        res.json(result.recordset);
+
+        // 2. Transactiestatistieken per broker
+        const txStatsResult = await pool.request()
+            .input('user_id', sql.Int, userId)
+            .query(`
+                SELECT 
+                    LOWER(ISNULL(b.name, 'overig')) as broker_key,
+                    t.broker_id,
+                    MAX(t.created_at) as latest_imported_at,
+                    MAX(t.purchase_time) as latest_trade_date,
+                    COUNT(t.id) as tx_count
+                FROM PF_transactions t
+                LEFT JOIN Brokers b ON t.broker_id = b.broker_id
+                WHERE t.user_id = @user_id
+                GROUP BY b.name, t.broker_id
+            `);
+
+        // 3. Algemene platform versheid
+        const overallResult = await pool.request()
+            .input('user_id', sql.Int, userId)
+            .query(`
+                SELECT 
+                    MAX(created_at) as overall_latest_import,
+                    MAX(purchase_time) as overall_latest_trade,
+                    COUNT(*) as overall_total_tx
+                FROM PF_transactions
+                WHERE user_id = @user_id
+            `);
+
+        // 4. Laatste beurskoers datum
+        const priceResult = await pool.request().query(`
+            SELECT MAX(date) as latest_price_date FROM DailyClosingPrices
+        `);
+
+        const brokerTxMap = {};
+        txStatsResult.recordset.forEach(r => {
+            brokerTxMap[r.broker_key] = r;
+            if (r.broker_id === 1) brokerTxMap['etoro'] = r;
+            if (r.broker_id === 2) brokerTxMap['degiro'] = r;
+        });
+
+        const overall = overallResult.recordset[0] || {};
+        const latestPriceDate = priceResult.recordset[0]?.latest_price_date || null;
+
+        // Koppel statistieken aan de broker items
+        const enrichedList = result.recordset.map(row => {
+            const bKey = (row.broker_name || '').toLowerCase();
+            const bStats = brokerTxMap[bKey] || {};
+            return {
+                ...row,
+                latest_imported_at: bStats.latest_imported_at || row.last_sync_date || null,
+                latest_trade_date: bStats.latest_trade_date || null,
+                tx_count: bStats.tx_count || 0,
+                overall_latest_import: overall.overall_latest_import || null,
+                overall_latest_trade: overall.overall_latest_trade || null,
+                overall_total_tx: overall.overall_total_tx || 0,
+                latest_price_date: latestPriceDate
+            };
+        });
+
+        res.json(enrichedList);
     } catch (err) {
         console.error('Fout bij ophalen broker settings:', err);
         res.status(500).json({ message: 'Serverfout bij ophalen broker instellingen' });
