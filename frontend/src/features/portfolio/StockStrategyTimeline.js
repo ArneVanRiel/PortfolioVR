@@ -89,9 +89,9 @@ const StockStrategyTimeline = ({
   const avgDiff = summary.avgPriceDiffPct || 0;
 
   return (
-    <div className="space-y-6">
-      {/* 1. HOOFD STATISTIEKEN BANNER - 2x2 op mobiel */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
+    <div className="space-y-2.5 sm:space-y-6">
+      {/* 1. HOOFD STATISTIEKEN BANNER - Enkel op desktop/tablet (op mobiel verborgen wegens redundantie met filtertabs) */}
+      <div className="hidden sm:grid sm:grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
         {/* Kaart 1: Gekoppelde Aankopen */}
         <div className="bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-emerald-200 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
           <div className="flex items-center justify-between">
@@ -174,8 +174,8 @@ const StockStrategyTimeline = ({
         </div>
       </div>
 
-      {/* 2. UITLEG OVER DE STRIKTE KOPPELINGSREGELS */}
-      <div className="bg-gradient-to-r from-indigo-50/70 via-blue-50/50 to-white rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-indigo-200/80 shadow-2xs">
+      {/* 2. UITLEG OVER DE STRIKTE KOPPELINGSREGELS - Enkel op desktop */}
+      <div className="hidden sm:block bg-gradient-to-r from-indigo-50/70 via-blue-50/50 to-white rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-indigo-200/80 shadow-2xs">
         <div className="flex items-center justify-between cursor-pointer" onClick={() => setShowInfoBanner(!showInfoBanner)}>
           <div className="flex items-center gap-2 sm:gap-2.5">
             <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
@@ -221,10 +221,10 @@ const StockStrategyTimeline = ({
       </div>
 
       {/* 3. FILTER BAR VOOR TIJDLIJN */}
-      <div className="bg-white p-2.5 sm:p-4 rounded-xl sm:rounded-3xl border border-gray-200 shadow-xs space-y-2 sm:space-y-3">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+      <div className="bg-white p-2 sm:p-4 rounded-xl sm:rounded-3xl border border-gray-200 shadow-xs space-y-1.5 sm:space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2.5">
           {/* Status Tabs: Horizontaal scrollbaar op mobiel */}
-          <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl sm:rounded-2xl text-xs font-bold overflow-x-auto no-scrollbar w-full sm:w-auto">
+          <div className="flex items-center gap-1 sm:gap-1.5 bg-gray-100 p-0.5 sm:p-1 rounded-xl sm:rounded-2xl text-xs font-bold overflow-x-auto no-scrollbar w-full sm:w-auto">
             <button
               onClick={() => setFilterType('ALL')}
               className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all whitespace-nowrap shrink-0 ${
@@ -287,47 +287,46 @@ const StockStrategyTimeline = ({
           <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
             <button
               onClick={() => setSortOrder(sortOrder === 'DESC' ? 'ASC' : 'DESC')}
-              className="px-2.5 py-1 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg sm:rounded-xl transition-all flex items-center gap-1"
+              className="px-2 py-0.5 sm:px-2.5 sm:py-1 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg sm:rounded-xl transition-all flex items-center gap-1"
             >
               <i className={`ph-bold ${sortOrder === 'DESC' ? 'ph-sort-descending' : 'ph-sort-ascending'}`}></i>
               <span>{sortOrder === 'DESC' ? 'Nieuwste' : 'Oudste'}</span>
             </button>
 
-            <div className="text-xs text-gray-400 font-medium">
+            <div className="text-[11px] sm:text-xs text-gray-400 font-medium">
               <strong>{filteredTimeline.length}</strong> acties
             </div>
           </div>
         </div>
 
         {/* Tweede rij: Zoeken en Ticker Dropdown */}
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-gray-100">
-          <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+        <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-3 pt-1.5 sm:pt-2 border-t border-gray-100">
+          <div className="flex items-center gap-1.5 w-full sm:w-auto flex-1">
             {/* Search Input */}
-            <div className="relative min-w-[200px]">
-              <i className="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
+            <div className="relative flex-1 sm:w-56 sm:flex-initial">
+              <i className="ph ph-magnifying-glass absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-xs"></i>
               <input
                 type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Zoek op ticker of naam..."
-                className="w-full pl-9 pr-3 py-1.5 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:border-indigo-500"
+                placeholder="Zoek ticker..."
+                className="w-full pl-7 pr-3 py-1 text-xs bg-gray-50 border border-gray-200 rounded-lg sm:rounded-xl focus:outline-none focus:border-indigo-500"
               />
               {searchQuery && (
-                <button onClick={() => setSearchQuery('')} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
+                <button onClick={() => setSearchQuery('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">
                   <i className="ph-bold ph-x text-xs"></i>
                 </button>
               )}
             </div>
 
             {/* Ticker Dropdown */}
-            <div className="flex items-center gap-1.5 text-xs">
-              <span className="text-gray-400 font-bold uppercase text-[10px]">Aandeel:</span>
+            <div className="flex items-center gap-1 text-xs shrink-0">
               <select
                 value={selectedTicker}
                 onChange={(e) => setSelectedTicker(e.target.value)}
-                className="py-1.5 px-3 text-xs bg-gray-50 border border-gray-200 rounded-xl font-bold text-gray-800 focus:outline-none focus:border-indigo-500"
+                className="py-1 px-2 text-xs bg-gray-50 border border-gray-200 rounded-lg sm:rounded-xl font-bold text-gray-800 focus:outline-none focus:border-indigo-500 max-w-[130px] sm:max-w-none"
               >
-                <option value="ALL">Alle aandelen ({uniqueTickers.length})</option>
+                <option value="ALL">Alle ({uniqueTickers.length})</option>
                 {uniqueTickers.map(t => (
                   <option key={t} value={t}>{t}</option>
                 ))}
@@ -337,7 +336,7 @@ const StockStrategyTimeline = ({
 
           {/* Subfilter voor Gekoppelde Aankopen: Voordeliger vs Duurder */}
           {filterType === 'MATCHED' && (
-            <div className="flex items-center gap-1.5 bg-emerald-50/70 p-1 rounded-xl text-[11px] font-bold border border-emerald-200/60">
+            <div className="flex items-center gap-1 bg-emerald-50/70 p-0.5 sm:p-1 rounded-lg sm:rounded-xl text-[10px] sm:text-[11px] font-bold border border-emerald-200/60 overflow-x-auto no-scrollbar">
               <span className="text-emerald-800 px-1.5">Prijs tov signaal:</span>
               <button
                 onClick={() => setComparisonFilter('ALL')}

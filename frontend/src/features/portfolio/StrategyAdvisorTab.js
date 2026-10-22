@@ -661,19 +661,19 @@ const StrategyAdvisorTab = () => {
   };
 
   return (
-    <div className="space-y-6 animate-fade-in">
+    <div className="space-y-3 sm:space-y-6 animate-fade-in">
       
       {/* HOOFDSTRATEGIE SELECTOR: Losse Aandelen vs ETF DCA Strategie */}
-      <div className="flex items-center gap-1.5 p-1.5 bg-slate-900/5 border border-slate-200 rounded-2xl sm:rounded-3xl">
+      <div className="flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 bg-slate-900/5 border border-slate-200 rounded-xl sm:rounded-3xl">
         <button
           onClick={() => setStrategyType('stocks')}
-          className={`flex-1 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1.5 sm:gap-2 ${
+          className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
             strategyType === 'stocks'
               ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
               : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          <i className="ph-fill ph-diamonds-four text-sm sm:text-base text-amber-300"></i>
+          <i className="ph-fill ph-diamonds-four text-xs sm:text-base text-amber-300"></i>
           <span>Losse Aandelen</span>
           <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
             strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
@@ -684,13 +684,13 @@ const StrategyAdvisorTab = () => {
 
         <button
           onClick={() => setStrategyType('etf')}
-          className={`flex-1 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1.5 sm:gap-2 ${
+          className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
             strategyType === 'etf'
               ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
               : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
           }`}
         >
-          <i className="ph-fill ph-chart-line-up text-sm sm:text-base text-emerald-300"></i>
+          <i className="ph-fill ph-chart-line-up text-xs sm:text-base text-emerald-300"></i>
           <span>ETF DCA</span>
           <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
             strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
@@ -704,8 +704,8 @@ const StrategyAdvisorTab = () => {
         <EtfStrategyAdvisor />
       ) : (
         <>
-          {/* 1. HERO BANNER: Alignment Score & Actie Overzicht */}
-      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-2xl sm:rounded-3xl p-4 sm:p-7 text-white shadow-xl border border-indigo-900/40">
+          {/* 1. HERO BANNER: Alignment Score & Actie Overzicht (Verborgen op mobiel voor maximale compactheid) */}
+      <div className="hidden sm:block relative overflow-hidden bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-2xl sm:rounded-3xl p-4 sm:p-7 text-white shadow-xl border border-indigo-900/40">
         <div className="absolute top-0 right-0 -mt-8 -mr-8 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="absolute bottom-0 left-0 -mb-8 -ml-8 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
@@ -779,9 +779,9 @@ const StrategyAdvisorTab = () => {
         </div>
       </div>
 
-      {/* CASH ALLOCATIE & RESERVERING WIDGET (ETF's vs Losse Aandelen) */}
+      {/* CASH ALLOCATIE & RESERVERING WIDGET (ETF's vs Losse Aandelen - Verborgen op mobiel) */}
       {data?.cashAllocation && (
-        <div className="bg-white rounded-2xl sm:rounded-3xl p-3 sm:p-5 border border-slate-200/80 shadow-xs">
+        <div className="hidden sm:block bg-white rounded-2xl sm:rounded-3xl p-3 sm:p-5 border border-slate-200/80 shadow-xs">
           <div 
             className="flex items-center justify-between cursor-pointer select-none"
             onClick={() => setIsCashWidgetOpen(prev => !prev)}
@@ -858,11 +858,11 @@ const StrategyAdvisorTab = () => {
       )}
 
       {/* 2. SUB-NAVIGATIE TUSSEN WEERGAVEN */}
-      <div className="flex items-center justify-between gap-2 border-b border-gray-200 pb-2">
-        <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl sm:rounded-2xl overflow-x-auto no-scrollbar w-full sm:w-auto">
+      <div className="flex items-center justify-between gap-1.5 border-b border-gray-200 pb-2">
+        <div className="flex items-center gap-1 sm:gap-1.5 bg-gray-100 p-0.5 sm:p-1 rounded-xl sm:rounded-2xl overflow-x-auto no-scrollbar flex-1 sm:flex-initial">
           <button
             onClick={() => setActiveViewMode('timeline')}
-            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'timeline'
                 ? 'bg-white text-emerald-800 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
@@ -873,7 +873,7 @@ const StrategyAdvisorTab = () => {
           </button>
           <button
             onClick={() => setActiveViewMode('alerts')}
-            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'alerts'
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
@@ -884,7 +884,7 @@ const StrategyAdvisorTab = () => {
           </button>
           <button
             onClick={() => setActiveViewMode('charts')}
-            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'charts'
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
@@ -895,7 +895,7 @@ const StrategyAdvisorTab = () => {
           </button>
           <button
             onClick={() => setActiveViewMode('matrix')}
-            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+            className={`px-2.5 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'matrix'
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
@@ -905,6 +905,17 @@ const StrategyAdvisorTab = () => {
             <span>Matrix ({holdings.length})</span>
           </button>
         </div>
+
+        {/* Data Verversen Knop (Altijd direct bereikbaar) */}
+        <button
+          onClick={handleTriggerUpdate}
+          disabled={isUpdating}
+          className="px-2.5 sm:px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold rounded-xl shadow-xs transition-all flex items-center justify-center gap-1 text-xs shrink-0 disabled:opacity-50"
+          title="Ververs actuele koersen & MACD berekeningen"
+        >
+          <i className={`ph-bold ph-arrows-clockwise text-xs sm:text-sm ${isUpdating ? 'animate-spin' : ''}`}></i>
+          <span className="hidden xs:inline sm:inline">{isUpdating ? 'Bezig...' : 'Verversen'}</span>
+        </button>
 
         <button
           onClick={() => setShowTimingRules(!showTimingRules)}

@@ -131,6 +131,7 @@ const PortfolioManager = () => {
   const [repairProgress, setRepairProgress] = useState(0);
   const [actionsDropdownOpen, setActionsDropdownOpen] = useState(false);
   const [toolsDropdownOpen, setToolsDropdownOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [logMessages, setLogMessages] = useState([]);
   const [showLogModal, setShowLogModal] = useState(false);
   const [logModalTitle, setLogModalTitle] = useState('');
@@ -1707,11 +1708,11 @@ const PortfolioManager = () => {
   // Global loading screen removed to keep layout stable and tab items interactive
 
   return (
-    <div className="space-y-6 font-sans text-gray-900 bg-gray-50/50 min-h-screen">
+    <div className="space-y-3 sm:space-y-6 font-sans text-gray-900 bg-gray-50/50 min-h-screen">
       {/* Top Card: Hero Header + Tabs (Snowball Stijl) */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-visible">
-        <div className="p-5 pb-0">
-          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4 mb-3 sm:mb-4">
+        <div className="p-2 sm:p-5 pb-0 sm:pb-0">
+          <div className="hidden sm:flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4 mb-3 sm:mb-4">
             <div className="flex items-center justify-between w-full sm:w-auto">
               <h1 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">Mijn Portfolio</h1>
 
@@ -1927,23 +1928,185 @@ const PortfolioManager = () => {
             )}
           </div>
 
-          {/* Tab Navigatie */}
-          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto no-scrollbar" aria-label="Tabs">
-            {TABS.map(tab => (
+          {/* Tab Navigatie + Mobiele Optieknop */}
+          <div className="flex items-center justify-between gap-1 pb-1 sm:pb-0">
+            <nav className="flex space-x-1 sm:space-x-6 overflow-x-auto no-scrollbar flex-1" aria-label="Tabs">
+              {TABS.map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => startTransition(() => setActiveTab(tab.id))}
+                  className={`whitespace-nowrap py-1.5 sm:py-3 px-2 sm:px-1 border-b-2 font-bold sm:font-medium text-xs sm:text-sm transition-colors flex items-center gap-1.5 sm:gap-2 shrink-0 ${
+                    activeTab === tab.id 
+                      ? 'border-blue-600 text-blue-600' 
+                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  }`}
+                >
+                  <i className={`ph-fill ${tab.icon} text-sm sm:text-lg`}></i>
+                  {tab.label}
+                </button>
+              ))}
+            </nav>
+
+            {/* Mobile Options Button (Alleen zichtbaar op mobiel) */}
+            <div className="sm:hidden relative shrink-0">
               <button
-                key={tab.id}
-                onClick={() => startTransition(() => setActiveTab(tab.id))}
-                className={`whitespace-nowrap py-2 sm:py-3 px-2 sm:px-1 border-b-2 font-bold sm:font-medium text-xs sm:text-sm transition-colors flex items-center gap-1.5 sm:gap-2 shrink-0 ${
-                  activeTab === tab.id 
-                    ? 'border-blue-600 text-blue-600' 
-                    : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                }`}
+                type="button"
+                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+                className="w-8 h-8 text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 rounded-lg transition-colors flex items-center justify-center border border-gray-200"
+                title="Opties & Instellingen"
+                aria-label="Opties menu"
               >
-                <i className={`ph-fill ${tab.icon} text-base sm:text-lg`}></i>
-                {tab.label}
+                <i className="ph-bold ph-dots-three-vertical text-lg"></i>
               </button>
-            ))}
-          </nav>
+
+              {mobileMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-xs" onClick={() => setMobileMenuOpen(false)}></div>
+                  <div className="origin-top-right absolute right-0 mt-2 w-72 max-w-[88vw] rounded-2xl shadow-2xl bg-white ring-1 ring-black/10 z-50 overflow-hidden py-2 text-left animate-fade-in divide-y divide-gray-100">
+                    {/* Valuta Keuze */}
+                    <div className="px-3.5 py-2.5">
+                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
+                        <i className="ph-bold ph-currency-dollar"></i> Weergave Valuta
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5 bg-gray-100 p-1 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => { setDisplayCurrency('USD'); setMobileMenuOpen(false); }}
+                          className={`py-1.5 text-xs font-bold rounded-lg transition-all text-center ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500'}`}
+                        >
+                          USD ($)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setDisplayCurrency('EUR'); setMobileMenuOpen(false); }}
+                          className={`py-1.5 text-xs font-bold rounded-lg transition-all text-center ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500'}`}
+                        >
+                          EUR (€)
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Brokers & Sync */}
+                    <div className="px-3 py-2">
+                      <button
+                        type="button"
+                        onClick={() => { setIsBrokerSyncOpen(true); setMobileMenuOpen(false); }}
+                        className="flex items-center justify-between w-full px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 rounded-xl shadow-xs"
+                      >
+                        <div className="flex items-center gap-2">
+                          <i className="ph-fill ph-plug-charging text-amber-300 text-sm"></i>
+                          <span>Brokers & Synchronisatie</span>
+                        </div>
+                        <i className="ph-bold ph-arrow-right text-xs opacity-75"></i>
+                      </button>
+                      {portfolioFreshness && (
+                        <div className="mt-1.5 text-[10px] text-gray-500 flex items-center gap-1.5 px-1">
+                          <span className={`w-1.5 h-1.5 rounded-full ${portfolioFreshness.isRecent ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
+                          <span>Data: <strong>{portfolioFreshness.tradeDateFormatted}</strong> ({portfolioFreshness.importAgoFormatted})</span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Data Vernieuwen */}
+                    <div className="px-2 py-1">
+                      <button
+                        type="button"
+                        onClick={() => { fetchPortfolioData(); setMobileMenuOpen(false); }}
+                        className="flex items-center w-full px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-xl gap-2.5 transition-colors"
+                      >
+                        <i className={`ph-fill ph-arrows-clockwise text-blue-600 text-base ${loading ? 'animate-spin' : ''}`}></i>
+                        <span>Data Vernieuwen (Refresh)</span>
+                      </button>
+                    </div>
+
+                    {/* Transacties beheren indien van toepassing */}
+                    {['transactions', 'dividends'].includes(activeTab) && (
+                      <div className="px-2 py-1.5">
+                        <div className="px-3 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                          Transacties
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => { setIsAddModalOpen(true); setMobileMenuOpen(false); }}
+                          className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2"
+                        >
+                          <i className="ph-fill ph-plus-circle text-blue-600 text-base"></i>
+                          <span>Transactie Toevoegen</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { triggerUpload('template'); setMobileMenuOpen(false); }}
+                          className="flex items-center w-full px-3 py-1.5 text-xs text-gray-600 hover:bg-blue-50 rounded-lg gap-2 pl-6"
+                        >
+                          <i className="ph ph-file-xls text-gray-400"></i>
+                          <span>Excel Template</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { triggerUpload('etoro'); setMobileMenuOpen(false); }}
+                          className="flex items-center w-full px-3 py-1.5 text-xs text-gray-600 hover:bg-blue-50 rounded-lg gap-2 pl-6"
+                        >
+                          <i className="ph ph-file-csv text-gray-400"></i>
+                          <span>eToro CSV</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { triggerUpload('degiro'); setMobileMenuOpen(false); }}
+                          className="flex items-center w-full px-3 py-1.5 text-xs text-gray-600 hover:bg-blue-50 rounded-lg gap-2 pl-6"
+                        >
+                          <i className="ph ph-file-csv text-gray-400"></i>
+                          <span>DeGiro CSV</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {/* Systeemonderhoud */}
+                    <div className="px-2 py-1.5">
+                      <div className="px-3 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
+                        Systeemonderhoud
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => { handleRecalculateHistory(false); setMobileMenuOpen(false); }}
+                        disabled={isRecalculating}
+                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
+                      >
+                        <i className="ph-fill ph-calculator text-blue-600 text-base"></i>
+                        <span>Snel herberekenen (30d)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { handleRecalculateHistory(false, '1970-01-01'); setMobileMenuOpen(false); }}
+                        disabled={isRecalculating || isRepairing}
+                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
+                      >
+                        <i className="ph-fill ph-clock-counter-clockwise text-purple-600 text-base"></i>
+                        <span>Volledige herberekening</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { handleCheckAndRepairPrices(); setMobileMenuOpen(false); }}
+                        disabled={isRepairing || isRecalculating}
+                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
+                      >
+                        <i className="ph-fill ph-wrench text-orange-600 text-base"></i>
+                        <span>Prijsdata herstellen</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { handleUpdateExchangeRates(); setMobileMenuOpen(false); }}
+                        disabled={isRepairing || isRecalculating}
+                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
+                      >
+                        <i className="ph-fill ph-currency-dollar text-green-600 text-base"></i>
+                        <span>EUR/USD wisselkoersen ophalen</span>
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 
