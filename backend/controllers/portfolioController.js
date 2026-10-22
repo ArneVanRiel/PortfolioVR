@@ -3021,9 +3021,488 @@ const getStrategyAdvisorData = async (req, res) => {
             }
         });
 
-        // Data-Gedreven Meldingen Feed (MACD Alert triggers met Cash-Koppeling)
+        // =========================================================================
+        // TIJDLIJN & HISTORIE VAN ACTIES VOOR LOSSE AANDELEN
+        // Koppelt algoritmische koopsignalen strikt aan werkelijke aankopen:
+        // 1. Slechts 1 aankoop per signaal (1-op-1 matching)
+        // 2. Alleen gekoppeld als aankoop plaatsvond VÓÓR nieuwe kwartaalcijfers (report_date)
+        //    en VÓÓR een volgend koopsignaal van hetzelfde aandeel.
+        // 3. Toont exact prijsverschil in € en % (goedkoper/duurder dan signaal).
+        // =========================================================================
+        const toIsoDateOnly = (d) => {
+            if (!d) return null;
+            if (typeof d === 'string') {
+                const m = d.match(/^\d{4}-\d{2}-\d{2}/);
+                if (m) return m[0];
+            }
+            const dateObj = new Date(d);
+            if (isNaN(dateObj.getTime())) return null;
+            return dateObj.toISOString().split('T')[0];
+        };
+
+        const toUtcMidnight = (d) => {
+            const s = toIsoDateOnly(d);
+            return s ? new Date(`${s}T00:00:00.000Z`) : null;
+        };
+
         const allUserTx = userTxResult.recordset || [];
         const rawAlerts = alertsDbRes.recordset || [];
+        const todayStr = toIsoDateOnly(new Date());
+        const todayDate = toUtcMidnight(todayStr);
+
+        const fundsByStock = new Map();
+        for (const f of (fundamentalsResult?.recordset || [])) {
+            if (!fundsByStock.has(f.stock_id)) fundsByStock.set(f.stock_id, []);
+            fundsByStock.get(f.stock_id).push(f);
+        }
+
+        const alertsByStock = new Map();
+        for (const a of rawAlerts) {
+            const stockDetails = allStocks.find(s => s.aandeel_id === a.aandeel_id);
+            if (stockDetails && (stockDetails.asset_type === 'ETF' || stockDetails.asset_type_id === 2)) {
+                continue;
+            }
+            if (a.type_melding === 'Koopsignaal') {
+                if (!alertsByStock.has(a.aandeel_id)) alertsByStock.set(a.aandeel_id, []);
+                alertsByStock.get(a.aandeel_id).push(a);
+            }
+        }
+        // Sorteer alerts per aandeel chronologisch oplopend voor vensterbepaling
+        for (const [stockId, sAlerts] of alertsByStock.entries()) {
+            sAlerts.sort((a, b) => new Date(a.date) - new Date(b.date));
+        }
+
+        const txsByStock = new Map();
+        for (const t of allUserTx) {
+            const stockDetails = allStocks.find(s => s.aandeel_id === t.aandeel_id);
+            if (stockDetails && (stockDetails.asset_type === 'ETF' || stockDetails.asset_type_id === 2)) {
+                continue;
+            }
+            if (!txsByStock.has(t.aandeel_id)) txsByStock.set(t.aandeel_id, []);
+            txsByStock.get(t.aandeel_id).push(t);
+        }
+        for (const [stockId, sTxs] of txsByStock.entries()) {
+            sTxs.sort((a, b) => new Date(a.purchase_time) - new Date(b.purchase_time));
+        }
+
+        const stockTimeline = [];
+        const alertTimelineStatusMap = new Map();
+        const usedTxIds = new Set();
+        let totalMatched = 0;
+        let totalExpired = 0;
+        let totalOpen = 0;
+        let totalUnderSupervision = 0;
+        let cheaperCount = 0;
+        let higherCount = 0;
+        let totalDiffPctSum = 0;
+
+        for (const [stockId, stockAlerts] of alertsByStock.entries()) {
+            const stockDetails = allStocks.find(s => s.aandeel_id === stockId);
+            // Skip ETFs from stock timeline (ETFs belong to the ETF DCA Strategy)
+            if (stockDetails && (stockDetails.asset_type === 'ETF' || stockDetails.asset_type_id === 2)) continue;
+
+            const stockFunds = fundsByStock.get(stockId) || [];
+            const stockTxs = (txsByStock.get(stockId) || []).filter(t => t.transaction_type === 'BUY');
+
+            for (let i = 0; i < stockAlerts.length; i++) {
+                const alert = stockAlerts[i];
+                const alertDateStr = toIsoDateOnly(alert.date);
+                const alertDate = toUtcMidnight(alertDateStr);
+
+                // 1. Bepaal datum van het eerstvolgende koopsignaal voor dit aandeel
+                let nextAlertDate = null;
+                let nextAlertDateStr = null;
+                if (i + 1 < stockAlerts.length) {
+                    nextAlertDateStr = toIsoDateOnly(stockAlerts[i + 1].date);
+                    nextAlertDate = toUtcMidnight(nextAlertDateStr);
+                }
+
+                // 2. Bepaal datum van de eerstvolgende kwartaalcijfers (report_date) strictly after alertDate
+                let nextReportDate = null;
+                let nextReportDateStr = null;
+                for (const f of stockFunds) {
+                    const rDateStr = toIsoDateOnly(f.report_date);
+                    const rDate = toUtcMidnight(rDateStr);
+                    if (rDate && alertDate && rDate > alertDate) {
+                        if (!nextReportDate || rDate < nextReportDate) {
+                            nextReportDate = rDate;
+                            nextReportDateStr = rDateStr;
+                        }
+                    }
+                }
+
+                // 3. Geldigheidsvenster: min(nextAlertDate, nextReportDate)
+                let windowEndDate = null;
+                let windowEndDateStr = null;
+                let expireReason = null;
+                let expireType = null; // 'NEW_SIGNAL' | 'NEW_QUARTER'
+
+                if (nextAlertDate && nextReportDate) {
+                    if (nextAlertDate <= nextReportDate) {
+                        windowEndDate = nextAlertDate;
+                        windowEndDateStr = nextAlertDateStr;
+                        expireType = 'NEW_SIGNAL';
+                        expireReason = `Nieuw koopsignaal op ${nextAlertDateStr}`;
+                    } else {
+                        windowEndDate = nextReportDate;
+                        windowEndDateStr = nextReportDateStr;
+                        expireType = 'NEW_QUARTER';
+                        expireReason = `Nieuwe kwartaalcijfers gepubliceerd op ${nextReportDateStr}`;
+                    }
+                } else if (nextAlertDate) {
+                    windowEndDate = nextAlertDate;
+                    windowEndDateStr = nextAlertDateStr;
+                    expireType = 'NEW_SIGNAL';
+                    expireReason = `Nieuw koopsignaal op ${nextAlertDateStr}`;
+                } else if (nextReportDate) {
+                    windowEndDate = nextReportDate;
+                    windowEndDateStr = nextReportDateStr;
+                    expireType = 'NEW_QUARTER';
+                    expireReason = `Nieuwe kwartaalcijfers gepubliceerd op ${nextReportDateStr}`;
+                }
+
+                // 4. Koppel de EERSTE ongebruikte aankoop binnen dit venster (max 1 aankoop per signaal!)
+                let matchedTx = null;
+                for (const tx of stockTxs) {
+                    if (usedTxIds.has(tx.id)) continue;
+                    const txDate = toUtcMidnight(tx.purchase_time);
+                    if (txDate && alertDate && txDate >= alertDate) {
+                        if (!windowEndDate || txDate < windowEndDate) {
+                            matchedTx = tx;
+                            usedTxIds.add(tx.id);
+                            break; // Slechts 1 aankoop per signaal
+                        }
+                    }
+                }
+
+                const alertPriceConverted = toDisplayCurrency(alert.prijs_op_moment || 0, alert.ticker_symbol, stockDetails?.asset_type);
+
+                // Controleer of aandeel overgewaardeerd is of een dalende waardeverdeling heeft, of score < 5
+                const intrinsicValRaw = stockDetails?.intrinsieke_waarde;
+                const intrinsicValConverted = intrinsicValRaw ? toDisplayCurrency(intrinsicValRaw, alert.ticker_symbol, stockDetails?.asset_type) : null;
+                const priceToIntrinsic = (intrinsicValConverted && intrinsicValConverted > 0 && alertPriceConverted > 0)
+                    ? (alertPriceConverted / intrinsicValConverted)
+                    : null;
+                const isOvervalued = priceToIntrinsic !== null && priceToIntrinsic > maxPriceToIntrinsic;
+                const isWvDown = stockDetails && stockDetails.prev_waarde_verdeling !== null && stockDetails.waarde_verdeling < stockDetails.prev_waarde_verdeling;
+                const stockScore = stockDetails?.selectiecriteria;
+                const isScoreLow = stockScore === null || stockScore === undefined || stockScore < 5;
+                const isCautionStock = isOvervalued || isWvDown || isScoreLow;
+                const cautionReason = isScoreLow 
+                    ? `Aandeel heeft selectiecriteria Score ${stockScore ?? 'onbekend'}/5 (< 5/5). Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
+                    : (isOvervalued 
+                        ? `Koers noteert ${priceToIntrinsic?.toFixed(2)}x intrinsieke waarde (> ${maxPriceToIntrinsic}x). Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
+                        : `Waardeverdeling is recent gedaald van ${stockDetails?.prev_waarde_verdeling?.toFixed(1)}% naar ${(stockDetails?.waarde_verdeling || 0).toFixed(1)}%. Conform de backtest-strategie wordt dit aandeel NIET gekocht.`);
+
+                if (matchedTx) {
+                    totalMatched++;
+                    const txPriceConverted = toDisplayCurrency(matchedTx.price || 0, alert.ticker_symbol, stockDetails?.asset_type);
+                    const priceDiff = txPriceConverted - alertPriceConverted;
+                    const priceDiffPct = alertPriceConverted > 0 ? (priceDiff / alertPriceConverted) * 100 : 0;
+                    const isCheaper = txPriceConverted <= alertPriceConverted;
+                    if (isCheaper) cheaperCount++; else higherCount++;
+                    totalDiffPctSum += priceDiffPct;
+
+                    const txDateStr = toIsoDateOnly(matchedTx.purchase_time);
+                    const txDate = toUtcMidnight(txDateStr);
+                    const daysBetween = Math.round((txDate.getTime() - alertDate.getTime()) / (1000 * 60 * 60 * 24));
+
+                    let comparisonBadge = '';
+                    let comparisonDetail = '';
+                    if (Math.abs(priceDiff) < 0.01) {
+                        comparisonBadge = '🎯 Exact op Signaal';
+                        comparisonDetail = 'Aangekocht exact aan de signaalprijs';
+                    } else if (isCheaper) {
+                        comparisonBadge = `🟢 €${Math.abs(priceDiff).toFixed(2)} (${Math.abs(priceDiffPct).toFixed(1)}%) Voordeliger`;
+                        comparisonDetail = `€${Math.abs(priceDiff).toFixed(2)} per aandeel onder de signaalprijs gekocht`;
+                    } else {
+                        comparisonBadge = `🟠 €${priceDiff.toFixed(2)} (+${priceDiffPct.toFixed(1)}%) Boven Signaal`;
+                        comparisonDetail = `€${priceDiff.toFixed(2)} per aandeel boven de signaalprijs gekocht`;
+                    }
+
+                    alertTimelineStatusMap.set(alert.alert_id, {
+                        status: 'EXECUTED',
+                        matchedTx,
+                        alertDateStr,
+                        windowEndDateStr,
+                        expireReason
+                    });
+
+                    stockTimeline.push({
+                        id: `matched_${alert.alert_id}_${matchedTx.id}`,
+                        date: alertDateStr,
+                        executionDate: txDateStr,
+                        timestamp: alertDate.getTime(),
+                        executionTimestamp: txDate.getTime(),
+                        source: 'ALGO_AND_ACTUAL',
+                        type: 'BUY_SIGNAL_EXECUTED',
+                        status: 'EXECUTED',
+                        statusBadge: '🟢 Uitgevoerd (Aankoop Gekoppeld)',
+                        comparisonBadge,
+                        comparisonDetail,
+                        ticker: alert.ticker_symbol,
+                        name: alert.name,
+                        stockId: alert.aandeel_id,
+                        signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
+                        actualPrice: parseFloat(txPriceConverted.toFixed(2)),
+                        priceDiff: parseFloat(priceDiff.toFixed(2)),
+                        priceDiffPct: parseFloat(priceDiffPct.toFixed(2)),
+                        isCheaper,
+                        shares: matchedTx.quantity,
+                        totalAmount: parseFloat((matchedTx.quantity * txPriceConverted).toFixed(2)),
+                        daysBetweenSignalAndBuy: daysBetween,
+                        windowEndDate: windowEndDateStr,
+                        expireReason: expireReason || 'Geldig tot kwartaaleinde',
+                        txId: matchedTx.id,
+                        alertId: alert.alert_id,
+                        score: stockDetails?.selectiecriteria ?? 5,
+                        waardeVerdeling: stockDetails?.waarde_verdeling || 0,
+                        isCautionStock,
+                        cautionNotice: isOvervalued 
+                            ? `Aangekocht (let op: noteerde ${priceToIntrinsic?.toFixed(2)}x intrinsiek)` 
+                            : (isWvDown ? 'Aangekocht (let op: waardeverdeling was recent gedaald)' : null)
+                    });
+                } else {
+                    const isExpired = windowEndDate && windowEndDate <= todayDate;
+                    if (isExpired) {
+                        totalExpired++;
+                        alertTimelineStatusMap.set(alert.alert_id, {
+                            status: 'EXPIRED',
+                            alertDateStr,
+                            windowEndDateStr,
+                            expireReason,
+                            expireType
+                        });
+
+                        stockTimeline.push({
+                            id: `expired_${alert.alert_id}`,
+                            date: alertDateStr,
+                            timestamp: alertDate.getTime(),
+                            source: 'ALGORITHM',
+                            type: 'BUY_SIGNAL_EXPIRED',
+                            status: 'EXPIRED',
+                            statusBadge: '⚪ Verlopen (Niet Aangekocht)',
+                            ticker: alert.ticker_symbol,
+                            name: alert.name,
+                            stockId: alert.aandeel_id,
+                            signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
+                            windowEndDate: windowEndDateStr,
+                            expireReason: expireReason || 'Verlopen',
+                            expireType,
+                            alertId: alert.alert_id,
+                            score: stockDetails?.selectiecriteria ?? 5,
+                            waardeVerdeling: stockDetails?.waarde_verdeling || 0,
+                            isCautionStock
+                        });
+                    } else if (isCautionStock) {
+                        // ONDER TOEZICHT: Overgewaardeerd of dalende waardeverdeling of Score < 5 -> GEEN KOOPKANS CONFORM BACKTEST!
+                        totalUnderSupervision++;
+                        alertTimelineStatusMap.set(alert.alert_id, {
+                            status: 'UNDER_SUPERVISION',
+                            alertDateStr,
+                            windowEndDateStr,
+                            expireReason,
+                            isOvervalued,
+                            isWvDown,
+                            isScoreLow,
+                            cautionReason
+                        });
+
+                        stockTimeline.push({
+                            id: `caution_${alert.alert_id}`,
+                            date: alertDateStr,
+                            timestamp: alertDate.getTime(),
+                            source: 'ALGORITHM',
+                            type: 'BUY_SIGNAL_SUPERVISION',
+                            status: 'UNDER_SUPERVISION',
+                            statusBadge: isScoreLow 
+                                ? `⚠️ Onder Toezicht (Score ${stockScore ?? 'onbekend'}/5)`
+                                : (isOvervalued ? '⚠️ Onder Toezicht (Overgewaardeerd)' : '⚠️ Onder Toezicht (Dalende WV)'),
+                            ticker: alert.ticker_symbol,
+                            name: alert.name,
+                            stockId: alert.aandeel_id,
+                            signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
+                            windowEndDate: windowEndDateStr,
+                            expireReason: expireReason || 'Onder toezicht / Geen aankoop in strategie',
+                            alertId: alert.alert_id,
+                            score: stockDetails?.selectiecriteria ?? 5,
+                            waardeVerdeling: stockDetails?.waarde_verdeling || 0,
+                            isCautionStock: true,
+                            isActionableBuy: false,
+                            cautionReason
+                        });
+                    } else {
+                        // ÉCHTE, VALIDE KOOPKANS CONFORM DE STRATEGIE
+                        totalOpen++;
+                        alertTimelineStatusMap.set(alert.alert_id, {
+                            status: 'OPEN_OPPORTUNITY',
+                            alertDateStr,
+                            windowEndDateStr,
+                            expireReason
+                        });
+
+                        stockTimeline.push({
+                            id: `open_${alert.alert_id}`,
+                            date: alertDateStr,
+                            timestamp: alertDate.getTime(),
+                            source: 'ALGORITHM',
+                            type: 'BUY_SIGNAL_OPEN',
+                            status: 'OPEN_OPPORTUNITY',
+                            statusBadge: '🟢 Openstaande Koopkans',
+                            ticker: alert.ticker_symbol,
+                            name: alert.name,
+                            stockId: alert.aandeel_id,
+                            signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
+                            windowEndDate: windowEndDateStr,
+                            expireReason: expireReason || 'Actief / Nog geen nieuwe cijfers of signaal',
+                            alertId: alert.alert_id,
+                            score: stockDetails?.selectiecriteria ?? 5,
+                            waardeVerdeling: stockDetails?.waarde_verdeling || 0,
+                            isCautionStock: false,
+                            isActionableBuy: true
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. Verplichte Verkooporders koppelen aan eventuele werkelijke verkooptransacties
+        mandatorySellHoldings.forEach(h => {
+            const isFullSell = h.actionType === 'MANDATORY_SELL_SCORE';
+            const effectiveSellDateStr = toIsoDateOnly(h.reportDate || h.periodEndDate || todayStr);
+            const effectiveSellDate = toUtcMidnight(effectiveSellDateStr);
+
+            // Zoek een werkelijke SELL transactie voor dit aandeel op of na de rapportagedatum
+            const stockTxs = txsByStock.get(h.stockId) || [];
+            let matchedSellTx = null;
+            for (const tx of stockTxs) {
+                if (tx.transaction_type === 'SELL' && !usedTxIds.has(tx.id)) {
+                    const txDate = toUtcMidnight(tx.purchase_time);
+                    if (txDate && effectiveSellDate && txDate >= effectiveSellDate) {
+                        matchedSellTx = tx;
+                        usedTxIds.add(tx.id);
+                        break;
+                    }
+                }
+            }
+
+            if (matchedSellTx) {
+                const sellTxPrice = toDisplayCurrency(matchedSellTx.price, h.ticker, h.assetType);
+                stockTimeline.push({
+                    id: `matched_sell_${h.stockId}_${matchedSellTx.id}`,
+                    date: effectiveSellDateStr,
+                    executionDate: toIsoDateOnly(matchedSellTx.purchase_time),
+                    timestamp: effectiveSellDate.getTime(),
+                    source: 'ALGO_AND_ACTUAL',
+                    type: 'MANDATORY_SELL_EXECUTED',
+                    status: 'EXECUTED_SELL',
+                    statusBadge: '🔴 Verkoop Order Uitgevoerd',
+                    ticker: h.ticker,
+                    name: h.name,
+                    stockId: h.stockId,
+                    shares: matchedSellTx.quantity,
+                    actualPrice: parseFloat(sellTxPrice.toFixed(2)),
+                    totalAmount: parseFloat((matchedSellTx.quantity * sellTxPrice).toFixed(2)),
+                    note: isFullSell ? 'Positie gesloten conform Score < 5' : `Deelverkoop uitgevoerd (-${h.wvDropPct.toFixed(1)}%)`,
+                    reportDate: h.reportDate,
+                    txId: matchedSellTx.id
+                });
+            } else {
+                stockTimeline.push({
+                    id: `open_sell_${h.stockId}`,
+                    date: effectiveSellDateStr,
+                    timestamp: effectiveSellDate.getTime(),
+                    source: 'ALGORITHM',
+                    type: 'MANDATORY_SELL_SIGNAL',
+                    status: 'OPEN_SELL_ORDER',
+                    statusBadge: isFullSell ? '🔴 Verplicht Verkoopsignaal (Score < 5)' : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`,
+                    ticker: h.ticker,
+                    name: h.name,
+                    stockId: h.stockId,
+                    shares: parseFloat((h.quantity * (isFullSell ? 1.0 : (h.wvDropFraction || 0.1))).toFixed(2)),
+                    currentPrice: parseFloat(h.currentPrice.toFixed(2)),
+                    totalAmount: parseFloat((h.holdingValue * (isFullSell ? 1.0 : (h.wvDropFraction || 0.1))).toFixed(2)),
+                    note: isFullSell ? `Score gezakt naar ${h.score}/5. Verkooporder openstaand vanaf rapportagedatum ${effectiveSellDateStr}` : `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%).`,
+                    reportDate: h.reportDate
+                });
+            }
+        });
+
+        // 6. Voeg niet-gekoppelde werkelijke aan- en verkopen toe aan de tijdlijn
+        let totalManualBuys = 0;
+        let totalSells = 0;
+        for (const tx of allUserTx) {
+            const stockDetails = allStocks.find(s => s.aandeel_id === tx.aandeel_id);
+            if (stockDetails && (stockDetails.asset_type === 'ETF' || stockDetails.asset_type_id === 2)) continue;
+
+            const txDateStr = toIsoDateOnly(tx.purchase_time);
+            const txDate = toUtcMidnight(txDateStr);
+            const txPriceConverted = toDisplayCurrency(tx.price, tx.ticker_symbol, stockDetails?.asset_type);
+
+            if (tx.transaction_type === 'BUY' && !usedTxIds.has(tx.id)) {
+                totalManualBuys++;
+                stockTimeline.push({
+                    id: `manual_buy_${tx.id}`,
+                    date: txDateStr,
+                    executionDate: txDateStr,
+                    timestamp: txDate.getTime(),
+                    source: 'ACTUAL_PORTFOLIO',
+                    type: 'ACTUAL_BUY_UNLINKED',
+                    status: 'MANUAL_BUY',
+                    statusBadge: '👤 Handmatige / Extra Aankoop',
+                    ticker: tx.ticker_symbol,
+                    name: tx.name,
+                    stockId: tx.aandeel_id,
+                    actualPrice: parseFloat(txPriceConverted.toFixed(2)),
+                    shares: tx.quantity,
+                    totalAmount: parseFloat(((tx.quantity || 0) * txPriceConverted).toFixed(2)),
+                    note: 'Aankoop buiten een actief koopsignaalvenster of extra aankoop na signaal'
+                });
+            } else if (tx.transaction_type === 'SELL' && !usedTxIds.has(tx.id)) {
+                totalSells++;
+                stockTimeline.push({
+                    id: `manual_sell_${tx.id}`,
+                    date: txDateStr,
+                    executionDate: txDateStr,
+                    timestamp: txDate.getTime(),
+                    source: 'ACTUAL_PORTFOLIO',
+                    type: 'ACTUAL_SELL',
+                    status: 'MANUAL_SELL',
+                    statusBadge: '🔴 Verkoop Order',
+                    ticker: tx.ticker_symbol,
+                    name: tx.name,
+                    stockId: tx.aandeel_id,
+                    actualPrice: parseFloat(txPriceConverted.toFixed(2)),
+                    shares: tx.quantity,
+                    totalAmount: parseFloat(((tx.quantity || 0) * txPriceConverted).toFixed(2)),
+                    note: 'Werkelijk gerealiseerde verkoop'
+                });
+            }
+        }
+
+        // Sorteer de samengestelde tijdlijn chronologisch nieuwste eerst
+        stockTimeline.sort((a, b) => b.timestamp - a.timestamp);
+
+        const timelineSummary = {
+            totalEvents: stockTimeline.length,
+            totalMatchedBuys: totalMatched,
+            cheaperCount,
+            higherCount,
+            avgPriceDiffPct: totalMatched > 0 ? parseFloat((totalDiffPctSum / totalMatched).toFixed(2)) : 0,
+            totalOpenSignals: totalOpen,
+            totalUnderSupervision: totalUnderSupervision,
+            totalExpiredSignals: totalExpired,
+            totalManualBuys,
+            totalSells
+        };
+
+        // =========================================================================
+        // DATA-GEDREVEN MELDINGEN FEED (BESLISSINGEN OP DATUM)
+        // Gesynchroniseerd met de tijdlijn:
+        // - Kolom 1 (Valide Koop): Uitsluitend de actieve openstaande koopkansen (status === 'OPEN_OPPORTUNITY')
+        // - Kolom 2 (Onder Toezicht): Uitsluitend de aandelen onder toezicht (status === 'UNDER_SUPERVISION')
+        // - Kolom 3 (Verplichte Verkoop): Verplichte verkooporders
+        // =========================================================================
         const dataDrivenAlerts = [];
         const seenBuyTickers = new Set();
         
@@ -3032,13 +3511,22 @@ const getStrategyAdvisorData = async (req, res) => {
             .filter(a => a.type_melding === 'Koopsignaal')
             .forEach(rawAlert => {
                 const ticker = rawAlert.ticker_symbol;
-                const alertDateStr = new Date(rawAlert.date).toISOString().split('T')[0];
+                const alertDateStr = toIsoDateOnly(rawAlert.date);
                 const stockDetails = allStocks.find(s => s.ticker === ticker);
                 const alertPriceRaw = rawAlert.prijs_op_moment || 0;
                 const alertPrice = toDisplayCurrency(alertPriceRaw, ticker, stockDetails?.asset_type);
                 
                 const idealItem = idealPortfolio.find(i => i.ticker === ticker);
                 if (!idealItem || idealItem.score !== 5) return;
+
+                const timelineInfo = alertTimelineStatusMap.get(rawAlert.alert_id);
+                const timelineStatus = timelineInfo ? timelineInfo.status : 'OPEN_OPPORTUNITY';
+
+                // Alleen actieve signalen (Valide Koop en Onder Toezicht) horen thuis in de actieve dataDrivenAlerts feed!
+                // Reeds uitgevoerde aankopen en verlopen alerts horen uitsluitend in de Tijdlijn & Historie.
+                if (timelineStatus === 'EXPIRED' || timelineStatus === 'EXECUTED') {
+                    return;
+                }
 
                 const isLatestAlertForStock = !seenBuyTickers.has(ticker);
                 seenBuyTickers.add(ticker);
@@ -3047,21 +3535,21 @@ const getStrategyAdvisorData = async (req, res) => {
                     ? toDisplayCurrency(stockDetails.current_price, ticker, stockDetails?.asset_type) 
                     : alertPrice;
                 const currentStockPriceDate = stockDetails?.last_price_date 
-                    ? (stockDetails.last_price_date instanceof Date ? stockDetails.last_price_date.toISOString().split('T')[0] : String(stockDetails.last_price_date).split('T')[0]) 
+                    ? toIsoDateOnly(stockDetails.last_price_date)
                     : null;
 
                 const priceDiffSinceAlertEur = currentStockPrice - alertPrice;
                 const priceDiffSinceAlertPct = alertPrice > 0 ? ((currentStockPrice - alertPrice) / alertPrice) * 100 : 0;
                 const isCheaperNow = currentStockPrice < alertPrice;
 
-                const alertDateEnd = new Date(rawAlert.date);
-                alertDateEnd.setHours(23, 59, 59, 999);
+                const alertDateEndUtc = toUtcMidnight(rawAlert.date);
+                if (alertDateEndUtc) alertDateEndUtc.setUTCHours(23, 59, 59, 999);
 
                 let sharesOwnedAtAlertDate = 0;
                 for (const tx of allUserTx) {
                     if (tx.aandeel_id === rawAlert.aandeel_id) {
-                        const txDate = new Date(tx.purchase_time);
-                        if (txDate <= alertDateEnd) {
+                        const txDate = toUtcMidnight(tx.purchase_time);
+                        if (txDate && alertDateEndUtc && txDate <= alertDateEndUtc) {
                             if (tx.transaction_type === 'BUY') {
                                 sharesOwnedAtAlertDate += Number(tx.quantity) || 0;
                             } else if (tx.transaction_type === 'SELL') {
@@ -3079,16 +3567,19 @@ const getStrategyAdvisorData = async (req, res) => {
                     : idealItem.priceToIntrinsicRatio;
 
                 const isOvervalued = priceToIntrinsic !== null && priceToIntrinsic > maxPriceToIntrinsic;
+                const isWvDown = stockDetails && stockDetails.prev_waarde_verdeling !== null && stockDetails.waarde_verdeling < stockDetails.prev_waarde_verdeling;
+                const wvDiff = stockDetails?.prev_waarde_verdeling !== null ? parseFloat(((stockDetails?.waarde_verdeling || 0) - stockDetails.prev_waarde_verdeling).toFixed(2)) : 0;
+                const wvDiffPct = (stockDetails?.prev_waarde_verdeling !== null && stockDetails.prev_waarde_verdeling > 0) ? parseFloat(((((stockDetails?.waarde_verdeling || 0) - stockDetails.prev_waarde_verdeling) / stockDetails.prev_waarde_verdeling) * 100).toFixed(1)) : 0;
+
+                const isUnderSupervision = timelineStatus === 'UNDER_SUPERVISION' || isOvervalued || isWvDown;
+                const isActionableBuy = timelineStatus === 'OPEN_OPPORTUNITY' && !isUnderSupervision;
+                const isCautionBuy = isUnderSupervision;
 
                 const sma200Raw = calculateSma200(rawAlert.aandeel_id);
                 const sma200 = sma200Raw !== null ? toDisplayCurrency(sma200Raw, ticker, stockDetails?.asset_type) : null;
                 const isBelowSma = sma200 !== null && alertPrice < sma200;
 
-                const isWvDown = stockDetails && stockDetails.prev_waarde_verdeling !== null && stockDetails.waarde_verdeling < stockDetails.prev_waarde_verdeling;
-                const wvDiff = stockDetails?.prev_waarde_verdeling !== null ? parseFloat(((stockDetails?.waarde_verdeling || 0) - stockDetails.prev_waarde_verdeling).toFixed(2)) : 0;
-                const wvDiffPct = (stockDetails?.prev_waarde_verdeling !== null && stockDetails.prev_waarde_verdeling > 0) ? parseFloat(((((stockDetails?.waarde_verdeling || 0) - stockDetails.prev_waarde_verdeling) / stockDetails.prev_waarde_verdeling) * 100).toFixed(1)) : 0;
-
-                let alertBadge = '🟢 Koopsignaal (MACD Golden Cross)';
+                let alertBadge = '🟢 Koopsignaal (Actieve Koopkans)';
                 let alertSeverity = 'success';
                 let alertWarning = null;
                 let actionAmountEur = 0;
@@ -3135,10 +3626,16 @@ const getStrategyAdvisorData = async (req, res) => {
                     }
 
                     actionShares = alertPrice > 0 ? (actionAmountEur / alertPrice) : 0;
-                    if (actionAmountEur <= 10) return;
-
-                    // Financieringscheck gekoppeld aan stocksAvailableCash (na aftrek ETF reservering!)
-                    if (stocksAvailableCash >= actionAmountEur) {
+                    if (actionAmountEur <= 10) {
+                        actionAmountEur = 0;
+                        actionShares = 0;
+                        fundingSource = {
+                            status: 'TARGET_REACHED',
+                            badge: '🎯 Streefdoel Reeds Bereikt (Geen Extra Aankoop Nodig)',
+                            message: `Je bezit momenteel al €${currentOwnedEurAtAlertDate.toFixed(2)} (${sharesOwnedAtAlertDate.toFixed(2)} stuks) aan ${ticker}. Het gewenste streefdoel is €${targetEur.toFixed(2)}. Conform het allocatiemodel is momenteel geen extra aankoop vereist.`
+                        };
+                    } else if (stocksAvailableCash >= actionAmountEur) {
+                        // Financieringscheck gekoppeld aan stocksAvailableCash (na aftrek ETF reservering!)
                         fundingSource = {
                             status: 'DIRECT_CASH',
                             badge: '🟢 Vrije Cash Beschikbaar (Na ETF-Reservering)',
@@ -3177,13 +3674,8 @@ const getStrategyAdvisorData = async (req, res) => {
                     }
                 }
 
-                const latestQuarterDate = stockDetails?.period_end_date 
-                    ? (stockDetails.period_end_date instanceof Date ? stockDetails.period_end_date.toISOString().split('T')[0] : String(stockDetails.period_end_date).split('T')[0]) 
-                    : null;
-                const latestReportDate = stockDetails?.report_date
-                    ? (stockDetails.report_date instanceof Date ? stockDetails.report_date.toISOString().split('T')[0] : String(stockDetails.report_date).split('T')[0])
-                    : null;
-
+                const latestQuarterDate = stockDetails?.period_end_date ? toIsoDateOnly(stockDetails.period_end_date) : null;
+                const latestReportDate = stockDetails?.report_date ? toIsoDateOnly(stockDetails.report_date) : null;
                 const hasNewQuarterSinceAlert = latestReportDate ? (new Date(latestReportDate) > new Date(alertDateStr)) : false;
                 const isLateBuyOpportunity = isCheaperNow && !hasNewQuarterSinceAlert && !isOvervalued && !isWvDown;
 
@@ -3192,14 +3684,15 @@ const getStrategyAdvisorData = async (req, res) => {
                     date: alertDateStr,
                     ticker: ticker,
                     name: rawAlert.name,
-                    signalType: (isOvervalued || isWvDown) ? 'Onder Toezicht (Geen Aankoop)' : 'Koopsignaal',
+                    signalType: isCautionBuy ? 'Onder Toezicht (Geen Aankoop)' : 'Koopsignaal',
+                    timelineStatus: timelineStatus,
                     badge: alertBadge,
                     severity: alertSeverity,
                     warning: alertWarning,
                     isOvervalued: isOvervalued,
                     isWvDown: isWvDown,
-                    isActionableBuy: !isOvervalued && !isWvDown,
-                    isCautionBuy: isOvervalued || isWvDown,
+                    isActionableBuy: isActionableBuy,
+                    isCautionBuy: isCautionBuy,
                     waardeVerdeling: stockDetails?.waarde_verdeling || 0,
                     prevWaardeVerdeling: stockDetails?.prev_waarde_verdeling ?? null,
                     wvDiff,
@@ -3233,11 +3726,10 @@ const getStrategyAdvisorData = async (req, res) => {
             });
 
         // 2. ECHTE STRATEGIE VERKOOPSIGNALEN (Verplicht bij Score < 5 of Daling Waardeverdeling)
-        // BELANGRIJK: De datum van de melding is de RAPPORTAGEDATUM (report_date), want cijfers zijn pas dan bekend!
         evaluatedHoldings.forEach(h => {
             if (h.actionType === 'MANDATORY_SELL_SCORE' || h.actionType === 'MANDATORY_PARTIAL_SELL_WV') {
                 const isFullSell = h.actionType === 'MANDATORY_SELL_SCORE';
-                const effectiveSellDate = h.reportDate || h.periodEndDate || new Date().toISOString().split('T')[0];
+                const effectiveSellDate = toIsoDateOnly(h.reportDate || h.periodEndDate || todayStr);
                 const sellRatio = isFullSell ? 1.0 : Math.max(0.01, Math.min(1.0, h.wvDropFraction || 0.1));
                 const sellAmountEur = h.holdingValue * sellRatio;
                 const sellShares = h.quantity * sellRatio;
@@ -3336,410 +3828,9 @@ const getStrategyAdvisorData = async (req, res) => {
             });
         }
 
-        // =========================================================================
-        // TIJDLIJN & HISTORIE VAN ACTIES VOOR LOSSE AANDELEN
-        // Koppelt algoritmische koopsignalen strikt aan werkelijke aankopen:
-        // 1. Slechts 1 aankoop per signaal (1-op-1 matching)
-        // 2. Alleen gekoppeld als aankoop plaatsvond VÓÓR nieuwe kwartaalcijfers (report_date)
-        //    en VÓÓR een volgend koopsignaal van hetzelfde aandeel.
-        // 3. Toont exact prijsverschil in € en % (goedkoper/duurder dan signaal).
-        // =========================================================================
-        const fundsByStock = new Map();
-        for (const f of (fundamentalsResult?.recordset || [])) {
-            if (!fundsByStock.has(f.stock_id)) fundsByStock.set(f.stock_id, []);
-            fundsByStock.get(f.stock_id).push(f);
-        }
-
-        const alertsByStock = new Map();
-        for (const a of rawAlerts) {
-            if (a.type_melding === 'Koopsignaal') {
-                if (!alertsByStock.has(a.aandeel_id)) alertsByStock.set(a.aandeel_id, []);
-                alertsByStock.get(a.aandeel_id).push(a);
-            }
-        }
-        // Sorteer alerts per aandeel chronologisch oplopend voor vensterbepaling
-        for (const [stockId, sAlerts] of alertsByStock.entries()) {
-            sAlerts.sort((a, b) => new Date(a.date) - new Date(b.date));
-        }
-
-        const txsByStock = new Map();
-        for (const t of allUserTx) {
-            if (!txsByStock.has(t.aandeel_id)) txsByStock.set(t.aandeel_id, []);
-            txsByStock.get(t.aandeel_id).push(t);
-        }
-        for (const [stockId, sTxs] of txsByStock.entries()) {
-            sTxs.sort((a, b) => new Date(a.purchase_time) - new Date(b.purchase_time));
-        }
-
-        const stockTimeline = [];
-        const usedTxIds = new Set();
-        let totalMatched = 0;
-        let totalExpired = 0;
-        let totalOpen = 0;
-        let totalUnderSupervision = 0;
-        let cheaperCount = 0;
-        let higherCount = 0;
-        let totalDiffPctSum = 0;
-
-        const todayDate = new Date();
-        todayDate.setHours(0, 0, 0, 0);
-
-        for (const [stockId, stockAlerts] of alertsByStock.entries()) {
-            const stockFunds = fundsByStock.get(stockId) || [];
-            const stockTxs = (txsByStock.get(stockId) || []).filter(t => t.transaction_type === 'BUY');
-            const stockDetails = allStocks.find(s => s.aandeel_id === stockId);
-
-            for (let i = 0; i < stockAlerts.length; i++) {
-                const alert = stockAlerts[i];
-                const alertDate = new Date(alert.date);
-                alertDate.setHours(0, 0, 0, 0);
-                const alertDateStr = alertDate.toISOString().split('T')[0];
-
-                // 1. Bepaal datum van het eerstvolgende koopsignaal voor dit aandeel
-                let nextAlertDate = null;
-                if (i + 1 < stockAlerts.length) {
-                    nextAlertDate = new Date(stockAlerts[i + 1].date);
-                    nextAlertDate.setHours(0, 0, 0, 0);
-                }
-
-                // 2. Bepaal datum van de eerstvolgende kwartaalcijfers (report_date) strictly after alertDate
-                let nextReportDate = null;
-                for (const f of stockFunds) {
-                    const rDate = new Date(f.report_date);
-                    rDate.setHours(0, 0, 0, 0);
-                    if (rDate > alertDate) {
-                        if (!nextReportDate || rDate < nextReportDate) {
-                            nextReportDate = rDate;
-                        }
-                    }
-                }
-
-                // 3. Geldigheidsvenster: min(nextAlertDate, nextReportDate)
-                let windowEndDate = null;
-                let expireReason = null;
-                let expireType = null; // 'NEW_SIGNAL' | 'NEW_QUARTER'
-
-                if (nextAlertDate && nextReportDate) {
-                    if (nextAlertDate <= nextReportDate) {
-                        windowEndDate = nextAlertDate;
-                        expireType = 'NEW_SIGNAL';
-                        expireReason = `Nieuw koopsignaal op ${nextAlertDate.toISOString().split('T')[0]}`;
-                    } else {
-                        windowEndDate = nextReportDate;
-                        expireType = 'NEW_QUARTER';
-                        expireReason = `Nieuwe kwartaalcijfers gepubliceerd op ${nextReportDate.toISOString().split('T')[0]}`;
-                    }
-                } else if (nextAlertDate) {
-                    windowEndDate = nextAlertDate;
-                    expireType = 'NEW_SIGNAL';
-                    expireReason = `Nieuw koopsignaal op ${nextAlertDate.toISOString().split('T')[0]}`;
-                } else if (nextReportDate) {
-                    windowEndDate = nextReportDate;
-                    expireType = 'NEW_QUARTER';
-                    expireReason = `Nieuwe kwartaalcijfers gepubliceerd op ${nextReportDate.toISOString().split('T')[0]}`;
-                }
-
-                // 4. Koppel de EERSTE ongebruikte aankoop binnen dit venster (max 1 aankoop per signaal!)
-                let matchedTx = null;
-                for (const tx of stockTxs) {
-                    if (usedTxIds.has(tx.id)) continue;
-                    const txDate = new Date(tx.purchase_time);
-                    txDate.setHours(0, 0, 0, 0);
-                    if (txDate >= alertDate) {
-                        if (!windowEndDate || txDate < windowEndDate) {
-                            matchedTx = tx;
-                            usedTxIds.add(tx.id);
-                            break; // Slechts 1 aankoop per signaal
-                        }
-                    }
-                }
-
-                const alertPriceConverted = toDisplayCurrency(alert.prijs_op_moment || 0, alert.ticker_symbol, stockDetails?.asset_type);
-
-                // Controleer of aandeel overgewaardeerd is of een dalende waardeverdeling heeft
-                const intrinsicValRaw = stockDetails?.intrinsieke_waarde;
-                const intrinsicValConverted = intrinsicValRaw ? toDisplayCurrency(intrinsicValRaw, alert.ticker_symbol, stockDetails?.asset_type) : null;
-                const priceToIntrinsic = (intrinsicValConverted && intrinsicValConverted > 0 && alertPriceConverted > 0)
-                    ? (alertPriceConverted / intrinsicValConverted)
-                    : null;
-                const isOvervalued = priceToIntrinsic !== null && priceToIntrinsic > maxPriceToIntrinsic;
-                const isWvDown = stockDetails && stockDetails.prev_waarde_verdeling !== null && stockDetails.waarde_verdeling < stockDetails.prev_waarde_verdeling;
-                const isCautionStock = isOvervalued || isWvDown;
-
-                if (matchedTx) {
-                    totalMatched++;
-                    const txPriceConverted = toDisplayCurrency(matchedTx.price || 0, alert.ticker_symbol, stockDetails?.asset_type);
-                    const priceDiff = txPriceConverted - alertPriceConverted;
-                    const priceDiffPct = alertPriceConverted > 0 ? (priceDiff / alertPriceConverted) * 100 : 0;
-                    const isCheaper = txPriceConverted <= alertPriceConverted;
-                    if (isCheaper) cheaperCount++; else higherCount++;
-                    totalDiffPctSum += priceDiffPct;
-
-                    const txDate = new Date(matchedTx.purchase_time);
-                    const txDateStr = txDate.toISOString().split('T')[0];
-                    const daysBetween = Math.round((txDate.getTime() - alertDate.getTime()) / (1000 * 60 * 60 * 24));
-
-                    let comparisonBadge = '';
-                    let comparisonDetail = '';
-                    if (Math.abs(priceDiff) < 0.01) {
-                        comparisonBadge = '🎯 Exact op Signaal';
-                        comparisonDetail = 'Aangekocht exact aan de signaalprijs';
-                    } else if (isCheaper) {
-                        comparisonBadge = `🟢 €${Math.abs(priceDiff).toFixed(2)} (${Math.abs(priceDiffPct).toFixed(1)}%) Voordeliger`;
-                        comparisonDetail = `€${Math.abs(priceDiff).toFixed(2)} per aandeel onder de signaalprijs gekocht`;
-                    } else {
-                        comparisonBadge = `🟠 €${priceDiff.toFixed(2)} (+${priceDiffPct.toFixed(1)}%) Boven Signaal`;
-                        comparisonDetail = `€${priceDiff.toFixed(2)} per aandeel boven de signaalprijs gekocht`;
-                    }
-
-                    stockTimeline.push({
-                        id: `matched_${alert.alert_id}_${matchedTx.id}`,
-                        date: alertDateStr,
-                        executionDate: txDateStr,
-                        timestamp: alertDate.getTime(),
-                        executionTimestamp: txDate.getTime(),
-                        source: 'ALGO_AND_ACTUAL',
-                        type: 'BUY_SIGNAL_EXECUTED',
-                        status: 'EXECUTED',
-                        statusBadge: '🟢 Uitgevoerd (Aankoop Gekoppeld)',
-                        comparisonBadge,
-                        comparisonDetail,
-                        ticker: alert.ticker_symbol,
-                        name: alert.name,
-                        stockId: alert.aandeel_id,
-                        signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
-                        actualPrice: parseFloat(txPriceConverted.toFixed(2)),
-                        priceDiff: parseFloat(priceDiff.toFixed(2)),
-                        priceDiffPct: parseFloat(priceDiffPct.toFixed(2)),
-                        isCheaper,
-                        shares: matchedTx.quantity,
-                        totalAmount: parseFloat((matchedTx.quantity * txPriceConverted).toFixed(2)),
-                        daysBetweenSignalAndBuy: daysBetween,
-                        windowEndDate: windowEndDate ? windowEndDate.toISOString().split('T')[0] : null,
-                        expireReason: expireReason || 'Geldig tot kwartaaleinde',
-                        txId: matchedTx.id,
-                        alertId: alert.alert_id,
-                        score: stockDetails?.selectiecriteria ?? 5,
-                        waardeVerdeling: stockDetails?.waarde_verdeling || 0,
-                        isCautionStock,
-                        cautionNotice: isOvervalued 
-                            ? `Aangekocht (let op: noteerde ${priceToIntrinsic?.toFixed(2)}x intrinsiek)` 
-                            : (isWvDown ? 'Aangekocht (let op: waardeverdeling was recent gedaald)' : null)
-                    });
-                } else {
-                    const isExpired = windowEndDate && windowEndDate <= todayDate;
-                    if (isExpired) {
-                        totalExpired++;
-                        stockTimeline.push({
-                            id: `expired_${alert.alert_id}`,
-                            date: alertDateStr,
-                            timestamp: alertDate.getTime(),
-                            source: 'ALGORITHM',
-                            type: 'BUY_SIGNAL_EXPIRED',
-                            status: 'EXPIRED',
-                            statusBadge: '⚪ Verlopen (Niet Aangekocht)',
-                            ticker: alert.ticker_symbol,
-                            name: alert.name,
-                            stockId: alert.aandeel_id,
-                            signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
-                            windowEndDate: windowEndDate.toISOString().split('T')[0],
-                            expireReason: expireReason || 'Verlopen',
-                            expireType,
-                            alertId: alert.alert_id,
-                            score: stockDetails?.selectiecriteria ?? 5,
-                            waardeVerdeling: stockDetails?.waarde_verdeling || 0,
-                            isCautionStock
-                        });
-                    } else if (isCautionStock) {
-                        // ONDER TOEZICHT: Overgewaardeerd of dalende waardeverdeling -> GEEN KOOPKANS CONFORM BACKTEST!
-                        totalUnderSupervision++;
-                        stockTimeline.push({
-                            id: `caution_${alert.alert_id}`,
-                            date: alertDateStr,
-                            timestamp: alertDate.getTime(),
-                            source: 'ALGORITHM',
-                            type: 'BUY_SIGNAL_SUPERVISION',
-                            status: 'UNDER_SUPERVISION',
-                            statusBadge: isOvervalued ? '⚠️ Onder Toezicht (Overgewaardeerd)' : '⚠️ Onder Toezicht (Dalende WV)',
-                            ticker: alert.ticker_symbol,
-                            name: alert.name,
-                            stockId: alert.aandeel_id,
-                            signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
-                            windowEndDate: windowEndDate ? windowEndDate.toISOString().split('T')[0] : null,
-                            expireReason: expireReason || 'Onder toezicht / Geen aankoop in strategie',
-                            alertId: alert.alert_id,
-                            score: stockDetails?.selectiecriteria ?? 5,
-                            waardeVerdeling: stockDetails?.waarde_verdeling || 0,
-                            isCautionStock: true,
-                            isActionableBuy: false,
-                            cautionReason: isOvervalued 
-                                ? `Koers noteert ${priceToIntrinsic?.toFixed(2)}x intrinsieke waarde (> ${maxPriceToIntrinsic}x). Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
-                                : `Waardeverdeling is recent gedaald van ${stockDetails?.prev_waarde_verdeling?.toFixed(1)}% naar ${(stockDetails?.waarde_verdeling || 0).toFixed(1)}%. Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
-                        });
-                    } else {
-                        // ÉCHTE, VALIDE KOOPKANS CONFORM DE STRATEGIE
-                        totalOpen++;
-                        stockTimeline.push({
-                            id: `open_${alert.alert_id}`,
-                            date: alertDateStr,
-                            timestamp: alertDate.getTime(),
-                            source: 'ALGORITHM',
-                            type: 'BUY_SIGNAL_OPEN',
-                            status: 'OPEN_OPPORTUNITY',
-                            statusBadge: '🟢 Openstaande Koopkans',
-                            ticker: alert.ticker_symbol,
-                            name: alert.name,
-                            stockId: alert.aandeel_id,
-                            signalPrice: parseFloat(alertPriceConverted.toFixed(2)),
-                            windowEndDate: windowEndDate ? windowEndDate.toISOString().split('T')[0] : null,
-                            expireReason: expireReason || 'Actief / Nog geen nieuwe cijfers of signaal',
-                            alertId: alert.alert_id,
-                            score: stockDetails?.selectiecriteria ?? 5,
-                            waardeVerdeling: stockDetails?.waarde_verdeling || 0,
-                            isCautionStock: false,
-                            isActionableBuy: true
-                        });
-                    }
-                }
-            }
-        }
-
-        // 5. Verplichte Verkooporders koppelen aan eventuele werkelijke verkooptransacties
-        mandatorySellHoldings.forEach(h => {
-            const isFullSell = h.actionType === 'MANDATORY_SELL_SCORE';
-            const effectiveSellDateStr = h.reportDate || h.periodEndDate || todayStr;
-            const effectiveSellDate = new Date(effectiveSellDateStr);
-            effectiveSellDate.setHours(0, 0, 0, 0);
-
-            // Zoek een werkelijke SELL transactie voor dit aandeel op of na de rapportagedatum
-            const stockTxs = txsByStock.get(h.stockId) || [];
-            let matchedSellTx = null;
-            for (const tx of stockTxs) {
-                if (tx.transaction_type === 'SELL' && !usedTxIds.has(tx.id)) {
-                    const txDate = new Date(tx.purchase_time);
-                    txDate.setHours(0, 0, 0, 0);
-                    if (txDate >= effectiveSellDate) {
-                        matchedSellTx = tx;
-                        usedTxIds.add(tx.id);
-                        break;
-                    }
-                }
-            }
-
-            if (matchedSellTx) {
-                const sellTxPrice = toDisplayCurrency(matchedSellTx.price, h.ticker, h.assetType);
-                stockTimeline.push({
-                    id: `matched_sell_${h.stockId}_${matchedSellTx.id}`,
-                    date: effectiveSellDateStr,
-                    executionDate: new Date(matchedSellTx.purchase_time).toISOString().split('T')[0],
-                    timestamp: effectiveSellDate.getTime(),
-                    source: 'ALGO_AND_ACTUAL',
-                    type: 'MANDATORY_SELL_EXECUTED',
-                    status: 'EXECUTED_SELL',
-                    statusBadge: '🔴 Verkoop Order Uitgevoerd',
-                    ticker: h.ticker,
-                    name: h.name,
-                    stockId: h.stockId,
-                    shares: matchedSellTx.quantity,
-                    actualPrice: parseFloat(sellTxPrice.toFixed(2)),
-                    totalAmount: parseFloat((matchedSellTx.quantity * sellTxPrice).toFixed(2)),
-                    note: isFullSell ? 'Positie gesloten conform Score < 5' : `Deelverkoop uitgevoerd (-${h.wvDropPct.toFixed(1)}%)`,
-                    reportDate: h.reportDate,
-                    txId: matchedSellTx.id
-                });
-            } else {
-                stockTimeline.push({
-                    id: `open_sell_${h.stockId}`,
-                    date: effectiveSellDateStr,
-                    timestamp: effectiveSellDate.getTime(),
-                    source: 'ALGORITHM',
-                    type: 'MANDATORY_SELL_SIGNAL',
-                    status: 'OPEN_SELL_ORDER',
-                    statusBadge: isFullSell ? '🔴 Verplicht Verkoopsignaal (Score < 5)' : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`,
-                    ticker: h.ticker,
-                    name: h.name,
-                    stockId: h.stockId,
-                    shares: parseFloat((h.quantity * (isFullSell ? 1.0 : (h.wvDropFraction || 0.1))).toFixed(2)),
-                    currentPrice: parseFloat(h.currentPrice.toFixed(2)),
-                    totalAmount: parseFloat((h.holdingValue * (isFullSell ? 1.0 : (h.wvDropFraction || 0.1))).toFixed(2)),
-                    note: isFullSell ? `Score gezakt naar ${h.score}/5. Verkooporder openstaand vanaf rapportagedatum ${effectiveSellDateStr}` : `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%).`,
-                    reportDate: h.reportDate
-                });
-            }
-        });
-
-        // 6. Voeg niet-gekoppelde werkelijke aan- en verkopen toe aan de tijdlijn
-        let totalManualBuys = 0;
-        let totalSells = 0;
-        for (const tx of allUserTx) {
-            const stockDetails = allStocks.find(s => s.aandeel_id === tx.aandeel_id);
-            if (stockDetails && (stockDetails.asset_type === 'ETF' || stockDetails.asset_type_id === 2)) continue;
-
-            const txDate = new Date(tx.purchase_time);
-            const txDateStr = txDate.toISOString().split('T')[0];
-            const txPriceConverted = toDisplayCurrency(tx.price, tx.ticker_symbol, stockDetails?.asset_type);
-
-            if (tx.transaction_type === 'BUY' && !usedTxIds.has(tx.id)) {
-                totalManualBuys++;
-                stockTimeline.push({
-                    id: `manual_buy_${tx.id}`,
-                    date: txDateStr,
-                    executionDate: txDateStr,
-                    timestamp: txDate.getTime(),
-                    source: 'ACTUAL_PORTFOLIO',
-                    type: 'ACTUAL_BUY_UNLINKED',
-                    status: 'MANUAL_BUY',
-                    statusBadge: '👤 Handmatige / Extra Aankoop',
-                    ticker: tx.ticker_symbol,
-                    name: tx.name,
-                    stockId: tx.aandeel_id,
-                    actualPrice: parseFloat(txPriceConverted.toFixed(2)),
-                    shares: tx.quantity,
-                    totalAmount: parseFloat(((tx.quantity || 0) * txPriceConverted).toFixed(2)),
-                    note: 'Aankoop buiten een actief koopsignaalvenster of extra aankoop na signaal'
-                });
-            } else if (tx.transaction_type === 'SELL' && !usedTxIds.has(tx.id)) {
-                totalSells++;
-                stockTimeline.push({
-                    id: `manual_sell_${tx.id}`,
-                    date: txDateStr,
-                    executionDate: txDateStr,
-                    timestamp: txDate.getTime(),
-                    source: 'ACTUAL_PORTFOLIO',
-                    type: 'ACTUAL_SELL',
-                    status: 'MANUAL_SELL',
-                    statusBadge: '🔴 Verkoop Order',
-                    ticker: tx.ticker_symbol,
-                    name: tx.name,
-                    stockId: tx.aandeel_id,
-                    actualPrice: parseFloat(txPriceConverted.toFixed(2)),
-                    shares: tx.quantity,
-                    totalAmount: parseFloat(((tx.quantity || 0) * txPriceConverted).toFixed(2)),
-                    note: 'Werkelijk gerealiseerde verkoop'
-                });
-            }
-        }
-
-        // Sorteer de samengestelde tijdlijn chronologisch nieuwste eerst
-        stockTimeline.sort((a, b) => b.timestamp - a.timestamp);
-
-        const timelineSummary = {
-            totalEvents: stockTimeline.length,
-            totalMatchedBuys: totalMatched,
-            cheaperCount,
-            higherCount,
-            avgPriceDiffPct: totalMatched > 0 ? parseFloat((totalDiffPctSum / totalMatched).toFixed(2)) : 0,
-            totalOpenSignals: totalOpen,
-            totalUnderSupervision: totalUnderSupervision,
-            totalExpiredSignals: totalExpired,
-            totalManualBuys,
-            totalSells
-        };
-
-        const todayStr = new Date().toISOString().split('T')[0];
         const lastUpdatedDate = allStocks.reduce((max, s) => {
             if (!s.last_price_date) return max;
-            const d = new Date(s.last_price_date).toISOString().split('T')[0];
+            const d = toIsoDateOnly(s.last_price_date);
             return d > max ? d : max;
         }, '1970-01-01');
 

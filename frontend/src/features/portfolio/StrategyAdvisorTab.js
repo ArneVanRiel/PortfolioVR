@@ -539,6 +539,26 @@ const StrategyAdvisorTab = () => {
                 </div>
               </div>
             </div>
+          ) : !isSell && (alert.shares === 0 || alert.fundingSource?.status === 'TARGET_REACHED') ? (
+            <div className="bg-indigo-950/90 border border-indigo-800/80 text-white p-3.5 rounded-2xl flex items-center justify-between shadow-xs">
+              <div>
+                <div className="text-[10px] text-indigo-300 font-bold uppercase tracking-wider flex items-center gap-1">
+                  <i className="ph-fill ph-target text-indigo-400"></i>
+                  Portefeuille Allocatie
+                </div>
+                <div className="text-sm font-black text-indigo-200 mt-0.5">
+                  STREEFDOEL REEDS BEREIKT
+                </div>
+              </div>
+              <div className="text-right">
+                <span className="px-2.5 py-1 bg-indigo-900/80 text-indigo-200 border border-indigo-700/60 rounded-xl text-xs font-bold inline-block">
+                  Geen extra aankoop
+                </span>
+                <div className="text-[10px] text-indigo-300/80 mt-1 font-semibold">
+                  Budget: € 0,00
+                </div>
+              </div>
+            </div>
           ) : (
             <div className={`${isSell ? 'bg-rose-950 border border-rose-800/80' : 'bg-slate-900'} text-white p-3.5 rounded-2xl flex items-center justify-between`}>
               <div>
@@ -594,7 +614,12 @@ const StrategyAdvisorTab = () => {
         {/* Financiering & Rotatie Logica voor Valide Aankoop */}
         {isActionable && alert.fundingSource && (
           <div className="mt-3 pt-3 border-t border-gray-100">
-            {alert.fundingSource.status === 'DIRECT_CASH' ? (
+            {alert.fundingSource.status === 'TARGET_REACHED' ? (
+              <div className="bg-indigo-50 text-indigo-900 p-2.5 rounded-xl border border-indigo-200 text-[11px] flex items-center gap-2">
+                <i className="ph-fill ph-check-circle text-indigo-600 text-sm shrink-0"></i>
+                <span className="font-semibold">{alert.fundingSource.message}</span>
+              </div>
+            ) : alert.fundingSource.status === 'DIRECT_CASH' ? (
               <div className="bg-emerald-50 text-emerald-900 p-2.5 rounded-xl border border-emerald-200 text-[11px] flex items-center gap-2">
                 <i className="ph-fill ph-check-circle text-emerald-600 text-sm shrink-0"></i>
                 <span className="font-semibold">{alert.fundingSource.message}</span>

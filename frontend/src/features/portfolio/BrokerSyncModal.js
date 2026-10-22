@@ -369,13 +369,17 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
         if (selectedBroker === 'etoro' || (wb && wb.SheetNames && wb.SheetNames.some(n => n.toLowerCase().includes('closed') || n.toLowerCase().includes('gesloten') || n.toLowerCase().includes('activit')))) {
           let etoroTrades = [];
           let etoroCashTx = [];
+          const seenPositionIds = new Set();
 
           if (wb && wb.SheetNames && wb.SheetNames.length > 1) {
-            // Check sheet "Closed Positions" / "Gesloten posities"
-            const closedSheetName = wb.SheetNames.find(n => n.toLowerCase().includes('closed') || n.toLowerCase().includes('gesloten') || n.toLowerCase().includes('position'));
+            // 1. Check sheet "Closed Positions" / "Gesloten posities"
+            const closedSheetName = wb.SheetNames.find(n => n.toLowerCase().includes('closed') || n.toLowerCase().includes('gesloten'));
             if (closedSheetName) {
               const closedRows = XLSX.utils.sheet_to_json(wb.Sheets[closedSheetName]);
               closedRows.forEach(r => {
+                const posId = String(r['Position ID'] || r['Positie-ID'] || r['Positie ID'] || r['Positie_ID'] || r['ID'] || '').trim();
+                if (posId) seenPositionIds.add(posId);
+
                 const action = String(r['Action'] || r['Actie'] || '').trim();
                 const isin = String(r['ISIN'] || r['isin'] || '').trim();
                 const units = parseNumber(r['Units'] || r['Eenheden'] || r['Aantal']);
@@ -384,7 +388,7 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
                 const openDate = r['Open Date'] || r['Openingsdatum'] || r['Open DateTime'];
                 const closeDate = r['Close Date'] || r['Sluitingsdatum'] || r['Close DateTime'];
                 
-                let ticker = action.replace(/^(buy|sell|koop|verkoop)\s+/i, '').trim() || isin || 'Unknown';
+                let ticker = action.replace(/^(buy|sell|koop|verkoop)\s+/i, '').replace(/\/(USD|EUR|GBP|CAD|CHF|AUD)$/i, '').trim() || isin || 'Unknown';
                 
                 if (units > 0 && openRate > 0 && openDate) {
                   etoroTrades.push({
@@ -424,19 +428,112 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
               });
             }
 
-            // Check sheet "Account Activity" / "Accountactiviteit"
+            // 2. Check optioneel sheet "Open Positions" / "Open posities"
+            const openSheetName = wb.SheetNames.find(n => 
+              (n.toLowerCase().includes('open') || n.toLowerCase().includes('openings')) && 
+              (n.toLowerCase().includes('positie') || n.toLowerCase().includes('position')) && 
+              !n.toLowerCase().includes('closed') && !n.toLowerCase().includes('gesloten')
+            );
+            if (openSheetName) {
+              const openRows = XLSX.utils.sheet_to_json(wb.Sheets[openSheetName]);
+              openRows.forEach(r => {
+                const posId = String(r['Position ID'] || r['Positie-ID'] || r['Positie ID'] || r['Positie_ID'] || r['ID'] || '').trim();
+                if (posId) seenPositionIds.add(posId);
+
+                const action = String(r['Action'] || r['Actie'] || '').trim();
+                const isin = String(r['ISIN'] || r['isin'] || '').trim();
+                const units = parseNumber(r['Units'] || r['Eenheden'] || r['Aantal']);
+                const openRate = parseNumber(r['Open Rate'] || r['Openingskoers'] || r['Open Price']);
+                const openDate = r['Open Date'] || r['Openingsdatum'] || r['Open DateTime'] || r['Date'] || r['Datum'];
+                
+                let ticker = action.replace(/^(buy|sell|koop|verkoop)\s+/i, '').replace(/\/(USD|EUR|GBP|CAD|CHF|AUD)$/i, '').trim() || r['Ticker'] || r['Symbol'] || isin || 'Unknown';
+                
+                if (units > 0 && openRate > 0 && openDate) {
+                  etoroTrades.push({
+                    ticker: ticker,
+                    isin: isin || null,
+                    transaction_type: 'BUY',
+                    broker_id: 1,
+                    _brokerName: 'eToro',
+                    import_source: 'etoro_statement',
+                    quantity: Math.abs(units),
+                    price: Math.abs(openRate),
+                    purchase_time: parseAnyDate(openDate),
+                    fees: 0,
+                    taxes: 0,
+                    currency: 'USD',
+                    exchange_rate: 1
+                  });
+                }
+              });
+            }
+
+            // 3. Check sheet "Account Activity" / "Accountactiviteit"
             const actSheetName = wb.SheetNames.find(n => n.toLowerCase().includes('activity') || n.toLowerCase().includes('activiteit'));
             if (actSheetName) {
               const actRows = XLSX.utils.sheet_to_json(wb.Sheets[actSheetName]);
               actRows.forEach(r => {
                 const type = String(r['Type'] || r['Account Balance Type'] || '').toLowerCase();
                 const amt = parseNumber(r['Amount'] || r['Bedrag'] || r['Total Amount']);
+                const units = parseNumber(r['Units'] || r['Eenheden'] || r['Aantal']);
                 const dateStr = r['Date'] || r['Datum'];
-                const details = String(r['Details'] || r['Omschrijving'] || '').replace(/\/USD/i, '').replace(/^-$/, '').trim();
+                const posId = String(r['Position ID'] || r['Positie-ID'] || r['Positie ID'] || r['Positie_ID'] || r['ID'] || '').trim();
+                const detailsRaw = String(r['Details'] || r['Omschrijving'] || '').trim();
+                const cleanDetails = detailsRaw.replace(/\/(USD|EUR|GBP|CAD|CHF|AUD)$/i, '').replace(/^-$/, '').trim();
 
-                if (!dateStr || amt === 0) return;
+                if (!dateStr) return;
 
-                if (type.includes('deposit') || type.includes('storting') || type.includes('transfer to trading')) {
+                // A. Positie openen (Kopen) in Accountactiviteit (bv. INTU op 2 okt)
+                if (type.includes('positie openen') || type.includes('open position') || type.includes('open trade') || type.includes('positie geopend')) {
+                  if (posId && seenPositionIds.has(posId)) return;
+                  if (posId) seenPositionIds.add(posId);
+
+                  const rate = units > 0 && amt > 0 ? (amt / units) : parseNumber(r['Open Rate'] || r['Koers'] || r['Open Price'] || 0);
+                  if (units > 0 && (rate > 0 || amt > 0)) {
+                    etoroTrades.push({
+                      ticker: cleanDetails || 'Unknown',
+                      isin: String(r['ISIN'] || r['isin'] || '').trim() || null,
+                      transaction_type: 'BUY',
+                      broker_id: 1,
+                      _brokerName: 'eToro',
+                      import_source: 'etoro_statement',
+                      quantity: Math.abs(units),
+                      price: Math.abs(rate),
+                      purchase_time: parseAnyDate(dateStr),
+                      fees: 0,
+                      taxes: 0,
+                      currency: 'USD',
+                      exchange_rate: 1
+                    });
+                  }
+                }
+                // B. Positie sluiten / Winst/verlies van handelstransactie (Verkopen)
+                else if (type.includes('positie sluiten') || type.includes('close position') || type.includes('close trade') || type.includes('winst/verlies van hand')) {
+                  if (posId && seenPositionIds.has(posId)) return;
+                  if (posId) seenPositionIds.add(posId);
+
+                  const rate = units > 0 && amt > 0 ? (amt / units) : parseNumber(r['Close Rate'] || r['Koers'] || 0);
+                  if (units > 0 && (rate > 0 || amt > 0)) {
+                    etoroTrades.push({
+                      ticker: cleanDetails || 'Unknown',
+                      isin: String(r['ISIN'] || r['isin'] || '').trim() || null,
+                      transaction_type: 'SELL',
+                      broker_id: 1,
+                      _brokerName: 'eToro',
+                      import_source: 'etoro_statement',
+                      quantity: Math.abs(units),
+                      price: Math.abs(rate),
+                      purchase_time: parseAnyDate(dateStr),
+                      fees: 0,
+                      taxes: 0,
+                      currency: 'USD',
+                      exchange_rate: 1
+                    });
+                  }
+                }
+                // C. Storting
+                else if (type.includes('deposit') || type.includes('storting') || type.includes('transfer to trading')) {
+                  if (amt === 0) return;
                   etoroCashTx.push({
                     ticker: 'eToro Storting',
                     aandeel_id: null,
@@ -453,7 +550,10 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
                     currency: 'USD',
                     exchange_rate: 1
                   });
-                } else if (type.includes('withdraw') || type.includes('opname')) {
+                }
+                // D. Opname
+                else if (type.includes('withdraw') || type.includes('opname')) {
+                  if (amt === 0) return;
                   etoroCashTx.push({
                     ticker: 'eToro Opname',
                     aandeel_id: null,
@@ -470,7 +570,10 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
                     currency: 'USD',
                     exchange_rate: 1
                   });
-                } else if (type.includes('rente') || type.includes('interest')) {
+                }
+                // E. Rente
+                else if (type.includes('rente') || type.includes('interest')) {
+                  if (amt === 0) return;
                   etoroCashTx.push({
                     ticker: 'eToro Rente',
                     aandeel_id: null,
@@ -487,9 +590,12 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
                     currency: 'USD',
                     exchange_rate: 1
                   });
-                } else if (type.includes('dividend')) {
+                }
+                // F. Dividend
+                else if (type.includes('dividend')) {
+                  if (amt === 0) return;
                   etoroCashTx.push({
-                    ticker: details ? `Dividend ${details}` : 'eToro Dividend',
+                    ticker: cleanDetails ? `Dividend ${cleanDetails}` : 'eToro Dividend',
                     aandeel_id: null,
                     isin: null,
                     transaction_type: 'DIVIDEND',
