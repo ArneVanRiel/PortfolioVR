@@ -90,7 +90,21 @@ const PortfolioManager = () => {
 
   const [transCurrentPage, setTransCurrentPage] = useState(1);
   const transPerPage = 20;
-  const [activeTab, setActiveTab] = useState('common');
+  const [activeTab, setActiveTabState] = useState(() => {
+    try {
+      return localStorage.getItem('portfolioActiveTab') || 'common';
+    } catch {
+      return 'common';
+    }
+  });
+  const setActiveTab = (tab) => {
+    setActiveTabState(tab);
+    try {
+      localStorage.setItem('portfolioActiveTab', tab);
+    } catch (e) {
+      // ignore
+    }
+  };
   const [displayCurrency, setDisplayCurrency] = useState('USD');
   const [selectedBenchmark, setSelectedBenchmark] = useState('SPY');
   const [benchmarkHistory, setBenchmarkHistory] = useState([]);
@@ -1697,16 +1711,30 @@ const PortfolioManager = () => {
       {/* Top Card: Hero Header + Tabs (Snowball Stijl) */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-visible">
         <div className="p-5 pb-0">
-          <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 mb-4">
-            <div>
-              <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight">Mijn Portfolio</h1>
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4 mb-3 sm:mb-4">
+            <div className="flex items-center justify-between w-full sm:w-auto">
+              <h1 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">Mijn Portfolio</h1>
+
+              {/* Currency Toggle op mobiel (direct naast titel) */}
+              {!isDemo && (
+                <div className="flex sm:hidden bg-gray-100 p-0.5 rounded-lg border border-gray-200 h-[32px] items-center">
+                  <button type="button" onClick={() => setDisplayCurrency('USD')}
+                    className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}>
+                    USD ($)
+                  </button>
+                  <button type="button" onClick={() => setDisplayCurrency('EUR')}
+                    className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}>
+                    EUR (€)
+                  </button>
+                </div>
+              )}
             </div>
 
             {/* Top Actieknoppen */}
             {!isDemo && (
-              <div className="flex flex-wrap items-center gap-3">
-                {/* Currency Toggle inside header */}
-                <div className="flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 h-[38px] items-center mr-2">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-end">
+                {/* Currency Toggle inside header (desktop) */}
+                <div className="hidden sm:flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 h-[36px] items-center mr-1">
                   <button type="button" onClick={() => setDisplayCurrency('USD')}
                     className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
                     USD ($)
@@ -1739,14 +1767,14 @@ const PortfolioManager = () => {
                   </button>
                 )}
 
-                {/* Brokers & Synchronisatie Knop (Altijd zichtbaar) */}
+                {/* Brokers & Synchronisatie Knop */}
                 <button
                   type="button"
                   onClick={() => setIsBrokerSyncOpen(true)}
-                  className="flex items-center gap-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold px-3.5 py-2 rounded-xl shadow-sm hover:shadow-md transition-all text-xs mr-2"
+                  className="flex items-center gap-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl shadow-xs transition-all text-xs"
                   title="Koppel eToro, DeGiro of importeer rekeningoverzichten"
                 >
-                  <i className="ph-fill ph-plug-charging text-base text-amber-300"></i>
+                  <i className="ph-fill ph-plug-charging text-sm sm:text-base text-amber-300"></i>
                   <span>Brokers & Sync</span>
                 </button>
 
@@ -1900,18 +1928,18 @@ const PortfolioManager = () => {
           </div>
 
           {/* Tab Navigatie */}
-          <nav className="flex space-x-6 overflow-x-auto hide-scrollbar" aria-label="Tabs">
+          <nav className="flex space-x-2 sm:space-x-6 overflow-x-auto no-scrollbar" aria-label="Tabs">
             {TABS.map(tab => (
               <button
                 key={tab.id}
                 onClick={() => startTransition(() => setActiveTab(tab.id))}
-                className={`whitespace-nowrap py-3 px-1 border-b-2 font-medium text-sm transition-colors flex items-center gap-2 ${
+                className={`whitespace-nowrap py-2 sm:py-3 px-2 sm:px-1 border-b-2 font-bold sm:font-medium text-xs sm:text-sm transition-colors flex items-center gap-1.5 sm:gap-2 shrink-0 ${
                   activeTab === tab.id 
                     ? 'border-blue-600 text-blue-600' 
                     : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
-                <i className={`ph-fill ${tab.icon} text-lg`}></i>
+                <i className={`ph-fill ${tab.icon} text-base sm:text-lg`}></i>
                 {tab.label}
               </button>
             ))}
@@ -1919,83 +1947,79 @@ const PortfolioManager = () => {
         </div>
       </div>
 
-      {/* 4 Stats Cards Row (Snowball Style - Common tab only) */}
+      {/* 4 Stats Cards Row (Snowball Style - Common tab only - 2x2 op mobiel) */}
       {activeTab === 'common' && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-6">
           {/* Card 1: Value */}
-          <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-wallet text-sm text-blue-500"></i>
+          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
+            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
+              <i className="ph ph-wallet text-xs sm:text-sm text-blue-500"></i>
               Value
-              <span className="cursor-help text-[10px] text-gray-300 border border-gray-200 rounded-full w-3.5 h-3.5 flex items-center justify-center font-normal" title="Current portfolio value">?</span>
             </div>
-            <div className="mt-3">
-              <span className="text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
+            <div className="mt-1.5 sm:mt-3">
+              <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
                 {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.total_value_eur ?? summary.totalValue) : (latestPortfolioData?.total_value ?? summary.totalValue))}
               </span>
-              <span className="text-xs font-semibold text-gray-400 privacy-blur block mt-1">
-                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur ?? summary.totalInvested) : (latestPortfolioData?.net_invested ?? summary.totalInvested))} invested
+              <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur block mt-0.5 sm:mt-1 truncate">
+                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur ?? summary.totalInvested) : (latestPortfolioData?.net_invested ?? summary.totalInvested))} inleg
               </span>
             </div>
           </div>
 
           {/* Card 2: Total profit */}
-          <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-chart-line-up text-sm text-teal-500"></i>
-              Total profit
-              <span className="cursor-help text-[10px] text-gray-300 border border-gray-200 rounded-full w-3.5 h-3.5 flex items-center justify-center font-normal" title="Total return on investment">?</span>
+          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
+            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
+              <i className="ph ph-chart-line-up text-xs sm:text-sm text-teal-500"></i>
+              Profit
             </div>
-            <div className="mt-3">
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className={`text-3xl font-extrabold tracking-tight privacy-blur block ${totalProfit.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+            <div className="mt-1.5 sm:mt-3">
+              <div className="flex items-baseline gap-1 sm:gap-2 flex-wrap">
+                <span className={`text-lg sm:text-3xl font-extrabold tracking-tight privacy-blur block ${totalProfit.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
                   {loading ? '...' : (totalProfit.value >= 0 ? '+' : '') + formatCurrency(totalProfit.value)}
                 </span>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded-full flex items-center gap-0.5 ${totalProfit.value >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-full flex items-center gap-0.5 ${totalProfit.value >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
                   {totalProfit.value >= 0 ? '▲' : '▼'} {Math.abs(totalProfit.percent).toFixed(1)}%
                 </span>
               </div>
-              <span className={`text-xs font-semibold mt-1 block ${dailyChange.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                {loading ? '...' : (dailyChange.value >= 0 ? '+' : '') + formatCurrency(dailyChange.value)} ({dailyChange.percent.toFixed(2)}%) daily
+              <span className={`text-[10px] sm:text-xs font-semibold mt-0.5 sm:mt-1 block truncate ${dailyChange.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                {loading ? '...' : (dailyChange.value >= 0 ? '+' : '') + formatCurrency(dailyChange.value)} ({dailyChange.percent.toFixed(2)}%)
               </span>
             </div>
           </div>
 
           {/* Card 3: IRR */}
-          <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-trend-up text-sm text-purple-500"></i>
+          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
+            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
+              <i className="ph ph-trend-up text-xs sm:text-sm text-purple-500"></i>
               IRR
-              <span className="cursor-help text-[10px] text-gray-300 border border-gray-200 rounded-full w-3.5 h-3.5 flex items-center justify-center font-normal" title="Internal Rate of Return">?</span>
             </div>
-            <div className="mt-3">
-              <span className="text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
+            <div className="mt-1.5 sm:mt-3">
+              <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
                 {loading ? '...' : (latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100).toFixed(2) + '%' : '0.00%')}
               </span>
-              <span className="text-xs font-semibold text-gray-400 block mt-1 border-b border-dashed border-gray-300 w-max cursor-help" title="Weighted annual growth rate of current holdings">
-                {loading ? '...' : (latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100 * 0.85).toFixed(1) + '%' : '0.0%')} current holdings
+              <span className="text-[10px] sm:text-xs font-semibold text-gray-400 block mt-0.5 sm:mt-1 truncate">
+                {loading ? '...' : (latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100 * 0.85).toFixed(1) + '%' : '0.0%')} current
               </span>
             </div>
           </div>
 
           {/* Card 4: Passive income */}
-          <div className="bg-white p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-hand-coins text-sm text-amber-500"></i>
-              Passive income
-              <span className="cursor-help text-[10px] text-gray-300 border border-gray-200 rounded-full w-3.5 h-3.5 flex items-center justify-center font-normal" title="Expected dividend yield">?</span>
+          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
+            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
+              <i className="ph ph-hand-coins text-xs sm:text-sm text-amber-500"></i>
+              Div. Yield
             </div>
-            <div className="mt-3">
-              <div className="flex items-baseline gap-2 flex-wrap">
-                <span className="text-3xl font-extrabold text-gray-900 tracking-tight block">
+            <div className="mt-1.5 sm:mt-3">
+              <div className="flex items-baseline gap-1 sm:gap-2 flex-wrap">
+                <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight block">
                   {loading ? '...' : passiveIncome.yield.toFixed(1)}%
                 </span>
-                <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-600 flex items-center gap-0.5">
+                <span className="text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-full bg-emerald-50 text-emerald-600 flex items-center gap-0.5">
                   ▲ 4.1%
                 </span>
               </div>
-              <span className="text-xs font-semibold text-gray-400 privacy-blur block mt-1">
-                {loading ? '...' : formatCurrency(passiveIncome.annual)} annually
+              <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur block mt-0.5 sm:mt-1 truncate">
+                {loading ? '...' : formatCurrency(passiveIncome.annual)}/jr
               </span>
             </div>
           </div>

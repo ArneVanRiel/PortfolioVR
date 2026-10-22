@@ -90,114 +90,114 @@ const StockStrategyTimeline = ({
 
   return (
     <div className="space-y-6">
-      {/* 1. HOOFD STATISTIEKEN BANNER */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      {/* 1. HOOFD STATISTIEKEN BANNER - 2x2 op mobiel */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
         {/* Kaart 1: Gekoppelde Aankopen */}
-        <div className="bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-white p-5 rounded-3xl border border-emerald-200 shadow-xs flex flex-col justify-between">
+        <div className="bg-gradient-to-br from-emerald-500/10 via-emerald-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-emerald-200 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">Gekoppelde Aankopen</span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
-              <i className="ph-bold ph-check-circle text-lg"></i>
+            <span className="text-[10px] sm:text-xs font-bold text-emerald-800 uppercase tracking-wider">Gekoppeld</span>
+            <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700 text-xs sm:text-base">
+              <i className="ph-bold ph-check-circle"></i>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-gray-900">{matchedCount} orders</div>
-            <div className="flex items-center gap-1.5 mt-1">
-              <span className="text-[11px] font-bold text-emerald-700 bg-emerald-100/80 px-2 py-0.5 rounded-md">
-                {cheaperCount} voordeliger gekocht
+          <div className="mt-1.5 sm:mt-3">
+            <div className="text-lg sm:text-2xl font-black text-gray-900">{matchedCount} orders</div>
+            <div className="flex items-center gap-1 sm:gap-1.5 mt-0.5 sm:mt-1 flex-wrap">
+              <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 bg-emerald-100/80 px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-md">
+                {cheaperCount} voordelig
               </span>
-              <span className="text-[11px] text-gray-500">({higherCount} hoger)</span>
+              <span className="text-[10px] text-gray-500 hidden sm:inline">({higherCount} hoger)</span>
             </div>
           </div>
-          <div className="mt-2 pt-2 border-t border-emerald-100 text-[11px] text-gray-600">
+          <div className="mt-2 pt-2 border-t border-emerald-100 text-[11px] text-gray-600 hidden sm:block">
             Gem. afwijking: <strong className={avgDiff <= 0 ? 'text-emerald-700' : 'text-amber-700'}>{avgDiff > 0 ? '+' : ''}{avgDiff}%</strong> t.o.v. signaal
           </div>
         </div>
 
         {/* Kaart 2: Echte Valide Koopkansen */}
-        <div className="bg-gradient-to-br from-emerald-500/15 via-emerald-500/5 to-white p-5 rounded-3xl border border-emerald-300 shadow-xs flex flex-col justify-between">
+        <div className="bg-gradient-to-br from-emerald-500/15 via-emerald-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-emerald-300 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-emerald-800 uppercase tracking-wider">🟢 Valide Koopkansen</span>
-            <div className="w-8 h-8 rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700">
-              <i className="ph-bold ph-shopping-cart-simple text-lg"></i>
+            <span className="text-[10px] sm:text-xs font-bold text-emerald-800 uppercase tracking-wider">🟢 Valide Koop</span>
+            <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-emerald-100 flex items-center justify-center text-emerald-700 text-xs sm:text-base">
+              <i className="ph-bold ph-shopping-cart-simple"></i>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-emerald-900">{summary.totalOpenSignals || 0} kansen</div>
-            <p className="text-[11px] text-emerald-700 mt-1 font-semibold">
-              Voldoet aan alle 5/5 criteria
+          <div className="mt-1.5 sm:mt-3">
+            <div className="text-lg sm:text-2xl font-black text-emerald-900">{summary.totalOpenSignals || 0} kansen</div>
+            <p className="text-[10px] sm:text-[11px] text-emerald-700 mt-0.5 sm:mt-1 font-semibold truncate">
+              Voldoet aan 5/5 criteria
             </p>
           </div>
-          <div className="mt-2 pt-2 border-t border-emerald-100 text-[11px] text-gray-500">
+          <div className="mt-2 pt-2 border-t border-emerald-100 text-[11px] text-gray-500 hidden sm:block">
             Niet overgewaardeerd & stabiele/stijgende WV
           </div>
         </div>
 
         {/* Kaart 3: Onder Toezicht (Geen Aankoop in Strategie) */}
-        <div className="bg-gradient-to-br from-amber-500/15 via-amber-500/5 to-white p-5 rounded-3xl border border-amber-300 shadow-xs flex flex-col justify-between">
+        <div className="bg-gradient-to-br from-amber-500/15 via-amber-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-amber-300 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">⚠️ Onder Toezicht (Geen Koop)</span>
-            <div className="w-8 h-8 rounded-xl bg-amber-100 flex items-center justify-center text-amber-800">
-              <i className="ph-bold ph-warning text-lg"></i>
+            <span className="text-[10px] sm:text-xs font-bold text-amber-900 uppercase tracking-wider">⚠️ Toezicht</span>
+            <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-amber-100 flex items-center justify-center text-amber-800 text-xs sm:text-base">
+              <i className="ph-bold ph-warning"></i>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-amber-950">{summary.totalUnderSupervision || 0} signalen</div>
-            <p className="text-[11px] text-amber-800 mt-1 font-semibold">
-              Conform backtest overgeslagen
+          <div className="mt-1.5 sm:mt-3">
+            <div className="text-lg sm:text-2xl font-black text-amber-950">{summary.totalUnderSupervision || 0} signalen</div>
+            <p className="text-[10px] sm:text-[11px] text-amber-800 mt-0.5 sm:mt-1 font-semibold truncate">
+              Conform backtest geremd
             </p>
           </div>
-          <div className="mt-2 pt-2 border-t border-amber-100 text-[11px] text-gray-500">
+          <div className="mt-2 pt-2 border-t border-amber-100 text-[11px] text-gray-500 hidden sm:block">
             Overgewaardeerd (&gt;1.3x) of dalende WV
           </div>
         </div>
 
         {/* Kaart 4: Verlopen & Overige Transacties */}
-        <div className="bg-gradient-to-br from-gray-500/10 via-gray-500/5 to-white p-5 rounded-3xl border border-gray-200 shadow-xs flex flex-col justify-between">
+        <div className="bg-gradient-to-br from-gray-500/10 via-gray-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-gray-200 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-gray-600 uppercase tracking-wider">Verlopen & Overig</span>
-            <div className="w-8 h-8 rounded-xl bg-gray-100 flex items-center justify-center text-gray-600">
-              <i className="ph-bold ph-calendar-x text-lg"></i>
+            <span className="text-[10px] sm:text-xs font-bold text-gray-600 uppercase tracking-wider">Verlopen</span>
+            <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-gray-100 flex items-center justify-center text-gray-600 text-xs sm:text-base">
+              <i className="ph-bold ph-calendar-x"></i>
             </div>
           </div>
-          <div className="mt-3">
-            <div className="text-2xl font-black text-gray-900">{summary.totalExpiredSignals || 0} verlopen</div>
-            <div className="flex items-center gap-1.5 mt-1 text-[11px] text-gray-600">
-              <span>{summary.totalManualBuys || 0} extra aankopen</span>
+          <div className="mt-1.5 sm:mt-3">
+            <div className="text-lg sm:text-2xl font-black text-gray-900">{summary.totalExpiredSignals || 0} verlopen</div>
+            <div className="flex items-center gap-1 sm:gap-1.5 mt-0.5 sm:mt-1 text-[10px] sm:text-[11px] text-gray-600 flex-wrap">
+              <span>{summary.totalManualBuys || 0} handmatig</span>
               <span>•</span>
               <span className="text-rose-600 font-bold">{summary.totalSells || 0} verkopen</span>
             </div>
           </div>
-          <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-500">
-            Niet aangekocht binnen geldigheidsvenster
+          <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-500 hidden sm:block">
+            Niet aangekocht binnen venster
           </div>
         </div>
       </div>
 
       {/* 2. UITLEG OVER DE STRIKTE KOPPELINGSREGELS */}
-      <div className="bg-gradient-to-r from-indigo-50/70 via-blue-50/50 to-white rounded-2xl p-4 border border-indigo-200/80 shadow-2xs">
+      <div className="bg-gradient-to-r from-indigo-50/70 via-blue-50/50 to-white rounded-xl sm:rounded-2xl p-2.5 sm:p-4 border border-indigo-200/80 shadow-2xs">
         <div className="flex items-center justify-between cursor-pointer" onClick={() => setShowInfoBanner(!showInfoBanner)}>
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
-              <i className="ph-fill ph-shield-check text-base"></i>
+          <div className="flex items-center gap-2 sm:gap-2.5">
+            <div className="w-6 h-6 sm:w-7 sm:h-7 rounded-lg bg-indigo-600 text-white flex items-center justify-center shrink-0">
+              <i className="ph-fill ph-shield-check text-sm sm:text-base"></i>
             </div>
             <div>
-              <div className="text-xs font-black text-indigo-950">
-                Strikte Koppelingsgarantie: Hoe koppel je een aankoop aan een signaal?
+              <div className="text-[11px] sm:text-xs font-black text-indigo-950">
+                Strikte Koppelingsgarantie: Signalen & Aankopen
               </div>
-              <div className="text-[11px] text-indigo-700">
+              <div className="text-[10px] sm:text-[11px] text-indigo-700 hidden sm:block">
                 1 aankoop per signaal • Geen tussenliggende kwartaalcijfers • Geen nieuwer koopsignaal
               </div>
             </div>
           </div>
-          <button className="text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1">
+          <button className="text-[11px] sm:text-xs font-bold text-indigo-600 hover:text-indigo-800 flex items-center gap-1 shrink-0">
             {showInfoBanner ? 'Inklappen' : 'Lees Uitleg'}
             <i className={`ph-bold ${showInfoBanner ? 'ph-caret-up' : 'ph-caret-down'}`}></i>
           </button>
         </div>
 
         {showInfoBanner && (
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-4 pt-3 border-t border-indigo-100 text-xs text-gray-700 animate-fade-in">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3 pt-3 border-t border-indigo-100 text-xs text-gray-700 animate-fade-in">
             <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-2xs space-y-1">
               <span className="font-bold text-indigo-900 block">1. Maximaal 1 aankoop per signaal</span>
               <p className="text-[11px] text-gray-600 leading-relaxed">
@@ -221,13 +221,13 @@ const StockStrategyTimeline = ({
       </div>
 
       {/* 3. FILTER BAR VOOR TIJDLIJN */}
-      <div className="bg-white p-4 rounded-3xl border border-gray-200 shadow-xs space-y-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {/* Status Tabs */}
-          <div className="flex flex-wrap items-center gap-1.5 bg-gray-100 p-1 rounded-2xl text-xs font-bold">
+      <div className="bg-white p-2.5 sm:p-4 rounded-xl sm:rounded-3xl border border-gray-200 shadow-xs space-y-2 sm:space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+          {/* Status Tabs: Horizontaal scrollbaar op mobiel */}
+          <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl sm:rounded-2xl text-xs font-bold overflow-x-auto no-scrollbar w-full sm:w-auto">
             <button
               onClick={() => setFilterType('ALL')}
-              className={`px-3 py-1.5 rounded-xl transition-all ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all whitespace-nowrap shrink-0 ${
                 filterType === 'ALL' ? 'bg-white text-indigo-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -235,7 +235,7 @@ const StockStrategyTimeline = ({
             </button>
             <button
               onClick={() => setFilterType('MATCHED')}
-              className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'MATCHED' ? 'bg-white text-emerald-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -243,7 +243,7 @@ const StockStrategyTimeline = ({
             </button>
             <button
               onClick={() => setFilterType('OPEN')}
-              className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'OPEN' ? 'bg-white text-emerald-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -251,15 +251,15 @@ const StockStrategyTimeline = ({
             </button>
             <button
               onClick={() => setFilterType('SUPERVISION')}
-              className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'SUPERVISION' ? 'bg-white text-amber-900 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <span>⚠️ Onder Toezicht ({summary.totalUnderSupervision || 0})</span>
+              <span>⚠️ Toezicht ({summary.totalUnderSupervision || 0})</span>
             </button>
             <button
               onClick={() => setFilterType('EXPIRED')}
-              className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'EXPIRED' ? 'bg-white text-gray-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -267,7 +267,7 @@ const StockStrategyTimeline = ({
             </button>
             <button
               onClick={() => setFilterType('MANUAL_BUY')}
-              className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'MANUAL_BUY' ? 'bg-white text-purple-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -275,7 +275,7 @@ const StockStrategyTimeline = ({
             </button>
             <button
               onClick={() => setFilterType('SELL')}
-              className={`px-3 py-1.5 rounded-xl transition-all flex items-center gap-1 ${
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'SELL' ? 'bg-white text-rose-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
@@ -284,15 +284,18 @@ const StockStrategyTimeline = ({
           </div>
 
           {/* Sortering & Aantal */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between sm:justify-end gap-2 w-full sm:w-auto">
             <button
               onClick={() => setSortOrder(sortOrder === 'DESC' ? 'ASC' : 'DESC')}
-              className="px-3 py-1.5 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-xl transition-all flex items-center gap-1.5"
-              title="Wissel sortering datum"
+              className="px-2.5 py-1 text-xs font-bold text-gray-700 bg-gray-50 hover:bg-gray-100 border border-gray-200 rounded-lg sm:rounded-xl transition-all flex items-center gap-1"
             >
               <i className={`ph-bold ${sortOrder === 'DESC' ? 'ph-sort-descending' : 'ph-sort-ascending'}`}></i>
-              {sortOrder === 'DESC' ? 'Nieuwste eerst' : 'Oudste eerst'}
+              <span>{sortOrder === 'DESC' ? 'Nieuwste' : 'Oudste'}</span>
             </button>
+
+            <div className="text-xs text-gray-400 font-medium">
+              <strong>{filteredTimeline.length}</strong> acties
+            </div>
           </div>
         </div>
 
@@ -416,30 +419,30 @@ const StockStrategyTimeline = ({
             return (
               <div
                 key={item.id || idx}
-                className={`rounded-2xl p-4 border transition-all flex flex-col lg:flex-row lg:items-center justify-between gap-4 ${cardBg}`}
+                className={`rounded-xl sm:rounded-2xl p-3 sm:p-4 border transition-all flex flex-col lg:flex-row lg:items-center justify-between gap-2.5 sm:gap-4 ${cardBg}`}
               >
                 {/* Linkerzijde: Datum, Ticker, Status Badge */}
-                <div className="flex items-start sm:items-center gap-3.5">
+                <div className="flex items-start sm:items-center gap-2.5 sm:gap-3.5">
                   {/* Datum Box */}
-                  <div className={`w-14 h-14 rounded-2xl flex flex-col items-center justify-center font-bold text-center shrink-0 shadow-2xs ${dateBg}`}>
+                  <div className={`w-12 h-12 sm:w-14 sm:h-14 rounded-xl sm:rounded-2xl flex flex-col items-center justify-center font-bold text-center shrink-0 shadow-2xs ${dateBg}`}>
                     <span className="text-[9px] uppercase tracking-wider leading-tight">
                       {eventDate.toLocaleDateString('nl-BE', { month: 'short' })}
                     </span>
-                    <span className="text-base font-black leading-none my-0.5">
+                    <span className="text-sm sm:text-base font-black leading-none my-0.5">
                       {eventDate.getDate()}
                     </span>
-                    <span className="text-[9px] text-gray-500 font-medium leading-tight">
+                    <span className="text-[8px] sm:text-[9px] text-gray-500 font-medium leading-tight">
                       {eventDate.getFullYear()}
                     </span>
                   </div>
 
                   {/* Ticker & Identificatie */}
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-base font-black text-gray-900 tracking-tight">{item.ticker}</span>
+                  <div className="space-y-0.5 sm:space-y-1">
+                    <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap">
+                      <span className="text-base sm:text-lg font-black text-gray-900 tracking-tight">{item.ticker}</span>
                       
                       {/* Status Badge */}
-                      <span className={`text-[10px] font-black px-2.5 py-0.5 rounded-full border ${
+                      <span className={`text-[10px] font-black px-2 sm:px-2.5 py-0.5 rounded-full border ${
                         isMatched
                           ? (item.isCheaper ? 'bg-emerald-100 text-emerald-900 border-emerald-300' : 'bg-amber-100 text-amber-900 border-amber-300')
                           : isOpen
@@ -456,24 +459,24 @@ const StockStrategyTimeline = ({
                       </span>
 
                       {item.score && (
-                        <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-2 py-0.5 rounded-md">
+                        <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-1.5 sm:px-2 py-0.5 rounded-md">
                           Score {item.score}/5
                         </span>
                       )}
 
                       {item.waardeVerdeling > 0 && (
-                        <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md">
+                        <span className="text-[10px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-1.5 sm:px-2 py-0.5 rounded-md">
                           WV {Number(item.waardeVerdeling).toFixed(1)}%
                         </span>
                       )}
                     </div>
 
-                    <div className="text-xs text-gray-500 font-medium truncate max-w-[280px]">
+                    <div className="text-xs text-gray-500 font-medium truncate max-w-[220px] sm:max-w-[280px]">
                       {item.name}
                     </div>
 
                     {/* Metadata regel */}
-                    <div className="text-[11px] text-gray-500 flex items-center gap-2 flex-wrap">
+                    <div className="text-[10px] sm:text-[11px] text-gray-500 flex items-center gap-1.5 sm:gap-2 flex-wrap">
                       {isMatched && (
                         <>
                           <span>Signaal: <strong>{new Date(item.date).toLocaleDateString('nl-BE')}</strong></span>
@@ -535,7 +538,7 @@ const StockStrategyTimeline = ({
                 </div>
 
                 {/* Midden / Vergelijkingssectie (VOORAL VOOR GEKOPPELDE AANKOPEN) */}
-                <div className="flex-1 max-w-[480px] px-2 py-1">
+                <div className="flex-1 max-w-[480px] px-0 sm:px-2 py-0.5 sm:py-1">
                   {isMatched && (
                     <div className={`p-2.5 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
                       item.isCheaper ? 'bg-emerald-100/40 border-emerald-200' : 'bg-amber-100/40 border-amber-200'

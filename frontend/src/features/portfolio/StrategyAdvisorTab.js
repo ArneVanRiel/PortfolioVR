@@ -115,6 +115,7 @@ const StrategyAdvisorTab = () => {
   const [matrixFilter, setMatrixFilter] = useState('ALL');
   const [showTimingRules, setShowTimingRules] = useState(false);
   const [strategyType, setStrategyType] = useState('stocks'); // 'stocks' | 'etf'
+  const [isCashWidgetOpen, setIsCashWidgetOpen] = useState(false);
 
   const isIncognito = useIncognito();
   const uid = localStorage.getItem('userID') || 1;
@@ -663,48 +664,40 @@ const StrategyAdvisorTab = () => {
     <div className="space-y-6 animate-fade-in">
       
       {/* HOOFDSTRATEGIE SELECTOR: Losse Aandelen vs ETF DCA Strategie */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-2 bg-slate-900/5 border border-slate-200 rounded-3xl">
-        <div className="flex items-center gap-2 w-full sm:w-auto">
-          <button
-            onClick={() => setStrategyType('stocks')}
-            className={`flex-1 sm:flex-none px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-2 ${
-              strategyType === 'stocks'
-                ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
-                : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
-            }`}
-          >
-            <i className="ph-fill ph-diamonds-four text-base text-amber-300"></i>
-            <span>Losse Aandelen Strategie</span>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-              strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
-            }`}>
-              Score 5 & Waardeverdeling
-            </span>
-          </button>
+      <div className="flex items-center gap-1.5 p-1.5 bg-slate-900/5 border border-slate-200 rounded-2xl sm:rounded-3xl">
+        <button
+          onClick={() => setStrategyType('stocks')}
+          className={`flex-1 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1.5 sm:gap-2 ${
+            strategyType === 'stocks'
+              ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
+              : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+          }`}
+        >
+          <i className="ph-fill ph-diamonds-four text-sm sm:text-base text-amber-300"></i>
+          <span>Losse Aandelen</span>
+          <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
+            strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
+          }`}>
+            Score 5 & Waardeverdeling
+          </span>
+        </button>
 
-          <button
-            onClick={() => setStrategyType('etf')}
-            className={`flex-1 sm:flex-none px-5 py-2.5 rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-2 ${
-              strategyType === 'etf'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
-                : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
-            }`}
-          >
-            <i className="ph-fill ph-chart-line-up text-base text-emerald-300"></i>
-            <span>ETF DCA & Timing Strategie</span>
-            <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${
-              strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
-            }`}>
-              4 ETF's • €450/mnd
-            </span>
-          </button>
-        </div>
-
-        <div className="text-[11px] text-gray-500 font-semibold px-2 hidden md:block">
-          {strategyType === 'stocks' 
-            ? '📊 Focus op top-kwaliteitsaandelen, rotaties en verplichte verkoop' 
-            : '📈 VGWL (70%), VUSA (12%), VGWD (10%), SPYM (8%) met MACD crossover timing'}
-        </div>
+        <button
+          onClick={() => setStrategyType('etf')}
+          className={`flex-1 px-3 sm:px-5 py-2 sm:py-2.5 rounded-xl sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1.5 sm:gap-2 ${
+            strategyType === 'etf'
+              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
+              : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+          }`}
+        >
+          <i className="ph-fill ph-chart-line-up text-sm sm:text-base text-emerald-300"></i>
+          <span>ETF DCA</span>
+          <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
+            strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
+          }`}>
+            4 ETF's • €450/mnd
+          </span>
+        </button>
       </div>
 
       {strategyType === 'etf' ? (
@@ -712,75 +705,75 @@ const StrategyAdvisorTab = () => {
       ) : (
         <>
           {/* 1. HERO BANNER: Alignment Score & Actie Overzicht */}
-      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-3xl p-6 sm:p-8 text-white shadow-xl border border-indigo-900/40">
+      <div className="relative overflow-hidden bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 rounded-2xl sm:rounded-3xl p-4 sm:p-7 text-white shadow-xl border border-indigo-900/40">
         <div className="absolute top-0 right-0 -mt-8 -mr-8 w-64 h-64 bg-indigo-500/10 rounded-full blur-3xl pointer-events-none"></div>
         <div className="absolute bottom-0 left-0 -mb-8 -ml-8 w-64 h-64 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
 
-        <div className="relative z-10 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-6">
-          <div className="space-y-2">
-            <div className="flex items-center gap-2">
-              <span className="px-3 py-1 bg-indigo-500/20 text-indigo-300 rounded-full text-xs font-bold uppercase tracking-wider border border-indigo-500/30 flex items-center gap-1.5">
+        <div className="relative z-10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="space-y-1.5 sm:space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="px-2.5 py-0.5 sm:px-3 sm:py-1 bg-indigo-500/20 text-indigo-300 rounded-full text-[10px] sm:text-xs font-bold uppercase tracking-wider border border-indigo-500/30 flex items-center gap-1.5">
                 <i className="ph-fill ph-sparkle text-amber-400"></i>
-                Data-Gedreven Strategie Assistent
+                Strategie Assistent
               </span>
-              <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${dataFreshness.isUpdatedToday ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}`}>
-                {dataFreshness.isUpdatedToday ? '🟢 Data Actueel' : `⚠️ Laatste update: ${dataFreshness.lastUpdatedDate}`}
+              <span className={`px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-medium ${dataFreshness.isUpdatedToday ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}`}>
+                {dataFreshness.isUpdatedToday ? '🟢 Data Actueel' : `⚠️ ${dataFreshness.lastUpdatedDate}`}
               </span>
             </div>
             
-            <h1 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
-              Data-Gedreven Beslissingen & Meldingen op Datum
+            <h1 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight">
+              Data-Gedreven Beslissingen & Tijdlijn
             </h1>
-            <p className="text-slate-300 text-sm sm:text-base max-w-2xl leading-relaxed">
+            <p className="text-slate-300 text-xs sm:text-sm max-w-2xl leading-relaxed hidden sm:block">
               Beslissingen direct gebaseerd op <strong>MACD crossovers op exacte datums</strong>. Groene koopsignalen (ondergewaardeerd & sterke waardeverdeling) staan gescheiden van gele toezichtssignalen.
             </p>
           </div>
 
           {/* Quick Actions & Alignment Meter */}
-          <div className="flex flex-wrap sm:flex-nowrap items-center gap-4 w-full lg:w-auto bg-slate-800/80 backdrop-blur-md p-4 rounded-2xl border border-slate-700/60 shadow-inner">
-            <div className="text-center sm:text-left pr-4 border-r border-slate-700/60">
-              <div className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Huidige Alignment</div>
-              <div className="text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">
+          <div className="flex items-center justify-between sm:justify-start gap-3 w-full sm:w-auto bg-slate-800/80 backdrop-blur-md p-2.5 sm:p-4 rounded-xl sm:rounded-2xl border border-slate-700/60 shadow-inner">
+            <div className="pr-3 sm:pr-4 border-r border-slate-700/60 text-left">
+              <div className="text-[10px] sm:text-xs text-slate-400 font-semibold uppercase tracking-wider">Alignment</div>
+              <div className="text-xl sm:text-3xl font-black text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 to-teal-300">
                 {alignmentPercentage.toFixed(1)}%
               </div>
-              <div className="text-[11px] text-slate-400">van vermogen in lijn</div>
+              <div className="text-[10px] text-slate-400 hidden sm:block">van vermogen in lijn</div>
             </div>
 
             <button
               onClick={handleTriggerUpdate}
               disabled={isUpdating}
-              className="flex-1 sm:flex-none px-4 py-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-2 text-sm disabled:opacity-50"
+              className="px-3 sm:px-4 py-2 sm:py-3 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold rounded-xl shadow-lg shadow-indigo-500/25 transition-all flex items-center justify-center gap-1.5 sm:gap-2 text-xs sm:text-sm disabled:opacity-50"
             >
-              <i className={`ph-bold ph-arrows-clockwise text-lg ${isUpdating ? 'animate-spin' : ''}`}></i>
-              {isUpdating ? 'Bezig...' : 'Data Verversen'}
+              <i className={`ph-bold ph-arrows-clockwise text-sm sm:text-lg ${isUpdating ? 'animate-spin' : ''}`}></i>
+              <span>{isUpdating ? 'Bezig...' : 'Data Verversen'}</span>
             </button>
           </div>
         </div>
 
-        {/* Status Breakdown Bar */}
-        <div className="mt-8 pt-6 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-4">
-          <div className="bg-slate-800/40 p-3.5 rounded-xl border border-slate-700/40">
-            <div className="text-xs text-slate-400 font-medium">Totale Portefeuille</div>
-            <div className="text-lg font-bold text-white mt-1 privacy-blur">
+        {/* Status Breakdown Bar: 2x2 grid met compacte kaarten */}
+        <div className="mt-4 sm:mt-8 pt-3 sm:pt-6 border-t border-slate-800 grid grid-cols-2 sm:grid-cols-4 gap-2 sm:gap-4">
+          <div className="bg-slate-800/40 p-2.5 sm:p-3.5 rounded-xl border border-slate-700/40">
+            <div className="text-[10px] sm:text-xs text-slate-400 font-medium">Totale Waarde</div>
+            <div className="text-sm sm:text-lg font-bold text-white mt-0.5 sm:mt-1 privacy-blur">
               {isIncognito ? '€ ••••••' : formatCurrency(totalPortfolioValue)}
             </div>
           </div>
-          <div className="bg-emerald-950/30 p-3.5 rounded-xl border border-emerald-800/40">
-            <div className="text-xs text-emerald-400 font-medium">🟢 Directe Koopkansen</div>
-            <div className="text-lg font-bold text-emerald-300 mt-1">
-              {actionableCount} meldingen
+          <div className="bg-emerald-950/30 p-2.5 sm:p-3.5 rounded-xl border border-emerald-800/40">
+            <div className="text-[10px] sm:text-xs text-emerald-400 font-medium">🟢 Directe Koopkansen</div>
+            <div className="text-sm sm:text-lg font-bold text-emerald-300 mt-0.5 sm:mt-1">
+              {actionableCount} acties
             </div>
           </div>
-          <div className="bg-amber-950/30 p-3.5 rounded-xl border border-amber-800/40">
-            <div className="text-xs text-amber-400 font-medium">⚠️ Aandacht / Overgewaardeerd</div>
-            <div className="text-lg font-bold text-amber-300 mt-1">
-              {cautionCount} meldingen
+          <div className="bg-amber-950/30 p-2.5 sm:p-3.5 rounded-xl border border-amber-800/40">
+            <div className="text-[10px] sm:text-xs text-amber-400 font-medium">⚠️ Aandacht / Toezicht</div>
+            <div className="text-sm sm:text-lg font-bold text-amber-300 mt-0.5 sm:mt-1">
+              {cautionCount} signalen
             </div>
           </div>
-          <div className="bg-rose-950/30 p-3.5 rounded-xl border border-rose-800/40">
-            <div className="text-xs text-rose-400 font-medium">🔴 Verkoopsignalen</div>
-            <div className="text-lg font-bold text-rose-300 mt-1">
-              {sellAlertsCount} meldingen
+          <div className="bg-rose-950/30 p-2.5 sm:p-3.5 rounded-xl border border-rose-800/40">
+            <div className="text-[10px] sm:text-xs text-rose-400 font-medium">🔴 Verkoopsignalen</div>
+            <div className="text-sm sm:text-lg font-bold text-rose-300 mt-0.5 sm:mt-1">
+              {sellAlertsCount} orders
             </div>
           </div>
         </div>
@@ -788,122 +781,138 @@ const StrategyAdvisorTab = () => {
 
       {/* CASH ALLOCATIE & RESERVERING WIDGET (ETF's vs Losse Aandelen) */}
       {data?.cashAllocation && (
-        <div className="bg-white rounded-3xl p-5 border border-slate-200/80 shadow-xs space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-gray-100 pb-3">
-            <div className="flex items-center gap-2.5">
-              <span className="w-8 h-8 rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center text-base font-black">
+        <div className="bg-white rounded-2xl sm:rounded-3xl p-3 sm:p-5 border border-slate-200/80 shadow-xs">
+          <div 
+            className="flex items-center justify-between cursor-pointer select-none"
+            onClick={() => setIsCashWidgetOpen(prev => !prev)}
+          >
+            <div className="flex items-center gap-2 sm:gap-2.5">
+              <span className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-blue-50 text-blue-700 flex items-center justify-center text-sm sm:text-base font-black">
                 <i className="ph-fill ph-wallet"></i>
               </span>
               <div>
-                <h3 className="text-sm font-black text-gray-900 tracking-tight">
-                  Cash Verdeling & Maandelijkse Inleg
+                <h3 className="text-xs sm:text-sm font-black text-gray-900 tracking-tight flex items-center gap-1.5 flex-wrap">
+                  <span>Cash Verdeling & Inleg</span>
+                  <span className="text-[10px] sm:text-[11px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-full privacy-blur">
+                    Vrij voor aandelen: {isIncognito ? '€ •••' : formatCurrency(data.cashAllocation.stocksAvailableCash)}
+                  </span>
                 </h3>
-                <p className="text-[11px] text-gray-500 font-medium">
+                <p className="text-[10px] sm:text-[11px] text-gray-500 font-medium hidden sm:block">
                   Minimaal €450/mnd is gereserveerd voor ETF's. Extra spaargeld is direct beschikbaar voor losse kwaliteitsaandelen.
                 </p>
               </div>
             </div>
-            <span className="px-3 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-700 border border-slate-200 shrink-0">
-              ETF Start: 01-10-2026 (€0)
-            </span>
+
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-indigo-600 font-bold hidden sm:inline">
+                {isCashWidgetOpen ? 'Inklappen' : 'Details tonen'}
+              </span>
+              <i className={`ph-bold ${isCashWidgetOpen ? 'ph-caret-up' : 'ph-caret-down'} text-gray-400 text-sm`}></i>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-            <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-gray-500 text-[11px] font-bold uppercase">
-                <span>Totale Broker Cash</span>
-                <i className="ph-bold ph-bank text-sm"></i>
-              </div>
-              <div className="text-xl font-black text-gray-900 mt-1 privacy-blur">
-                {isIncognito ? '€ ••••••' : formatCurrency(data.cashAllocation.totalBrokerCash)}
-              </div>
-              <span className="text-[10px] text-gray-400 mt-0.5">Saldo op Degiro & eToro</span>
-            </div>
+          {/* Details (standaard ingeklapt op mobiel, uitklapbaar met 1 tik) */}
+          {isCashWidgetOpen && (
+            <div className="mt-3 pt-3 border-t border-gray-100 animate-fade-in space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3">
+                <div className="p-3 sm:p-3.5 bg-slate-50 rounded-xl sm:rounded-2xl border border-slate-200 flex flex-col justify-between">
+                  <div className="flex items-center justify-between text-gray-500 text-[10px] sm:text-[11px] font-bold uppercase">
+                    <span>Totale Broker Cash</span>
+                    <i className="ph-bold ph-bank text-sm"></i>
+                  </div>
+                  <div className="text-lg sm:text-xl font-black text-gray-900 mt-1 privacy-blur">
+                    {isIncognito ? '€ ••••••' : formatCurrency(data.cashAllocation.totalBrokerCash)}
+                  </div>
+                  <span className="text-[9px] sm:text-[10px] text-gray-400 mt-0.5">Saldo op Degiro & eToro</span>
+                </div>
 
-            <div className="p-3.5 bg-emerald-50/70 rounded-2xl border border-emerald-200/80 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-emerald-800 text-[11px] font-bold uppercase">
-                <span>Gereserveerd voor ETF's</span>
-                <span className="text-[10px] bg-emerald-200/60 px-1.5 py-0.5 rounded font-black text-emerald-900">€15/dag</span>
-              </div>
-              <div className="text-xl font-black text-emerald-700 mt-1 privacy-blur">
-                {isIncognito ? '€ ••••••' : formatCurrency(data.cashAllocation.etfReservedCash)}
-              </div>
-              <span className="text-[10px] text-emerald-800/80 mt-0.5">
-                Pot opgebouwd: €{data.cashAllocation.theoreticalEtfPotAccrued} (sinds 01-10-2026)
-              </span>
-            </div>
+                <div className="p-3 sm:p-3.5 bg-emerald-50/70 rounded-xl sm:rounded-2xl border border-emerald-200/80 flex flex-col justify-between">
+                  <div className="flex items-center justify-between text-emerald-800 text-[10px] sm:text-[11px] font-bold uppercase">
+                    <span>Gereserveerd voor ETF's</span>
+                    <span className="text-[9px] sm:text-[10px] bg-emerald-200/60 px-1.5 py-0.5 rounded font-black text-emerald-900">€15/dag</span>
+                  </div>
+                  <div className="text-lg sm:text-xl font-black text-emerald-700 mt-1 privacy-blur">
+                    {isIncognito ? '€ ••••••' : formatCurrency(data.cashAllocation.etfReservedCash)}
+                  </div>
+                  <span className="text-[9px] sm:text-[10px] text-emerald-800/80 mt-0.5">
+                    Pot opgebouwd: €{data.cashAllocation.theoreticalEtfPotAccrued} (sinds 01-10-2026)
+                  </span>
+                </div>
 
-            <div className="p-3.5 bg-indigo-50/80 rounded-2xl border border-indigo-200/80 flex flex-col justify-between">
-              <div className="flex items-center justify-between text-indigo-900 text-[11px] font-bold uppercase">
-                <span>Vrij voor Losse Aandelen</span>
-                <span className="text-[10px] bg-indigo-200/70 px-1.5 py-0.5 rounded font-black text-indigo-900">Direct Inzetbaar</span>
+                <div className="p-3 sm:p-3.5 bg-indigo-50/80 rounded-xl sm:rounded-2xl border border-indigo-200/80 flex flex-col justify-between">
+                  <div className="flex items-center justify-between text-indigo-900 text-[10px] sm:text-[11px] font-bold uppercase">
+                    <span>Vrij voor Losse Aandelen</span>
+                    <span className="text-[9px] sm:text-[10px] bg-indigo-200/70 px-1.5 py-0.5 rounded font-black text-indigo-900">Direct Inzetbaar</span>
+                  </div>
+                  <div className="text-lg sm:text-xl font-black text-indigo-700 mt-1 privacy-blur">
+                    {isIncognito ? '€ ••••••' : formatCurrency(data.cashAllocation.stocksAvailableCash)}
+                  </div>
+                  <span className="text-[9px] sm:text-[10px] text-indigo-800/80 mt-0.5">
+                    Beschikbaar voor 5/5 kwaliteitsaandelen
+                  </span>
+                </div>
               </div>
-              <div className="text-xl font-black text-indigo-700 mt-1 privacy-blur">
-                {isIncognito ? '€ ••••••' : formatCurrency(data.cashAllocation.stocksAvailableCash)}
-              </div>
-              <span className="text-[10px] text-indigo-800/80 mt-0.5">
-                Beschikbaar voor 5/5 kwaliteitsaandelen
-              </span>
             </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* 2. SUB-NAVIGATIE TUSSEN WEERGAVEN */}
-      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-200 pb-3">
-        <div className="flex flex-wrap items-center gap-2 bg-gray-100 p-1.5 rounded-2xl">
+      <div className="flex items-center justify-between gap-2 border-b border-gray-200 pb-2">
+        <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl sm:rounded-2xl overflow-x-auto no-scrollbar w-full sm:w-auto">
           <button
             onClick={() => setActiveViewMode('timeline')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'timeline'
                 ? 'bg-white text-emerald-800 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <i className="ph-fill ph-clock-counter-clockwise text-emerald-600 text-base"></i>
-            Tijdlijn & Historie van Acties ({data?.timeline?.length || 0})
+            <i className="ph-fill ph-clock-counter-clockwise text-emerald-600 text-sm sm:text-base"></i>
+            <span>Tijdlijn ({data?.timeline?.length || 0})</span>
           </button>
           <button
             onClick={() => setActiveViewMode('alerts')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'alerts'
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <i className="ph-fill ph-bell-ringing text-indigo-600 text-base"></i>
-            Data-Meldingen op Datum ({dataDrivenAlerts.length})
+            <i className="ph-fill ph-bell-ringing text-indigo-600 text-sm sm:text-base"></i>
+            <span>Meldingen ({dataDrivenAlerts.length})</span>
           </button>
           <button
             onClick={() => setActiveViewMode('charts')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'charts'
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <i className="ph-fill ph-chart-pie text-blue-600 text-base"></i>
-            Huidig vs Ideaal Portfolio (Donut)
+            <i className="ph-fill ph-chart-pie text-blue-600 text-sm sm:text-base"></i>
+            <span>Donut</span>
           </button>
           <button
             onClick={() => setActiveViewMode('matrix')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+            className={`px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
               activeViewMode === 'matrix'
                 ? 'bg-white text-indigo-700 shadow-sm'
                 : 'text-gray-600 hover:text-gray-900'
             }`}
           >
-            <i className="ph-fill ph-table text-emerald-600 text-base"></i>
-            Volledige Positie-Matrix ({holdings.length})
+            <i className="ph-fill ph-table text-emerald-600 text-sm sm:text-base"></i>
+            <span>Matrix ({holdings.length})</span>
           </button>
         </div>
 
         <button
           onClick={() => setShowTimingRules(!showTimingRules)}
-          className="px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl border border-indigo-200/80 transition-all flex items-center gap-1.5"
+          className="hidden sm:flex px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl border border-indigo-200/80 transition-all items-center gap-1.5 whitespace-nowrap shrink-0"
+          title="Uitleg over regels en indicatoren"
         >
           <i className="ph-fill ph-info text-indigo-600"></i>
-          {showTimingRules ? 'Verberg Uitleg' : '📖 Uitleg: Groen vs Geel & MACD Data'}
+          <span>{showTimingRules ? 'Verberg Uitleg' : 'Uitleg'}</span>
         </button>
       </div>
 
@@ -954,58 +963,58 @@ const StrategyAdvisorTab = () => {
         <div className="space-y-6">
           
           {/* Filter & Weergave Toggle */}
-          <div className="flex flex-col md:flex-row items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-gray-200 shadow-2xs">
-            <div className="flex flex-wrap items-center gap-2 w-full md:w-auto">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-2.5 sm:gap-4 bg-white p-3 sm:p-4 rounded-xl sm:rounded-2xl border border-gray-200 shadow-2xs">
+            <div className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar py-0.5">
               {/* Layout Mode Toggle */}
-              <div className="flex bg-slate-100 p-1 rounded-xl mr-2">
+              <div className="flex bg-slate-100 p-0.5 sm:p-1 rounded-lg sm:rounded-xl mr-1 shrink-0">
                 <button
                   onClick={() => setAlertLayoutMode('COLUMNS')}
-                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                  className={`px-2.5 sm:px-3 py-1 text-xs font-bold rounded-md sm:rounded-lg transition-all flex items-center gap-1 whitespace-nowrap ${
                     alertLayoutMode === 'COLUMNS'
                       ? 'bg-white text-indigo-700 shadow-xs'
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
-                  title="Toon 3 aparte kolommen voor groen, geel en rood"
+                  title="Toon kolommen"
                 >
                   <i className="ph-bold ph-columns text-sm"></i>
-                  3 Kolommen (Groen, Geel & Rood)
+                  <span>Kolommen</span>
                 </button>
                 <button
                   onClick={() => setAlertLayoutMode('TIMELINE')}
-                  className={`px-3 py-1 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                  className={`px-2.5 sm:px-3 py-1 text-xs font-bold rounded-md sm:rounded-lg transition-all flex items-center gap-1 whitespace-nowrap ${
                     alertLayoutMode === 'TIMELINE'
                       ? 'bg-white text-indigo-700 shadow-xs'
                       : 'text-gray-600 hover:text-gray-900'
                   }`}
-                  title="Toon chronologische lijst"
+                  title="Toon lijst"
                 >
                   <i className="ph-bold ph-list-dashes text-sm"></i>
-                  Lijstweergave
+                  <span>Lijst</span>
                 </button>
               </div>
 
               {/* Status Filters */}
               <button
                 onClick={() => setAlertFilter('ALL')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'ALL' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0 ${alertFilter === 'ALL' ? 'bg-indigo-600 text-white shadow-xs' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
               >
                 Alles ({dataDrivenAlerts.length})
               </button>
               <button
                 onClick={() => setAlertFilter('ACTIONABLE')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'ACTIONABLE' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
+                className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0 ${alertFilter === 'ACTIONABLE' ? 'bg-emerald-600 text-white shadow-xs' : 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100'}`}
               >
                 🟢 Valide Koop ({actionableCount})
               </button>
               <button
                 onClick={() => setAlertFilter('CAUTION')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'CAUTION' ? 'bg-amber-600 text-white shadow-xs' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
+                className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0 ${alertFilter === 'CAUTION' ? 'bg-amber-600 text-white shadow-xs' : 'bg-amber-50 text-amber-700 hover:bg-amber-100'}`}
               >
-                ⚠️ Onder Toezicht ({cautionCount})
+                ⚠️ Toezicht ({cautionCount})
               </button>
               <button
                 onClick={() => setAlertFilter('SELL')}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all ${alertFilter === 'SELL' ? 'bg-rose-600 text-white shadow-xs' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
+                className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0 ${alertFilter === 'SELL' ? 'bg-rose-600 text-white shadow-xs' : 'bg-rose-50 text-rose-700 hover:bg-rose-100'}`}
               >
                 🔴 Verkoop ({sellAlertsCount})
               </button>

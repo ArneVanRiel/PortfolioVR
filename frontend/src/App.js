@@ -277,7 +277,7 @@ function App() {
 
         {/* Main Content Scroll Area */}
         <main className="flex-1 overflow-y-auto min-h-0">
-          <div className="p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
+          <div className="p-2.5 sm:p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
             <Routes>
               <Route path='/login' element={<LoginPageTest/>} />
               <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
