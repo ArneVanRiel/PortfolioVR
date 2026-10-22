@@ -866,11 +866,22 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
       }
     }
 
+    // Voer ook automatische SEC kwartaalcontrole uit bij update
+    try {
+      const notificationController = require('./notificationController');
+      if (res) {
+        res.write(JSON.stringify({ type: 'progress', message: "Controleren op nieuwe SEC kwartaalcijfers & filings..." }) + '\n');
+      }
+      await notificationController.checkNewSecQuarters({ force: true });
+    } catch (secErr) {
+      console.warn('[WatchlistUpdate] SEC controle overgeslagen:', secErr.message);
+    }
+
     if (res) {
-      res.write(JSON.stringify({ type: 'complete', message: "Prijzen, MACD en meldingen succesvol bijgewerkt." }) + '\n');
+      res.write(JSON.stringify({ type: 'complete', message: "Prijzen, MACD en SEC data succesvol bijgewerkt." }) + '\n');
       res.end();
     }
-    console.log(`[${isStartup ? 'Startup' : 'Manual'}] Aandelenverwerking voltooid.`);
+    console.log(`[${isStartup ? 'Startup' : 'Manual'}] Aandelenverwerking & SEC check voltooid.`);
 
   } catch (error) {
     console.error('Fout in updateAndProcessStocks:', error);

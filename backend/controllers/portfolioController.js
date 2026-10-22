@@ -3341,6 +3341,64 @@ const getStrategyAdvisorData = async (req, res) => {
                             expireReason
                         });
 
+                        const idealItem = idealPortfolio.find(i => i.ticker === alert.ticker_symbol);
+                        let actionAmountEur = 0;
+                        let actionShares = 0;
+                        let isTargetReached = false;
+                        let fundingSource = null;
+                        let sharesOwned = 0;
+                        let currentOwnedEur = 0;
+
+                        if (idealItem) {
+                            const targetEur = idealItem.targetValueEur;
+                            for (const tx of allUserTx) {
+                                if (tx.aandeel_id === alert.aandeel_id) {
+                                    if (tx.transaction_type === 'BUY') sharesOwned += Number(tx.quantity) || 0;
+                                    else if (tx.transaction_type === 'SELL') sharesOwned -= Number(tx.quantity) || 0;
+                                }
+                            }
+                            if (sharesOwned < 0.0001) sharesOwned = 0;
+                            currentOwnedEur = sharesOwned * alertPriceConverted;
+
+                            const baseNeededEur = Math.max(0, targetEur - currentOwnedEur);
+                            const intrinsicVal = idealItem.intrinsicValue;
+                            const valuationFactor = (intrinsicVal && intrinsicVal > 0 && alertPriceConverted > 0)
+                                ? Math.max(0.4, Math.min(1.5, intrinsicVal / alertPriceConverted))
+                                : 1.0;
+
+                            actionAmountEur = baseNeededEur > 0 ? (baseNeededEur * valuationFactor) : (targetEur * 0.5 * valuationFactor);
+                            if (actionAmountEur < 50 && alert.trade_amount > 0) {
+                                actionAmountEur = toDisplayCurrency(alert.trade_amount, alert.ticker_symbol, stockDetails?.asset_type) * valuationFactor;
+                            }
+                            if (currentOwnedEur + actionAmountEur > targetEur * 1.3) {
+                                actionAmountEur = Math.max(0, targetEur * 1.3 - currentOwnedEur);
+                            }
+
+                            actionShares = alertPriceConverted > 0 ? (actionAmountEur / alertPriceConverted) : 0;
+                            if (actionAmountEur <= 10) {
+                                actionAmountEur = 0;
+                                actionShares = 0;
+                                isTargetReached = true;
+                                fundingSource = {
+                                    status: 'TARGET_REACHED',
+                                    badge: '🎯 Streefdoel Reeds Bereikt (Geen Extra Aankoop Nodig)',
+                                    message: `Je bezit momenteel al €${currentOwnedEur.toFixed(2)} (${sharesOwned.toFixed(2)} stuks) aan ${alert.ticker_symbol}. Het gewenste streefdoel is €${targetEur.toFixed(2)}. Conform het allocatiemodel is momenteel geen extra aankoop vereist.`
+                                };
+                            } else if (stocksAvailableCash >= actionAmountEur) {
+                                fundingSource = {
+                                    status: 'DIRECT_CASH',
+                                    badge: '🟢 Vrije Cash Beschikbaar',
+                                    message: `Voldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar na ETF reservering) om direct uit te voeren.`
+                                };
+                            } else {
+                                fundingSource = {
+                                    status: 'ROTATION_REQUIRED',
+                                    badge: '🔄 Rotatie / Verkoop Vereist',
+                                    message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar voor order van €${actionAmountEur.toFixed(2)}).`
+                                };
+                            }
+                        }
+
                         stockTimeline.push({
                             id: `open_${alert.alert_id}`,
                             date: alertDateStr,
@@ -3348,7 +3406,7 @@ const getStrategyAdvisorData = async (req, res) => {
                             source: 'ALGORITHM',
                             type: 'BUY_SIGNAL_OPEN',
                             status: 'OPEN_OPPORTUNITY',
-                            statusBadge: '🟢 Openstaande Koopkans',
+                            statusBadge: isTargetReached ? '🎯 Koopkans (Streefdoel Reeds Bereikt)' : '🟢 Openstaande Koopkans',
                             ticker: alert.ticker_symbol,
                             name: alert.name,
                             stockId: alert.aandeel_id,
@@ -3359,7 +3417,18 @@ const getStrategyAdvisorData = async (req, res) => {
                             score: stockDetails?.selectiecriteria ?? 5,
                             waardeVerdeling: stockDetails?.waarde_verdeling || 0,
                             isCautionStock: false,
-                            isActionableBuy: true
+                            isActionableBuy: true,
+                            shares: parseFloat(actionShares.toFixed(2)),
+                            actionShares: parseFloat(actionShares.toFixed(2)),
+                            totalAmount: parseFloat(actionAmountEur.toFixed(2)),
+                            amountEur: parseFloat(actionAmountEur.toFixed(2)),
+                            targetShares: idealItem ? idealItem.targetShares : null,
+                            targetValueEur: idealItem ? idealItem.targetValueEur : null,
+                            targetWeightPct: idealItem ? idealItem.targetWeightPct : null,
+                            currentOwnedShares: parseFloat(sharesOwned.toFixed(2)),
+                            currentOwnedEur: parseFloat(currentOwnedEur.toFixed(2)),
+                            isTargetReached: isTargetReached,
+                            fundingSource: fundingSource
                         });
                     }
                 }
@@ -4313,5 +4382,6 @@ module.exports = {
   applyStockSplit,
   getBenchmarkHistory,
   getStrategyAdvisorData,
-  getEtfStrategyData
+  getEtfStrategyData,
+  clearAdvisorCache
 };

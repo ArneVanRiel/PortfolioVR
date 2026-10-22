@@ -572,14 +572,34 @@ const StockStrategyTimeline = ({
                   )}
 
                   {isOpen && (
-                    <div className="bg-emerald-100/50 border border-emerald-200 p-2.5 rounded-xl space-y-1">
-                      <div className="flex items-center justify-between text-xs">
+                    <div className={`p-2.5 rounded-xl space-y-1.5 border ${
+                      item.isTargetReached ? 'bg-indigo-50/70 border-indigo-200' : 'bg-emerald-50/80 border-emerald-300'
+                    }`}>
+                      <div className="flex items-center justify-between text-xs flex-wrap gap-1">
                         <span className="text-gray-700">Signaalprijs: <strong>{formatCurrency(item.signalPrice)}</strong></span>
-                        <span className="text-emerald-800 font-bold bg-emerald-100 px-2 py-0.5 rounded-md border border-emerald-200">Actieve Koopkans</span>
+                        <span className={`font-bold px-2 py-0.5 rounded-md border text-[10px] ${
+                          item.isTargetReached 
+                            ? 'bg-indigo-100 text-indigo-900 border-indigo-200' 
+                            : 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                        }`}>
+                          {item.isTargetReached ? '🎯 Streefdoel Reeds Bereikt' : '🟢 Actieve Koopkans'}
+                        </span>
                       </div>
-                      <div className="text-[11px] text-emerald-900 font-medium">
-                        Koopkans blijft gekoppeld zolang er geen nieuwe kwartaalcijfers of nieuw signaal is.
-                      </div>
+                      {item.isTargetReached ? (
+                        <div className="text-[11px] text-indigo-900 font-medium leading-tight">
+                          Je bezit momenteel al {formatCurrency(item.currentOwnedEur)} ({item.currentOwnedShares || 0} stuks) aan {item.ticker}. Conform het allocatiemodel is momenteel geen extra aankoop vereist.
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between text-[11px] font-bold text-emerald-950 bg-white/90 p-1.5 rounded-lg border border-emerald-200 shadow-2xs">
+                          <span>Advies: <strong>KOOP {item.shares} stuks</strong></span>
+                          <span>Budget: <strong>{formatCurrency(item.totalAmount)}</strong></span>
+                        </div>
+                      )}
+                      {item.fundingSource?.message && !item.isTargetReached && (
+                        <div className="text-[10px] text-emerald-800 font-medium">
+                          {item.fundingSource.message}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -623,7 +643,7 @@ const StockStrategyTimeline = ({
                 </div>
 
                 {/* Rechterzijde: Aantal stuks & Totaalbedrag */}
-                <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center text-right shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100 min-w-[120px]">
+                <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center text-right shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100 min-w-[130px]">
                   {isSupervision ? (
                     <div>
                       <span className="text-[10px] text-amber-800 font-bold uppercase block">
@@ -632,6 +652,30 @@ const StockStrategyTimeline = ({
                       <span className="text-xs font-black text-amber-900 bg-amber-100 px-2.5 py-1 rounded-xl border border-amber-200 inline-block mt-1">
                         Overgeslagen
                       </span>
+                    </div>
+                  ) : isOpen && item.isTargetReached ? (
+                    <div>
+                      <span className="text-[10px] text-indigo-700 font-bold uppercase block">
+                        Portefeuille Doel
+                      </span>
+                      <span className="text-xs font-black text-indigo-900 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-lg inline-block mt-1">
+                        🎯 Reeds Bereikt
+                      </span>
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        Geen extra aankoop
+                      </div>
+                    </div>
+                  ) : isOpen ? (
+                    <div>
+                      <span className="text-[10px] text-emerald-800 font-black uppercase tracking-wider block">
+                        Aan te kopen
+                      </span>
+                      <div className="text-sm font-black text-emerald-700">
+                        KOOP {Number(item.shares).toLocaleString('nl-BE', { maximumFractionDigits: 2 })} stuks
+                      </div>
+                      <div className="text-xs font-black text-gray-900 privacy-blur mt-0.5">
+                        {formatCurrency(item.totalAmount)}
+                      </div>
                     </div>
                   ) : (
                     <>

@@ -109,7 +109,7 @@ const StrategyAdvisorTab = () => {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
-  const [activeViewMode, setActiveViewMode] = useState('alerts'); // 'alerts' | 'charts' | 'matrix'
+  const [activeViewMode, setActiveViewMode] = useState('timeline'); // 'timeline' | 'alerts' | 'charts' | 'matrix'
   const [alertLayoutMode, setAlertLayoutMode] = useState('COLUMNS'); // 'COLUMNS' (2-koloms groen/geel) | 'TIMELINE' (lijst)
   const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'ACTIONABLE' | 'CAUTION' | 'SELL' | 'ROTATION'
   const [matrixFilter, setMatrixFilter] = useState('ALL');
@@ -853,17 +853,6 @@ const StrategyAdvisorTab = () => {
       <div className="flex flex-wrap items-center justify-between gap-4 border-b border-gray-200 pb-3">
         <div className="flex flex-wrap items-center gap-2 bg-gray-100 p-1.5 rounded-2xl">
           <button
-            onClick={() => setActiveViewMode('alerts')}
-            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
-              activeViewMode === 'alerts'
-                ? 'bg-white text-indigo-700 shadow-sm'
-                : 'text-gray-600 hover:text-gray-900'
-            }`}
-          >
-            <i className="ph-fill ph-bell-ringing text-indigo-600 text-base"></i>
-            Data-Meldingen op Datum ({dataDrivenAlerts.length})
-          </button>
-          <button
             onClick={() => setActiveViewMode('timeline')}
             className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
               activeViewMode === 'timeline'
@@ -873,6 +862,17 @@ const StrategyAdvisorTab = () => {
           >
             <i className="ph-fill ph-clock-counter-clockwise text-emerald-600 text-base"></i>
             Tijdlijn & Historie van Acties ({data?.timeline?.length || 0})
+          </button>
+          <button
+            onClick={() => setActiveViewMode('alerts')}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+              activeViewMode === 'alerts'
+                ? 'bg-white text-indigo-700 shadow-sm'
+                : 'text-gray-600 hover:text-gray-900'
+            }`}
+          >
+            <i className="ph-fill ph-bell-ringing text-indigo-600 text-base"></i>
+            Data-Meldingen op Datum ({dataDrivenAlerts.length})
           </button>
           <button
             onClick={() => setActiveViewMode('charts')}
