@@ -15,12 +15,37 @@ const StockStrategyTimeline = ({
   summary = {},
   formatCurrency = (v) => `€ ${Number(v || 0).toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 }) => {
-  const [filterType, setFilterType] = useState('ALL'); // 'ALL' | 'MATCHED' | 'OPEN' | 'EXPIRED' | 'MANUAL_BUY' | 'SELL'
+  const [filterType, setFilterType] = useState('ALL'); // 'ALL' | 'ACTION_REQUIRED' | 'OPEN' | 'SELL' | 'SUPERVISION' | 'EXPIRED' | 'MATCHED'
   const [selectedTicker, setSelectedTicker] = useState('ALL');
   const [comparisonFilter, setComparisonFilter] = useState('ALL'); // 'ALL' | 'CHEAPER' | 'HIGHER'
   const [sortOrder, setSortOrder] = useState('DESC'); // 'DESC' (nieuwste eerst) | 'ASC'
   const [showInfoBanner, setShowInfoBanner] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Dynamische aantallen per filter
+  const counts = useMemo(() => {
+    let all = timeline.length;
+    let actionRequired = 0;
+    let open = 0;
+    let sell = 0;
+    let supervision = 0;
+    let expired = 0;
+    let matched = 0;
+
+    for (const item of timeline) {
+      const isAction = item.status === 'OPEN_SELL_ORDER' || 
+        (item.status === 'OPEN_OPPORTUNITY' && !item.isCautionStock && !item.isTargetReached && (Number(item.shares) > 0 || Number(item.actionShares) > 0));
+      if (isAction) actionRequired++;
+
+      if (item.status === 'OPEN_OPPORTUNITY') open++;
+      if (item.status === 'OPEN_SELL_ORDER' || item.status === 'EXECUTED_SELL' || item.status === 'SKIPPED_SMALL_SELL' || item.type?.includes('SELL')) sell++;
+      if (item.status === 'UNDER_SUPERVISION' || item.isCautionStock) supervision++;
+      if (item.status === 'EXPIRED') expired++;
+      if (item.status === 'EXECUTED') matched++;
+    }
+
+    return { all, actionRequired, open, sell, supervision, expired, matched };
+  }, [timeline]);
 
   // Unieke tickers in de tijdlijn voor de dropdown
   const uniqueTickers = useMemo(() => {
@@ -49,19 +74,22 @@ const StockStrategyTimeline = ({
       );
     }
 
-    // Filter op Status/Type
-    if (filterType === 'MATCHED') {
-      items = items.filter(item => item.status === 'EXECUTED');
+    // Filter op Status/Type conform wens gebruiker
+    if (filterType === 'ACTION_REQUIRED') {
+      items = items.filter(item => 
+        item.status === 'OPEN_SELL_ORDER' || 
+        (item.status === 'OPEN_OPPORTUNITY' && !item.isCautionStock && !item.isTargetReached && (Number(item.shares) > 0 || Number(item.actionShares) > 0))
+      );
     } else if (filterType === 'OPEN') {
       items = items.filter(item => item.status === 'OPEN_OPPORTUNITY');
+    } else if (filterType === 'SELL') {
+      items = items.filter(item => item.status === 'OPEN_SELL_ORDER' || item.status === 'EXECUTED_SELL' || item.status === 'SKIPPED_SMALL_SELL' || item.type?.includes('SELL'));
     } else if (filterType === 'SUPERVISION') {
-      items = items.filter(item => item.status === 'UNDER_SUPERVISION');
+      items = items.filter(item => item.status === 'UNDER_SUPERVISION' || item.isCautionStock);
     } else if (filterType === 'EXPIRED') {
       items = items.filter(item => item.status === 'EXPIRED');
-    } else if (filterType === 'MANUAL_BUY') {
-      items = items.filter(item => item.status === 'MANUAL_BUY');
-    } else if (filterType === 'SELL') {
-      items = items.filter(item => item.status === 'MANUAL_SELL' || item.status === 'EXECUTED_SELL' || item.status === 'OPEN_SELL_ORDER');
+    } else if (filterType === 'MATCHED') {
+      items = items.filter(item => item.status === 'EXECUTED');
     }
 
     // Filter op Prijsvergelijking (enkel voor gekoppelde aankopen)
@@ -83,7 +111,7 @@ const StockStrategyTimeline = ({
     return items;
   }, [timeline, filterType, selectedTicker, searchQuery, comparisonFilter, sortOrder]);
 
-  const matchedCount = summary.totalMatchedBuys || 0;
+  const matchedCount = counts.matched;
   const cheaperCount = summary.cheaperCount || 0;
   const higherCount = summary.higherCount || 0;
   const avgDiff = summary.avgPriceDiffPct || 0;
@@ -123,7 +151,7 @@ const StockStrategyTimeline = ({
             </div>
           </div>
           <div className="mt-1.5 sm:mt-3">
-            <div className="text-lg sm:text-2xl font-black text-emerald-900">{summary.totalOpenSignals || 0} kansen</div>
+            <div className="text-lg sm:text-2xl font-black text-emerald-900">{counts.open} kansen</div>
             <p className="text-[10px] sm:text-[11px] text-emerald-700 mt-0.5 sm:mt-1 font-semibold truncate">
               Voldoet aan 5/5 criteria
             </p>
@@ -142,7 +170,7 @@ const StockStrategyTimeline = ({
             </div>
           </div>
           <div className="mt-1.5 sm:mt-3">
-            <div className="text-lg sm:text-2xl font-black text-amber-950">{summary.totalUnderSupervision || 0} signalen</div>
+            <div className="text-lg sm:text-2xl font-black text-amber-950">{counts.supervision} signalen</div>
             <p className="text-[10px] sm:text-[11px] text-amber-800 mt-0.5 sm:mt-1 font-semibold truncate">
               Conform backtest geremd
             </p>
@@ -152,24 +180,24 @@ const StockStrategyTimeline = ({
           </div>
         </div>
 
-        {/* Kaart 4: Verlopen & Overige Transacties */}
-        <div className="bg-gradient-to-br from-gray-500/10 via-gray-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-gray-200 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
+        {/* Kaart 4: Directe Acties Vereist */}
+        <div className="bg-gradient-to-br from-amber-500/15 via-rose-500/5 to-white p-3 sm:p-5 rounded-2xl sm:rounded-3xl border border-amber-300 shadow-xs flex flex-col justify-between min-h-[90px] sm:min-h-auto">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] sm:text-xs font-bold text-gray-600 uppercase tracking-wider">Verlopen</span>
-            <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-gray-100 flex items-center justify-center text-gray-600 text-xs sm:text-base">
-              <i className="ph-bold ph-calendar-x"></i>
+            <span className="text-[10px] sm:text-xs font-bold text-amber-900 uppercase tracking-wider">⚡ Actie Vereist</span>
+            <div className="w-6 h-6 sm:w-8 sm:h-8 rounded-lg sm:rounded-xl bg-amber-100 flex items-center justify-center text-amber-800 text-xs sm:text-base">
+              <i className="ph-bold ph-lightning"></i>
             </div>
           </div>
           <div className="mt-1.5 sm:mt-3">
-            <div className="text-lg sm:text-2xl font-black text-gray-900">{summary.totalExpiredSignals || 0} verlopen</div>
+            <div className="text-lg sm:text-2xl font-black text-gray-900">{counts.actionRequired} actie(s)</div>
             <div className="flex items-center gap-1 sm:gap-1.5 mt-0.5 sm:mt-1 text-[10px] sm:text-[11px] text-gray-600 flex-wrap">
-              <span>{summary.totalManualBuys || 0} handmatig</span>
+              <span className="text-rose-600 font-bold">{counts.sell} verkopen</span>
               <span>•</span>
-              <span className="text-rose-600 font-bold">{summary.totalSells || 0} verkopen</span>
+              <span className="text-gray-500">{counts.expired} verlopen</span>
             </div>
           </div>
-          <div className="mt-2 pt-2 border-t border-gray-100 text-[11px] text-gray-500 hidden sm:block">
-            Niet aangekocht binnen venster
+          <div className="mt-2 pt-2 border-t border-amber-100 text-[11px] text-gray-500 hidden sm:block">
+            Pure acties (excl. streefdoel bereikt & toezicht)
           </div>
         </div>
       </div>
@@ -201,19 +229,19 @@ const StockStrategyTimeline = ({
             <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-2xs space-y-1">
               <span className="font-bold text-indigo-900 block">1. Maximaal 1 aankoop per signaal</span>
               <p className="text-[11px] text-gray-600 leading-relaxed">
-                Het is de bedoeling dat je exact 1 keer koopt per signaal. Zodra de eerste aankoop binnen het geldige venster is geregistreerd, is het signaal uitgevoerd. Latere extra aankopen worden apart aangeduid als handmatig/bijkomend.
+                Het is de bedoeling dat je exact 1 keer koopt per signaal. Zodra de eerste aankoop binnen het geldige venster is geregistreerd, is het signaal uitgevoerd.
               </p>
             </div>
             <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-2xs space-y-1">
               <span className="font-bold text-indigo-900 block">2. Geen nieuwere kwartaalcijfers</span>
               <p className="text-[11px] text-gray-600 leading-relaxed">
-                Een aankoop kan alleen aan het signaal gekoppeld worden als er sinds het signaal nog géén nieuwe kwartaalcijfers zijn gepubliceerd (op de werkelijke <code>report_date</code>). Nieuwe cijfers resetten het fundament.
+                Een aankoop kan alleen aan het signaal gekoppeld worden als er sinds het signaal nog géén nieuwe kwartaalcijfers zijn gepubliceerd (op de werkelijke <code>report_date</code>).
               </p>
             </div>
             <div className="bg-white p-3 rounded-xl border border-indigo-100 shadow-2xs space-y-1">
               <span className="font-bold text-indigo-900 block">3. Geen nieuwer koopsignaal</span>
               <p className="text-[11px] text-gray-600 leading-relaxed">
-                Als er een nieuwer MACD koopsignaal voor dat aandeel verschijnt voordat je hebt gekocht, vervalt het oude signaal. Een latere aankoop koppelt dan exclusief aan het allernieuwste signaal.
+                Als er een nieuwer MACD koopsignaal voor dat aandeel verschijnt voordat je hebt gekocht, vervalt het oude signaal.
               </p>
             </div>
           </div>
@@ -225,61 +253,78 @@ const StockStrategyTimeline = ({
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2.5">
           {/* Status Tabs: Horizontaal scrollbaar op mobiel */}
           <div className="flex items-center gap-1 sm:gap-1.5 bg-gray-100 p-0.5 sm:p-1 rounded-xl sm:rounded-2xl text-xs font-bold overflow-x-auto no-scrollbar w-full sm:w-auto">
+            {/* 1. Alle Meldingen */}
             <button
               onClick={() => setFilterType('ALL')}
               className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all whitespace-nowrap shrink-0 ${
                 filterType === 'ALL' ? 'bg-white text-indigo-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              Alles ({timeline.length})
+              Alle Meldingen ({counts.all})
             </button>
+
+            {/* 2. Actie Vereist (Pure acties) */}
             <button
-              onClick={() => setFilterType('MATCHED')}
+              onClick={() => setFilterType('ACTION_REQUIRED')}
               className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                filterType === 'MATCHED' ? 'bg-white text-emerald-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+                filterType === 'ACTION_REQUIRED' 
+                  ? 'bg-amber-500 text-white shadow-xs font-black' 
+                  : counts.actionRequired > 0 
+                  ? 'bg-amber-100/90 text-amber-900 hover:bg-amber-200' 
+                  : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <span>🟢 Uitgevoerd ({summary.totalMatchedBuys || 0})</span>
+              <span>⚡ Actie Vereist ({counts.actionRequired})</span>
             </button>
+
+            {/* 3. Alleen de Koopkansen */}
             <button
               onClick={() => setFilterType('OPEN')}
               className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'OPEN' ? 'bg-white text-emerald-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <span>🟢 Valide Koop ({summary.totalOpenSignals || 0})</span>
+              <span>🟢 Koopkansen ({counts.open})</span>
             </button>
-            <button
-              onClick={() => setFilterType('SUPERVISION')}
-              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                filterType === 'SUPERVISION' ? 'bg-white text-amber-900 shadow-xs' : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <span>⚠️ Toezicht ({summary.totalUnderSupervision || 0})</span>
-            </button>
-            <button
-              onClick={() => setFilterType('EXPIRED')}
-              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                filterType === 'EXPIRED' ? 'bg-white text-gray-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <span>⚪ Verlopen ({summary.totalExpiredSignals || 0})</span>
-            </button>
-            <button
-              onClick={() => setFilterType('MANUAL_BUY')}
-              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
-                filterType === 'MANUAL_BUY' ? 'bg-white text-purple-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
-              }`}
-            >
-              <span>👤 Handmatig ({summary.totalManualBuys || 0})</span>
-            </button>
+
+            {/* 4. Alleen de Verkoopkansen */}
             <button
               onClick={() => setFilterType('SELL')}
               className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
                 filterType === 'SELL' ? 'bg-white text-rose-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <span>🔴 Verkopen ({summary.totalSells || 0})</span>
+              <span>🔴 Verkoopkansen ({counts.sell})</span>
+            </button>
+
+            {/* 5. Toezicht (Reden niet kopen) */}
+            <button
+              onClick={() => setFilterType('SUPERVISION')}
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                filterType === 'SUPERVISION' ? 'bg-white text-amber-900 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <span>⚠️ Toezicht ({counts.supervision})</span>
+            </button>
+
+            {/* 6. Verlopen Koopkansen */}
+            <button
+              onClick={() => setFilterType('EXPIRED')}
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                filterType === 'EXPIRED' ? 'bg-white text-gray-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <span>⚪ Verlopen ({counts.expired})</span>
+            </button>
+
+            {/* 7. Gekoppelde Aankopen (Historisch) */}
+            <button
+              onClick={() => setFilterType('MATCHED')}
+              className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl transition-all flex items-center gap-1 whitespace-nowrap shrink-0 ${
+                filterType === 'MATCHED' ? 'bg-white text-emerald-800 shadow-xs' : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <span>✅ Gekoppeld ({counts.matched})</span>
             </button>
           </div>
 
@@ -387,13 +432,22 @@ const StockStrategyTimeline = ({
             const isOpen = item.status === 'OPEN_OPPORTUNITY';
             const isSupervision = item.status === 'UNDER_SUPERVISION';
             const isExpired = item.status === 'EXPIRED';
-            const isManualBuy = item.status === 'MANUAL_BUY';
-            const isSell = item.status === 'MANUAL_SELL' || item.status === 'EXECUTED_SELL' || item.status === 'OPEN_SELL_ORDER';
+            const isOpenSell = item.status === 'OPEN_SELL_ORDER';
+            const isSkippedSmallSell = item.status === 'SKIPPED_SMALL_SELL' || item.isSkippedSmallSell;
+            const isExecutedSell = item.status === 'EXECUTED_SELL';
+            const isSell = isOpenSell || isExecutedSell || isSkippedSmallSell || item.type?.includes('SELL');
+            const isActionRequired = isOpenSell || (isOpen && !item.isCautionStock && !item.isTargetReached && (Number(item.shares) > 0 || Number(item.actionShares) > 0));
 
             // Kleurthema per status
             let cardBg = 'bg-white border-gray-200 hover:border-gray-300';
             let dateBg = 'bg-gray-100 text-gray-700';
-            if (isMatched) {
+            if (isOpenSell) {
+              cardBg = 'bg-rose-50/40 border-rose-300 shadow-2xs';
+              dateBg = 'bg-rose-100 text-rose-950 font-black';
+            } else if (isSkippedSmallSell) {
+              cardBg = 'bg-amber-50/25 border-amber-300 shadow-2xs';
+              dateBg = 'bg-amber-100 text-amber-950 font-black';
+            } else if (isMatched) {
               cardBg = item.isCheaper ? 'bg-emerald-50/20 border-emerald-300 shadow-2xs' : 'bg-amber-50/15 border-amber-300 shadow-2xs';
               dateBg = item.isCheaper ? 'bg-emerald-100 text-emerald-900' : 'bg-amber-100 text-amber-900';
             } else if (isOpen) {
@@ -405,9 +459,6 @@ const StockStrategyTimeline = ({
             } else if (isExpired) {
               cardBg = 'bg-gray-50/60 border-gray-200 opacity-90';
               dateBg = 'bg-gray-200/80 text-gray-600';
-            } else if (isManualBuy) {
-              cardBg = 'bg-purple-50/15 border-purple-200';
-              dateBg = 'bg-purple-100 text-purple-900';
             } else if (isSell) {
               cardBg = 'bg-rose-50/20 border-rose-300';
               dateBg = 'bg-rose-100 text-rose-900';
@@ -442,7 +493,11 @@ const StockStrategyTimeline = ({
                       
                       {/* Status Badge */}
                       <span className={`text-[10px] font-black px-2 sm:px-2.5 py-0.5 rounded-full border ${
-                        isMatched
+                        isOpenSell
+                          ? 'bg-rose-100 text-rose-950 border-rose-300'
+                          : isSkippedSmallSell
+                          ? 'bg-amber-100 text-amber-950 border-amber-300'
+                          : isMatched
                           ? (item.isCheaper ? 'bg-emerald-100 text-emerald-900 border-emerald-300' : 'bg-amber-100 text-amber-900 border-amber-300')
                           : isOpen
                           ? 'bg-emerald-100 text-emerald-900 border-emerald-300 animate-pulse'
@@ -450,12 +505,16 @@ const StockStrategyTimeline = ({
                           ? 'bg-amber-100 text-amber-950 border-amber-300'
                           : isExpired
                           ? 'bg-gray-100 text-gray-700 border-gray-300'
-                          : isManualBuy
-                          ? 'bg-purple-100 text-purple-900 border-purple-300'
                           : 'bg-rose-100 text-rose-900 border-rose-300'
                       }`}>
                         {item.statusBadge}
                       </span>
+
+                      {isActionRequired && (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-500 text-white shadow-2xs animate-pulse">
+                          ⚡ Actie Vereist
+                        </span>
+                      )}
 
                       {item.score && (
                         <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-1.5 sm:px-2 py-0.5 rounded-md">
@@ -517,15 +576,23 @@ const StockStrategyTimeline = ({
                         </>
                       )}
 
-                      {isManualBuy && (
+                      {isSkippedSmallSell && (
                         <>
-                          <span>Transactiedatum: <strong>{new Date(item.date).toLocaleDateString('nl-BE')}</strong></span>
+                          <span>Signaaldatum: <strong>{new Date(item.date).toLocaleDateString('nl-BE')}</strong></span>
                           <span>•</span>
-                          <span className="text-purple-700 font-medium">{item.note}</span>
+                          <span className="text-amber-900 font-bold">{item.note}</span>
                         </>
                       )}
 
-                      {isSell && (
+                      {isOpenSell && (
+                        <>
+                          <span>Signaaldatum: <strong>{new Date(item.date).toLocaleDateString('nl-BE')}</strong></span>
+                          <span>•</span>
+                          <span className="text-rose-700 font-bold">{item.note}</span>
+                        </>
+                      )}
+
+                      {isExecutedSell && (
                         <>
                           <span>Datum: <strong>{new Date(item.date).toLocaleDateString('nl-BE')}</strong></span>
                           <span>•</span>
@@ -536,7 +603,7 @@ const StockStrategyTimeline = ({
                   </div>
                 </div>
 
-                {/* Midden / Vergelijkingssectie (VOORAL VOOR GEKOPPELDE AANKOPEN) */}
+                {/* Midden / Vergelijkingssectie (VOORAL VOOR GEKOPPELDE AANKOPEN EN OPEN ORDERS) */}
                 <div className="flex-1 max-w-[480px] px-0 sm:px-2 py-0.5 sm:py-1">
                   {isMatched && (
                     <div className={`p-2.5 rounded-xl border flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 ${
@@ -631,22 +698,55 @@ const StockStrategyTimeline = ({
                     </div>
                   )}
 
-                  {isManualBuy && (
-                    <div className="bg-purple-50 border border-purple-100 p-2 rounded-xl text-xs text-purple-900 font-medium">
-                      Aankoop buiten een actief MACD-signaalvenster of bijkomende extra aankoop na signaal.
+                  {isSkippedSmallSell ? (
+                    <div className="bg-amber-50/80 border border-amber-300 p-2.5 rounded-xl space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-700">Huidige koers: <strong>{formatCurrency(item.currentPrice)}</strong></span>
+                        <span className="text-amber-950 font-bold bg-amber-100 px-2 py-0.5 rounded-md border border-amber-200 text-[10px]">
+                          🟡 Niet Verkopen (&lt; €50)
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-amber-950 font-medium">
+                        {item.note || 'Deelverkoopvoorstel is lager dan € 50. Niet verkopen om onevenredige transactiekosten te vermijden.'}
+                      </div>
                     </div>
-                  )}
-
-                  {isSell && (
+                  ) : isOpenSell ? (
+                    <div className="bg-rose-50/90 border border-rose-300 p-2.5 rounded-xl space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-gray-700">Huidige koers: <strong>{formatCurrency(item.currentPrice)}</strong></span>
+                        <span className="text-rose-900 font-bold bg-rose-100 px-2 py-0.5 rounded-md border border-rose-200">
+                          🔴 Verkooporder Openstaand
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-rose-950 font-medium">
+                        {item.note || 'Verkoop vereist ter bescherming van kapitaal conform de strategie.'}
+                      </div>
+                    </div>
+                  ) : isExecutedSell ? (
                     <div className="bg-rose-50 border border-rose-100 p-2 rounded-xl text-xs text-rose-900 font-medium">
-                      Verkooptransactie ter bescherming van kapitaal of winstname conform strategie.
+                      Verkooptransactie uitgevoerd conform strategie.
                     </div>
-                  )}
+                  ) : null}
                 </div>
 
                 {/* Rechterzijde: Aantal stuks & Totaalbedrag */}
                 <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center text-right shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-gray-100 min-w-[130px]">
-                  {isSupervision ? (
+                  {isSkippedSmallSell ? (
+                    <div>
+                      <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block">
+                        Voorstel Deelverkoop
+                      </span>
+                      <div className="text-sm font-black text-gray-700">
+                        {Number(item.shares).toLocaleString('nl-BE', { maximumFractionDigits: 2 })} stuks
+                      </div>
+                      <div className="text-xs font-bold text-gray-500 privacy-blur mt-0.5">
+                        {formatCurrency(item.totalAmount)}
+                      </div>
+                      <span className="text-[10px] font-black text-amber-950 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded-md inline-block mt-1">
+                        🟡 NIET VERKOPEN
+                      </span>
+                    </div>
+                  ) : isSupervision ? (
                     <div>
                       <span className="text-[10px] text-amber-800 font-bold uppercase block">
                         Strategie Status
@@ -676,6 +776,18 @@ const StockStrategyTimeline = ({
                         KOOP {Number(item.shares).toLocaleString('nl-BE', { maximumFractionDigits: 2 })} stuks
                       </div>
                       <div className="text-xs font-black text-gray-900 privacy-blur mt-0.5">
+                        {formatCurrency(item.totalAmount)}
+                      </div>
+                    </div>
+                  ) : isOpenSell ? (
+                    <div>
+                      <span className="text-[10px] text-rose-800 font-black uppercase tracking-wider block">
+                        Aan te verkopen
+                      </span>
+                      <div className="text-sm font-black text-rose-700">
+                        VERKOOP {Number(item.shares).toLocaleString('nl-BE', { maximumFractionDigits: 2 })} stuks
+                      </div>
+                      <div className="text-xs font-black text-rose-950 privacy-blur mt-0.5">
                         {formatCurrency(item.totalAmount)}
                       </div>
                     </div>

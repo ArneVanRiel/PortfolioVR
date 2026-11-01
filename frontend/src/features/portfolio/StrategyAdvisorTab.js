@@ -105,8 +105,22 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDro
 };
 
 const StrategyAdvisorTab = () => {
-  const [data, setData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const uid = localStorage.getItem('userID') || 1;
+  const [data, setData] = useState(() => {
+    try {
+      const cached = localStorage.getItem(`cached_strategy_advisor_stocks_${uid}`);
+      return cached ? JSON.parse(cached) : null;
+    } catch (e) {
+      return null;
+    }
+  });
+  const [loading, setLoading] = useState(() => {
+    try {
+      return !localStorage.getItem(`cached_strategy_advisor_stocks_${uid}`);
+    } catch (e) {
+      return true;
+    }
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
   const [activeViewMode, setActiveViewMode] = useState('timeline'); // 'timeline' | 'alerts' | 'charts' | 'matrix'
@@ -118,20 +132,24 @@ const StrategyAdvisorTab = () => {
   const [isCashWidgetOpen, setIsCashWidgetOpen] = useState(false);
 
   const isIncognito = useIncognito();
-  const uid = localStorage.getItem('userID') || 1;
 
   const fetchAdvisorData = useCallback(async (force = false) => {
-    setLoading(true);
+    if (force) setLoading(true);
     try {
       const res = await http.get(`/portfolio/strategy-advisor?userId=${uid}&currency=EUR${force ? '&forceRefresh=true' : ''}`);
       setData(res.data);
+      try {
+        localStorage.setItem(`cached_strategy_advisor_stocks_${uid}`, JSON.stringify(res.data));
+      } catch (e) {
+        // localStorage quota
+      }
     } catch (err) {
       console.error('Fout bij ophalen Strategie Assistent data:', err);
-      toast.error('Kon strategie-advies niet laden.');
+      if (!data) toast.error('Kon strategie-advies niet laden.');
     } finally {
       setLoading(false);
     }
-  }, [uid]);
+  }, [uid, data]);
 
   useEffect(() => {
     fetchAdvisorData();
