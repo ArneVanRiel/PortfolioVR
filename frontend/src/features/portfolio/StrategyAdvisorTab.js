@@ -734,8 +734,9 @@ const StrategyAdvisorTab = () => {
                 <i className="ph-fill ph-sparkle text-amber-400"></i>
                 Strategie Assistent
               </span>
-              <span className={`px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-medium ${dataFreshness.isUpdatedToday ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}`}>
-                {dataFreshness.isUpdatedToday ? '🟢 Data Actueel' : `⚠️ ${dataFreshness.lastUpdatedDate}`}
+              <span className={`px-2.5 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border flex items-center gap-1.5 ${dataFreshness.isUpdatedToday ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'}`}>
+                <span className={`w-2 h-2 rounded-full ${dataFreshness.isUpdatedToday ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`}></span>
+                <span>{dataFreshness.isUpdatedToday ? `🟢 Up-to-date (${dataFreshness.lastUpdatedDate})` : `⚠️ Laatste data: ${dataFreshness.lastUpdatedDate} (Update aanbevolen)`}</span>
               </span>
             </div>
             
@@ -924,16 +925,31 @@ const StrategyAdvisorTab = () => {
           </button>
         </div>
 
-        {/* Data Verversen Knop (Altijd direct bereikbaar) */}
-        <button
-          onClick={handleTriggerUpdate}
-          disabled={isUpdating}
-          className="px-2.5 sm:px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold rounded-xl shadow-xs transition-all flex items-center justify-center gap-1 text-xs shrink-0 disabled:opacity-50"
-          title="Ververs actuele koersen & MACD berekeningen"
-        >
-          <i className={`ph-bold ph-arrows-clockwise text-xs sm:text-sm ${isUpdating ? 'animate-spin' : ''}`}></i>
-          <span className="hidden xs:inline sm:inline">{isUpdating ? 'Bezig...' : 'Verversen'}</span>
-        </button>
+        {/* Data Status Pill & Verversen Knop */}
+        <div className="flex items-center gap-1.5 shrink-0">
+          <span 
+            className={`px-2 py-1 rounded-lg text-[10px] font-bold border flex items-center gap-1 ${
+              dataFreshness?.isUpdatedToday
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-amber-50 text-amber-800 border-amber-200'
+            }`}
+            title={`Laatste data: ${dataFreshness?.lastUpdatedDate || 'Onbekend'}`}
+          >
+            <span className={`w-1.5 h-1.5 rounded-full ${dataFreshness?.isUpdatedToday ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`}></span>
+            <span className="hidden sm:inline">{dataFreshness?.isUpdatedToday ? 'Up-to-date' : 'Update nodig'}</span>
+            <span className="font-mono">({dataFreshness?.lastUpdatedDate ? dataFreshness.lastUpdatedDate.slice(5) : '-'})</span>
+          </span>
+
+          <button
+            onClick={handleTriggerUpdate}
+            disabled={isUpdating}
+            className="px-2.5 sm:px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold rounded-xl shadow-xs transition-all flex items-center justify-center gap-1 text-xs shrink-0 disabled:opacity-50"
+            title="Ververs actuele koersen & MACD berekeningen"
+          >
+            <i className={`ph-bold ph-arrows-clockwise text-xs sm:text-sm ${isUpdating ? 'animate-spin' : ''}`}></i>
+            <span className="hidden xs:inline sm:inline">{isUpdating ? 'Bezig...' : 'Verversen'}</span>
+          </button>
+        </div>
 
         <button
           onClick={() => setShowTimingRules(!showTimingRules)}

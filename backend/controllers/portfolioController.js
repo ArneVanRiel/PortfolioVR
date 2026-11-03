@@ -2379,44 +2379,43 @@ const getBenchmarkHistory = async (req, res) => {
  * Genereert de Strategie Assistent data en concrete signalen voor het huidige portfolio van de gebruiker.
  * Vergelijkt huidige posities met de optimale Super-Kwaliteit strategie (Score 5, intrinsieke waardering <= 1.3x, 200 SMA, lage schuld).
  */
-const getStrategyAdvisorData = async (req, res) => {
+const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
     try {
-        const userId = req.query.userId || 1;
-        const currency = req.query.currency || 'EUR';
-        const maxPriceToIntrinsic = parseFloat(req.query.maxPriceToIntrinsic || 1.3);
-        const takeProfitRatio = parseFloat(req.query.takeProfitRatio || 2.0);
-        const maxDebtRatio = parseFloat(req.query.maxDebtRatio || 1.0);
-        const isEur = currency === 'EUR';
-        const forceRefresh = req.query.forceRefresh === 'true';
+        const currency = options.currency || 'EUR';
+    const maxPriceToIntrinsic = parseFloat(options.maxPriceToIntrinsic || 1.3);
+    const takeProfitRatio = parseFloat(options.takeProfitRatio || 2.0);
+    const maxDebtRatio = parseFloat(options.maxDebtRatio || 1.0);
+    const isEur = currency === 'EUR';
+    const forceRefresh = options.forceRefresh === true;
 
-        const toIsoDateOnly = (d) => {
-            if (!d) return null;
-            if (typeof d === 'string') {
-                const m = d.match(/^\d{4}-\d{2}-\d{2}/);
-                if (m) return m[0];
-            }
-            const dateObj = new Date(d);
-            if (isNaN(dateObj.getTime())) return null;
-            return dateObj.toISOString().split('T')[0];
-        };
-
-        const toUtcMidnight = (d) => {
-            const s = toIsoDateOnly(d);
-            return s ? new Date(`${s}T00:00:00.000Z`) : null;
-        };
-
-        const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}`;
-        if (!forceRefresh) {
-            const cached = advisorDataCache.get(cacheKey);
-            if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
-                return res.json(cached.data);
-            }
-            const diskCached = getDiskCache(cacheKey);
-            if (diskCached) {
-                advisorDataCache.set(cacheKey, { timestamp: Date.now(), data: diskCached });
-                return res.json(diskCached);
-            }
+    const toIsoDateOnly = (d) => {
+        if (!d) return null;
+        if (typeof d === 'string') {
+            const m = d.match(/^\d{4}-\d{2}-\d{2}/);
+            if (m) return m[0];
         }
+        const dateObj = new Date(d);
+        if (isNaN(dateObj.getTime())) return null;
+        return dateObj.toISOString().split('T')[0];
+    };
+
+    const toUtcMidnight = (d) => {
+        const s = toIsoDateOnly(d);
+        return s ? new Date(`${s}T00:00:00.000Z`) : null;
+    };
+
+    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}`;
+    if (!forceRefresh) {
+        const cached = advisorDataCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
+            return cached.data;
+        }
+        const diskCached = getDiskCache(cacheKey);
+        if (diskCached) {
+            advisorDataCache.set(cacheKey, { timestamp: Date.now(), data: diskCached });
+            return diskCached;
+        }
+    }
 
         const pool = await sql.connect(config);
 
@@ -2772,9 +2771,10 @@ const getStrategyAdvisorData = async (req, res) => {
                 actionSeverity = 'danger';
                 actionReason = `Score (${score}/5) voldoet niet meer aan de Super-Kwaliteit criteria. Sluit positie (100%) verplicht om kapitaal te beschermen.`;
                 isAligned = false;
-            } else if (isWvDropping && wvDropPct >= 1.0) {
+            } else if (isWvDropping && wvDropFraction > 0) {
                 const rawSellRatio = Math.max(0.01, Math.min(1.0, wvDropFraction || 0.1));
                 const rawSellAmountEur = holdingValue * rawSellRatio;
+                const absWvDiff = (waardeVerdeling - prevWaardeVerdeling);
 
                 // STRATEGIE REGEL VOOR DEELVERKOPEN:
                 // - < €50: NIET VERKOPEN (onevenredige transactiekosten)
@@ -2784,19 +2784,19 @@ const getStrategyAdvisorData = async (req, res) => {
                     actionType = 'MANDATORY_PARTIAL_SELL_WV_TOO_SMALL';
                     actionLabel = '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)';
                     actionSeverity = 'neutral';
-                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(1)}% naar ${waardeVerdeling.toFixed(1)}% (-${wvDropPct.toFixed(1)}%). Het berekende verkoopbedrag is echter slechts € ${rawSellAmountEur.toFixed(2)} (< € 50 minimum drempel). Conform de strategie wordt dit NIET verkocht om onevenredige transactiekosten te vermijden.`;
+                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Het berekende verkoopbedrag is echter slechts € ${rawSellAmountEur.toFixed(2)} (< € 50 minimum drempel). Conform de strategie wordt dit NIET verkocht om onevenredige transactiekosten te vermijden.`;
                     isAligned = true;
                 } else if (rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
                     actionType = 'MANDATORY_PARTIAL_SELL_WV';
                     actionLabel = '🔴 Verplichte Deelverkoop (Afgerond naar €100)';
                     actionSeverity = 'danger';
-                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(1)}% naar ${waardeVerdeling.toFixed(1)}% (-${wvDropPct.toFixed(1)}%). Voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100.`;
+                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100.`;
                     isAligned = false;
                 } else {
                     actionType = 'MANDATORY_PARTIAL_SELL_WV';
                     actionLabel = `🔴 Verplichte Deelverkoop (-${wvDropPct.toFixed(1)}%)`;
                     actionSeverity = 'danger';
-                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(1)}% naar ${waardeVerdeling.toFixed(1)}% (-${wvDropPct.toFixed(1)}%). Verkoop ${wvDropPct.toFixed(1)}% van deze positie verplicht conform de strategie.`;
+                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Verkoop ${wvDropPct.toFixed(1)}% van deze positie verplicht conform de strategie.`;
                     isAligned = false;
                 }
             } else if (priceToIntrinsicRatio !== null && priceToIntrinsicRatio >= takeProfitRatio) {
@@ -3596,8 +3596,8 @@ const getStrategyAdvisorData = async (req, res) => {
                     note: isFullSell 
                         ? `Score gezakt naar ${h.score}/5. Verkooporder openstaand vanaf rapportagedatum ${effectiveSellDateStr}` 
                         : (isRoundedTo100
-                            ? `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel € ${rawSellAmountEur.toFixed(2)}, afgerond naar € 100.`
-                            : `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%).`),
+                            ? `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel € ${rawSellAmountEur.toFixed(2)}, afgerond naar € 100.`
+                            : `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%).`),
                     reportDate: h.reportDate
                 });
             }
@@ -3629,7 +3629,7 @@ const getStrategyAdvisorData = async (req, res) => {
                 rawAmount: parseFloat(rawSellAmountEur.toFixed(2)),
                 isSkippedSmallSell: true,
                 skipReason: `Voorstel van ${parseFloat(rawSellShares.toFixed(2))} stuks (€ ${rawSellAmountEur.toFixed(2)}) is lager dan de minimum drempel van € 50. Niet verkopen wegens transactiekosten.`,
-                note: `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%), maar bedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< € 50). Geen verkooporder ingelegd.`,
+                note: `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%), maar bedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< € 50). Geen verkooporder ingelegd.`,
                 reportDate: h.reportDate
             });
         });
@@ -4050,38 +4050,53 @@ const getStrategyAdvisorData = async (req, res) => {
 
         advisorDataCache.set(cacheKey, { timestamp: Date.now(), data: responseData });
         setDiskCache(cacheKey, responseData);
-        res.json(responseData);
+        return responseData;
 
     } catch (err) {
         console.error('Fout bij ophalen Strategy Advisor data:', err);
+        throw err;
+    }
+};
+
+const getStrategyAdvisorData = async (req, res) => {
+    try {
+        const userId = req.query.userId || req.user?.id || 1;
+        const data = await calculateStrategyAdvisorInternal(userId, {
+            currency: req.query.currency,
+            maxPriceToIntrinsic: req.query.maxPriceToIntrinsic,
+            takeProfitRatio: req.query.takeProfitRatio,
+            maxDebtRatio: req.query.maxDebtRatio,
+            forceRefresh: req.query.forceRefresh === 'true'
+        });
+        res.json(data);
+    } catch (err) {
         res.status(500).json({ message: 'Fout bij genereren Strategy Advisor data', error: err.message });
     }
 };
 
 // === ETF STRATEGIE ASSISTENT (Arne buy & sell 4.0 ETF - Pro) ===
 // Geen verkoop / winstname: 100% buy & hold DCA accumulatie
-// Startbedrag: 0 per 1 oktober 2026. Maandelijks €450 gereserveerd (€15/dag).
-const getEtfStrategyData = async (req, res) => {
+// Startdatum standaard 2026-01-01 (overeenkomstig actieve DCA aankopen in 2026) of configureerbaar.
+const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
     try {
-        const userId = req.query.userId || 1;
-        const monthlyBudget = parseFloat(req.query.monthlyBudget || 450.0);
-        const initialPot = parseFloat(req.query.initialPot || 0.0); // Standaard 0 conform wens
-        const startDateStr = req.query.startDate || '2026-10-01'; // Standaard 1 oktober 2026
-        const fastLength = parseInt(req.query.fastLength || 30);
-        const slowLength = parseInt(req.query.slowLength || 90);
-        const signalLength = parseInt(req.query.signalLength || 9);
-        const forceRefresh = req.query.forceRefresh === 'true';
+        const monthlyBudget = parseFloat(options.monthlyBudget || 450.0);
+        const initialPot = parseFloat(options.initialPot || 0.0);
+        const startDateStr = options.startDate || '2026-01-01';
+        const fastLength = parseInt(options.fastLength || 30);
+        const slowLength = parseInt(options.slowLength || 90);
+        const signalLength = parseInt(options.signalLength || 9);
+        const forceRefresh = options.forceRefresh === true;
 
         const cacheKey = `etf_${userId}_${monthlyBudget}_${initialPot}_${startDateStr}_${fastLength}_${slowLength}_${signalLength}`;
         if (!forceRefresh) {
             const cached = etfDataCache.get(cacheKey);
             if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
-                return res.json(cached.data);
+                return cached.data;
             }
             const diskCached = getDiskCache(cacheKey);
             if (diskCached) {
                 etfDataCache.set(cacheKey, { timestamp: Date.now(), data: diskCached });
-                return res.json(diskCached);
+                return diskCached;
             }
         }
 
@@ -4225,6 +4240,7 @@ const getEtfStrategyData = async (req, res) => {
         let totalSimulatedPortfolioValue = 0;
         let totalActualPortfolioValue = 0;
         const allSimulatedTrades = [];
+        let latestPriceDateStr = new Date().toISOString().split('T')[0];
 
         for (let idx = 0; idx < etfConfigs.length; idx++) {
             const etf = etfConfigs[idx];
@@ -4236,6 +4252,12 @@ const getEtfStrategyData = async (req, res) => {
 
             const closes = rows.map(r => parseFloat(r.closing_price));
             const dates = rows.map(r => new Date(r.date));
+            if (dates.length > 0) {
+                const lastRowDate = dates[dates.length - 1].toISOString().split('T')[0];
+                if (lastRowDate > latestPriceDateStr || latestPriceDateStr === new Date().toISOString().split('T')[0]) {
+                    latestPriceDateStr = lastRowDate;
+                }
+            }
 
             const fastEMA = calcEMA(closes, fastLength);
             const slowEMA = calcEMA(closes, slowLength);
@@ -4443,14 +4465,171 @@ const getEtfStrategyData = async (req, res) => {
             });
         }
 
-        // Bouw een geïntegreerde Tijdlijn (zowel werkelijke transacties als algoritmische signalen)
-        const combinedTimeline = [
-            ...actualTrades,
-            ...allSimulatedTrades
-        ];
-        combinedTimeline.sort((a, b) => new Date(b.date) - new Date(a.date));
+        // Koppel strategie-signalen aan werkelijke portefeuille transacties (net zoals bij Losse Aandelen)
+        const actualBuys = rawActualTx.filter(tx => tx.transaction_type === 'BUY');
+        const usedActualTxIds = new Set();
+        const matchedTimeline = [];
+        let totalMatched = 0;
+        let cheaperCount = 0;
+        let higherCount = 0;
+        let totalOpen = 0;
+        let totalExpired = 0;
 
-        const activeBuySignals = results.filter(r => r.isBuyCrossoverNow || (r.sharesToBuyNow > 0 && r.isMacdBullish));
+        // Sorteer alle gegenereerde signalen chronologisch voor correcte toewijzing
+        allSimulatedTrades.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+
+        for (const sig of allSimulatedTrades) {
+            const sigDate = new Date(sig.date);
+            const sigDateStr = sig.date;
+
+            // Zoek de eerste ongebruikte werkelijke kooptransactie van deze ETF op of na de signaaldatum (binnen 45 dagen)
+            let matchedTx = null;
+            for (const tx of actualBuys) {
+                if (usedActualTxIds.has(tx.id)) continue;
+                const isMatchingStock = (tx.aandeel_id === sig.stockId) || (sig.stockId === 49 && tx.aandeel_id === 56);
+                if (!isMatchingStock) continue;
+                const txDate = new Date(tx.purchase_time);
+                const daysDiff = (txDate.getTime() - sigDate.getTime()) / (1000 * 3600 * 24);
+                if (daysDiff >= -1 && daysDiff <= 45) {
+                    matchedTx = tx;
+                    usedActualTxIds.add(tx.id);
+                    break;
+                }
+            }
+
+            if (matchedTx) {
+                totalMatched++;
+                const txPrice = parseFloat(matchedTx.price);
+                const priceDiff = txPrice - sig.price;
+                const priceDiffPct = sig.price > 0 ? (priceDiff / sig.price) * 100 : 0;
+                const isCheaper = txPrice <= sig.price;
+                if (isCheaper) cheaperCount++; else higherCount++;
+
+                const txDateStr = new Date(matchedTx.purchase_time).toISOString().split('T')[0];
+                const daysBetween = Math.round((new Date(matchedTx.purchase_time).getTime() - sigDate.getTime()) / (1000 * 3600 * 24));
+
+                let comparisonBadge = '';
+                let comparisonDetail = '';
+                if (Math.abs(priceDiff) < 0.01) {
+                    comparisonBadge = '🎯 Exact op Signaal';
+                    comparisonDetail = 'Aangekocht exact aan de signaalprijs';
+                } else if (isCheaper) {
+                    comparisonBadge = `🟢 €${Math.abs(priceDiff).toFixed(2)} (${Math.abs(priceDiffPct).toFixed(1)}%) Voordeliger`;
+                    comparisonDetail = `€${Math.abs(priceDiff).toFixed(2)} per aandeel onder de signaalprijs gekocht`;
+                } else {
+                    comparisonBadge = `🟠 €${priceDiff.toFixed(2)} (+${priceDiffPct.toFixed(1)}%) Boven Signaal`;
+                    comparisonDetail = `€${priceDiff.toFixed(2)} per aandeel boven de signaalprijs gekocht`;
+                }
+
+                matchedTimeline.push({
+                    id: `matched_${sig.id}_${matchedTx.id}`,
+                    source: 'ALGO_AND_ACTUAL',
+                    type: 'BUY_SIGNAL_EXECUTED',
+                    status: 'EXECUTED',
+                    statusBadge: '🟢 Uitgevoerd (Aankoop Gekoppeld)',
+                    ticker: sig.ticker,
+                    name: sig.name,
+                    stockId: sig.stockId,
+                    date: sigDateStr,
+                    executionDate: txDateStr,
+                    timestamp: sigDate.getTime(),
+                    signalPrice: sig.price,
+                    actualPrice: txPrice,
+                    priceDiff: +priceDiff.toFixed(2),
+                    priceDiffPct: +priceDiffPct.toFixed(1),
+                    isCheaper,
+                    comparisonBadge,
+                    comparisonDetail,
+                    shares: matchedTx.quantity,
+                    sharesAdvised: sig.shares,
+                    totalAmount: +(matchedTx.quantity * txPrice).toFixed(2),
+                    amountAdvised: sig.amount,
+                    daysBetweenSignalAndBuy: daysBetween,
+                    pctOfPot: sig.pct,
+                    remainingPot: sig.remainingPot
+                });
+            } else {
+                const now = Date.now();
+                const daysOld = (now - sigDate.getTime()) / (1000 * 3600 * 24);
+                if (daysOld <= 30) {
+                    totalOpen++;
+                    matchedTimeline.push({
+                        id: `open_${sig.id}`,
+                        source: 'ALGORITHM',
+                        type: 'BUY_SIGNAL_OPEN',
+                        status: 'OPEN_OPPORTUNITY',
+                        statusBadge: '🟢 Openstaande Koopkans',
+                        ticker: sig.ticker,
+                        name: sig.name,
+                        stockId: sig.stockId,
+                        date: sigDateStr,
+                        timestamp: sigDate.getTime(),
+                        signalPrice: sig.price,
+                        shares: sig.shares,
+                        actionShares: sig.shares,
+                        totalAmount: sig.amount,
+                        amount: sig.amount,
+                        isActionRequired: true,
+                        pctOfPot: sig.pct,
+                        remainingPot: sig.remainingPot
+                    });
+                } else {
+                    totalExpired++;
+                    matchedTimeline.push({
+                        id: `expired_${sig.id}`,
+                        source: 'ALGORITHM',
+                        type: 'BUY_SIGNAL_EXPIRED',
+                        status: 'EXPIRED',
+                        statusBadge: '⚪ Verlopen (Niet Aangekocht)',
+                        ticker: sig.ticker,
+                        name: sig.name,
+                        stockId: sig.stockId,
+                        date: sigDateStr,
+                        timestamp: sigDate.getTime(),
+                        signalPrice: sig.price,
+                        shares: sig.shares,
+                        totalAmount: sig.amount,
+                        amount: sig.amount,
+                        isActionRequired: false,
+                        expireReason: 'Niet aangekocht binnen koopvenster'
+                    });
+                }
+            }
+        }
+
+        // Ook controleren of er VANDAAG een actief koopsignaal is dat nog niet in matchedTimeline zat
+        for (const r of results) {
+            if (r.isBuyCrossoverNow && r.sharesToBuyNow >= 1) {
+                const todayDateStr = r.lastDate || new Date().toISOString().split('T')[0];
+                const alreadyExists = matchedTimeline.some(t => t.ticker === r.ticker && t.date === todayDateStr);
+                if (!alreadyExists) {
+                    totalOpen++;
+                    matchedTimeline.push({
+                        id: `live_${r.ticker}_${todayDateStr}`,
+                        source: 'ALGORITHM',
+                        type: 'BUY_SIGNAL_OPEN',
+                        status: 'OPEN_OPPORTUNITY',
+                        statusBadge: '🟢 Direct Koopsignaal (Vandaag!)',
+                        ticker: r.ticker,
+                        name: r.name,
+                        stockId: r.stockId,
+                        date: todayDateStr,
+                        timestamp: new Date().getTime(),
+                        signalPrice: r.currentPrice,
+                        shares: r.sharesToBuyNow,
+                        actionShares: r.sharesToBuyNow,
+                        totalAmount: r.actualInvestNow,
+                        amount: r.actualInvestNow,
+                        isActionRequired: true,
+                        pctOfPot: r.investmentPct,
+                        remainingPot: r.remainingPotAfterBuy
+                    });
+                }
+            }
+        }
+
+        // Sorteer finale tijdlijn aflopend op datum (nieuwste eerst)
+        matchedTimeline.sort((a, b) => b.timestamp - a.timestamp);
 
         const responseData = {
             meta: {
@@ -4466,29 +4645,85 @@ const getEtfStrategyData = async (req, res) => {
             },
             cashAllocation,
             summary: {
+                totalSignals: matchedTimeline.length,
+                totalMatched,
+                cheaperCount,
+                higherCount,
+                totalOpen,
+                totalExpired,
                 totalPot: +totalPotAll.toFixed(2),
                 totalMonthlyBudget: monthlyBudget,
                 totalDailyRate: +dailyTotal.toFixed(2),
                 totalSimulatedValue: +totalSimulatedPortfolioValue.toFixed(2),
                 totalActualPortfolioValue: +totalActualPortfolioValue.toFixed(2),
-                activeBuySignalsCount: activeBuySignals.length,
-                hasActiveBuySignal: results.some(r => r.isBuyCrossoverNow),
-                actualTradesCount: actualTrades.length,
-                simulatedTradesCount: allSimulatedTrades.length
+                activeBuySignalsCount: totalOpen,
+                hasActiveBuySignal: totalOpen > 0
             },
             etfs: results,
-            actualTrades,
-            simulatedTrades: allSimulatedTrades,
-            timeline: combinedTimeline
+            timeline: matchedTimeline,
+            dataFreshness: {
+                lastPriceDate: latestPriceDateStr,
+                isUpdatedToday: latestPriceDateStr >= new Date().toISOString().split('T')[0]
+            }
         };
 
         etfDataCache.set(cacheKey, { timestamp: Date.now(), data: responseData });
         setDiskCache(cacheKey, responseData);
-        res.json(responseData);
+        return responseData;
 
     } catch (err) {
         console.error('Fout bij berekenen ETF strategie:', err);
+        throw err;
+    }
+};
+
+const getEtfStrategyData = async (req, res) => {
+    try {
+        const userId = req.query.userId || req.user?.id || 1;
+        const data = await calculateEtfStrategyInternal(userId, {
+            monthlyBudget: req.query.monthlyBudget,
+            initialPot: req.query.initialPot,
+            startDate: req.query.startDate,
+            fastLength: req.query.fastLength,
+            slowLength: req.query.slowLength,
+            signalLength: req.query.signalLength,
+            forceRefresh: req.query.forceRefresh === 'true'
+        });
+        res.json(data);
+    } catch (err) {
         res.status(500).json({ message: 'Fout bij berekenen ETF strategie', error: err.message });
+    }
+};
+
+const getDataStatus = async (req, res) => {
+    try {
+        const pool = await sql.connect(config);
+        const result = await pool.request().query(`
+            SELECT 
+                (SELECT MAX(last_updated_at) FROM MACDValues) as last_macd_update,
+                (SELECT MAX(date) FROM DailyClosingPrices) as last_price_date,
+                (SELECT MAX(updated_at) FROM stock_calculations) as last_calc_update,
+                (SELECT MAX(date) FROM DailyExchangeRates) as last_fx_date
+        `);
+        const row = result.recordset[0] || {};
+        const todayStr = new Date().toISOString().split('T')[0];
+        const lastMacdUpdate = row.last_macd_update ? new Date(row.last_macd_update) : null;
+        const lastPriceDate = row.last_price_date ? (row.last_price_date instanceof Date ? row.last_price_date.toISOString().split('T')[0] : String(row.last_price_date).split('T')[0]) : null;
+        const lastCalcUpdate = row.last_calc_update ? new Date(row.last_calc_update) : null;
+        
+        const isUpdatedToday = (lastMacdUpdate && lastMacdUpdate.toISOString().split('T')[0] === todayStr) || (lastPriceDate && lastPriceDate >= todayStr);
+
+        res.json({
+            isUpdatedToday,
+            lastPriceDate,
+            lastMacdUpdate,
+            lastCalcUpdate,
+            lastFxDate: row.last_fx_date,
+            formattedLastUpdate: lastMacdUpdate ? lastMacdUpdate.toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : (lastPriceDate || 'Onbekend')
+        });
+    } catch (err) {
+        console.error('Fout bij ophalen data status:', err.message);
+        res.status(500).json({ message: 'Fout bij ophalen data status.' });
     }
 };
 
@@ -4510,6 +4745,9 @@ module.exports = {
   applyStockSplit,
   getBenchmarkHistory,
   getStrategyAdvisorData,
+  calculateStrategyAdvisorInternal,
   getEtfStrategyData,
+  calculateEtfStrategyInternal,
+  getDataStatus,
   clearAdvisorCache
 };

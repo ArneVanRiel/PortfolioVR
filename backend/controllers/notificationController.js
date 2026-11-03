@@ -5,7 +5,7 @@ const HEADERS = { 'User-Agent': "PortfolioVR arne.van.riel@hotmail.be" };
 
 const { getCik, getFinancialData, processFinancialData, saveProcessedDataToDb } = require('./secImportController');
 const { calculateAndSaveStockHistory } = require('./screenerController');
-const { clearAdvisorCache } = require('./portfolioController');
+const { clearAdvisorCache, calculateStrategyAdvisorInternal, calculateEtfStrategyInternal } = require('./portfolioController');
 
 // Map om bij te houden wanneer elk aandeel voor het laatst bij SEC is gecheckt (ticker -> timestamp)
 const lastCheckedTimeByStock = new Map();
@@ -59,97 +59,110 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
             }
 
             if (prevWv !== null && curWv !== null && curWv < prevWv && prevWv > 0) {
+                const absDiff = curWv - prevWv; // bv. -0.02 of -0.15
                 const dropPct = ((prevWv - curWv) / prevWv) * 100;
-                if (dropPct >= 1.0) {
-                    const roundedPct = Math.round(dropPct * 10) / 10;
-                    const rawShares = Math.round((sharesOwned * (dropPct / 100)) * 100) / 100;
+                const roundedDropPct = Math.round(dropPct * 10) / 10;
+                const rawShares = Math.round((sharesOwned * (dropPct / 100)) * 100) / 100;
 
-                    // Haal huidige koers en wisselkoers op om EUR verkoopbedrag te bepalen
-                    let priceInEur = 0;
-                    try {
-                        const priceRes = await pool.request()
-                            .input('stock_id', sql.Int, stockId)
-                            .query(`
-                                SELECT TOP 1 closing_price 
-                                FROM DailyClosingPrices 
-                                WHERE aandeel_id = @stock_id 
-                                ORDER BY date DESC
-                            `);
-                        const rawPrice = parseFloat(priceRes.recordset[0]?.closing_price || 0);
+                // Haal huidige koers en wisselkoers op om EUR verkoopbedrag te bepalen
+                let priceInEur = 0;
+                try {
+                    const priceRes = await pool.request()
+                        .input('stock_id', sql.Int, stockId)
+                        .query(`
+                            SELECT TOP 1 closing_price 
+                            FROM DailyClosingPrices 
+                            WHERE aandeel_id = @stock_id 
+                            ORDER BY date DESC
+                        `);
+                    const rawPrice = parseFloat(priceRes.recordset[0]?.closing_price || 0);
 
-                        const isEurStock = (ticker && (ticker.endsWith('.DE') || ticker.endsWith('.AS') || ticker.endsWith('.BR')));
-                        if (isEurStock) {
-                            priceInEur = rawPrice;
-                        } else {
-                            const fxRes = await pool.request().query(`
-                                SELECT TOP 1 rate 
-                                FROM DailyExchangeRates 
-                                WHERE currency_pair = 'EURUSD' 
-                                ORDER BY date DESC
-                            `);
-                            const fxRate = parseFloat(fxRes.recordset[0]?.rate || 1.08);
-                            priceInEur = fxRate > 0 ? (rawPrice / fxRate) : rawPrice;
-                        }
-                    } catch (e) {
-                        console.warn(`[Auto-SEC] Kon koers/FX niet bepalen voor ${ticker}:`, e.message);
-                    }
-
-                    const rawSellAmountEur = rawShares * priceInEur;
-
-                    // STRATEGIE REGEL VOOR DEELVERKOPEN:
-                    // 1. < €50: NIET VERKOPEN (onevenredige transactiekosten)
-                    // 2. €50 - €100: Afronden naar €100
-                    // 3. >= €100: Normaal voorgesteld bedrag
-                    if (rawSellAmountEur > 0 && rawSellAmountEur < 50) {
-                        return {
-                            action_required: false,
-                            action_type: 'PARTIAL_SELL_TOO_SMALL',
-                            action_shares: 0,
-                            action_pct: 0,
-                            action_title: '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)',
-                            message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n🟡 GEEN VERKOOP VEREIST: Deelverkoopvoorstel (-${roundedPct}%) is slechts € ${rawSellAmountEur.toFixed(2)} (< minimum drempel van € 50).\nNiet verkopen wegens onevenredige transactiekosten. Score: ${curScore}/5. Positie behouden.`
-                        };
-                    } else if (rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
-                        const effectiveAmountEur = 100;
-                        const effectiveShares = Math.min(sharesOwned, Math.round((effectiveAmountEur / (priceInEur || 1)) * 100) / 100);
-                        const effectivePct = Math.round((effectiveShares / sharesOwned) * 1000) / 10;
-                        return {
-                            action_required: true,
-                            action_type: 'MANDATORY_PARTIAL_SELL_WV',
-                            action_shares: effectiveShares,
-                            action_pct: effectivePct,
-                            action_title: '🔴 Deelverkoop Vereist (Afgerond naar €100)',
-                            message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${effectiveShares} stuks (€ 100,00)\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(1)}% naar ${curWv.toFixed(1)}% (-${roundedPct}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100. Score ${curScore}/5.`
-                        };
+                    const isEurStock = (ticker && (ticker.endsWith('.DE') || ticker.endsWith('.AS') || ticker.endsWith('.BR')));
+                    if (isEurStock) {
+                        priceInEur = rawPrice;
                     } else {
-                        // >= €100
-                        return {
-                            action_required: true,
-                            action_type: 'MANDATORY_PARTIAL_SELL_WV',
-                            action_shares: rawShares,
-                            action_pct: roundedPct,
-                            action_title: `🔴 Deelverkoop Vereist (-${roundedPct}%)`,
-                            message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${rawShares} stuks (-${roundedPct}%)\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(1)}% naar ${curWv.toFixed(1)}% (-${roundedPct}%). Score ${curScore}/5.`
-                        };
+                        const fxRes = await pool.request().query(`
+                            SELECT TOP 1 rate 
+                            FROM DailyExchangeRates 
+                            WHERE currency_pair = 'EURUSD' 
+                            ORDER BY date DESC
+                        `);
+                        const fxRate = parseFloat(fxRes.recordset[0]?.rate || 1.08);
+                        priceInEur = fxRate > 0 ? (rawPrice / fxRate) : rawPrice;
                     }
+                } catch (e) {
+                    console.warn(`[Auto-SEC] Kon koers/FX niet bepalen voor ${ticker}:`, e.message);
+                }
+
+                const rawSellAmountEur = rawShares * priceInEur;
+
+                // STRATEGIE REGEL VOOR DEELVERKOPEN:
+                // 1. < €50: NIET VERKOPEN (onevenredige transactiekosten)
+                // 2. €50 - €100: Afronden naar €100
+                // 3. >= €100: Normaal voorgesteld bedrag
+                if (rawSellAmountEur < 50) {
+                    return {
+                        action_required: false,
+                        action_type: 'PARTIAL_SELL_TOO_SMALL',
+                        action_shares: 0,
+                        action_pct: 0,
+                        action_title: '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)',
+                        message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n🟡 GEEN VERKOOP VEREIST: Waardeverdeling licht gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%).\nHet berekende verkoopbedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< minimum drempel van € 50).\nNiet verkopen wegens onevenredige transactiekosten. Score: ${curScore}/5. Positie behouden.`
+                    };
+                } else if (rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
+                    const effectiveAmountEur = 100;
+                    const effectiveShares = Math.min(sharesOwned, Math.round((effectiveAmountEur / (priceInEur || 1)) * 100) / 100);
+                    const effectivePct = Math.round((effectiveShares / sharesOwned) * 1000) / 10;
+                    return {
+                        action_required: true,
+                        action_type: 'MANDATORY_PARTIAL_SELL_WV',
+                        action_shares: effectiveShares,
+                        action_pct: effectivePct,
+                        action_title: '🔴 Deelverkoop Vereist (Afgerond naar €100)',
+                        message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${effectiveShares} stuks (€ 100,00)\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100. Score ${curScore}/5.`
+                    };
+                } else {
+                    // >= €100
+                    return {
+                        action_required: true,
+                        action_type: 'MANDATORY_PARTIAL_SELL_WV',
+                        action_shares: rawShares,
+                        action_pct: roundedDropPct,
+                        action_title: `🔴 Deelverkoop Vereist (-${roundedDropPct}%)`,
+                        message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${rawShares} stuks (-${roundedDropPct}% = € ${rawSellAmountEur.toFixed(2)})\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%). Score ${curScore}/5.`
+                    };
                 }
             }
 
-            // Aandeel in bezit en veilig
+            // 3. Waardeverdeling is stabiel gebleven of gestegen (curWv >= prevWv)
+            const isRose = (prevWv !== null && curWv !== null && curWv > prevWv);
+            const isSame = (prevWv !== null && curWv !== null && curWv === prevWv);
+            let wvExplanation = '';
+            if (isRose) {
+                const gain = curWv - prevWv;
+                const gainPct = prevWv > 0 ? ((gain / prevWv) * 100) : 0;
+                wvExplanation = `Waardeverdeling gestegen van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (+${gain.toFixed(2)}% verschil, +${gainPct.toFixed(1)}%).`;
+            } else if (isSame) {
+                wvExplanation = `Waardeverdeling stabiel gebleven op ${curWv.toFixed(2)}% (0.00% verandering).`;
+            } else {
+                wvExplanation = `Waardeverdeling: ${curWv !== null ? curWv.toFixed(2) + '%' : '-'}.`;
+            }
+
             return {
                 action_required: false,
                 action_type: 'HOLD',
                 action_shares: 0,
                 action_pct: 0,
                 action_title: '✅ Positie Behouden',
-                message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n✅ Positie Behouden: Score ${curScore}/5. Waardeverdeling stabiel/stijgend (${curWv ? curWv.toFixed(1) + '%' : '-'}). Geen verkoopactie nodig.`
+                message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n✅ Positie Behouden: Score ${curScore}/5. ${wvExplanation} Geen verkoopactie nodig.`
             };
         } else {
             // Watchlist / universum aandeel (niet in portefeuille)
             let changeText = '';
             if (prevWv !== null && curWv !== null) {
                 const diff = curWv - prevWv;
-                changeText = `(${diff >= 0 ? '+' : ''}${diff.toFixed(1)}%)`;
+                const relPct = prevWv > 0 ? ((diff / prevWv) * 100) : 0;
+                changeText = `(vorige: ${prevWv.toFixed(2)}%, verschil: ${diff >= 0 ? '+' : ''}${diff.toFixed(2)}% of ${relPct >= 0 ? '+' : ''}${relPct.toFixed(1)}%)`;
             }
             return {
                 action_required: false,
@@ -157,7 +170,7 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
                 action_shares: 0,
                 action_pct: 0,
                 action_title: '👁️ Watchlist',
-                message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n👁️ Watchlist: Score ${curScore ?? '-'}/5, Waardeverdeling ${curWv ? curWv.toFixed(1) + '%' : '-'} ${changeText}. Geen positie in portefeuille.`
+                message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n👁️ Watchlist: Score ${curScore ?? '-'}/5, Waardeverdeling ${curWv ? curWv.toFixed(2) + '%' : '-'} ${changeText}. Geen positie in portefeuille.`
             };
         }
     } catch (err) {
@@ -185,7 +198,7 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
     const updatedStocks = [];
     try {
         const pool = await sql.connect(config);
-        
+
         // 1. Haal alle relevante aandelen op (Watchlist, Ideale Portfolio, Huidige Portefeuille)
         // Sluit ETF's en Europese beurzen (.AS, .DE) uit
         const stocksResult = await pool.request().query(`
@@ -206,7 +219,7 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
 
         for (const stock of stocks) {
             const { aandeel_id, ticker_symbol } = stock;
-            
+
             // Debounce: als aandeel in de afgelopen 4 uur al is gecheckt en niet geforceerd, sla over
             if (!force && lastCheckedTimeByStock.has(ticker_symbol)) {
                 const lastTime = lastCheckedTimeByStock.get(ticker_symbol);
@@ -223,7 +236,7 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
                     FROM fundamental_data 
                     WHERE stock_id = @stock_id
                 `);
-            
+
             const maxPe = latestDataQuery.recordset[0]?.max_pe;
             const lastPeriodEndDateStr = maxPe ? (maxPe instanceof Date ? maxPe.toISOString().split('T')[0] : String(maxPe).split('T')[0]) : null;
 
@@ -237,9 +250,9 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
 
             let secResponse;
             try {
-                secResponse = await axios.get(`https://data.sec.gov/submissions/CIK${CIK}.json`, { 
-                    headers: HEADERS, 
-                    timeout: 8000 
+                secResponse = await axios.get(`https://data.sec.gov/submissions/CIK${CIK}.json`, {
+                    headers: HEADERS,
+                    timeout: 8000
                 });
             } catch (netErr) {
                 console.warn(`[Auto-SEC] Kon submissions niet ophalen voor ${ticker_symbol}: ${netErr.message}`);
@@ -260,7 +273,7 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
                         const reportDateObj = new Date(reportDate);
                         const fy = reportDateObj.getFullYear();
                         const month = reportDateObj.getMonth() + 1;
-                        
+
                         let quarterLabel = 'FY';
                         if (form === '10-Q') {
                             if (month >= 2 && month <= 4) quarterLabel = 'Q1';
@@ -268,13 +281,13 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
                             else if (month >= 8 && month <= 10) quarterLabel = 'Q3';
                             else quarterLabel = 'Q4';
                         }
-                        
+
                         console.log(`[Auto-SEC] 🚀 Nieuwe ${form} filing gedetecteerd voor ${ticker_symbol} (${quarterLabel} ${fy}, eindigend op ${reportDate}, ingediend op ${filingDate})!`);
 
                         try {
                             // 1. Download financiële facts van SEC
                             const financialData = await getFinancialData(CIK);
-                            
+
                             // 2. Verwerk financiële data
                             const allProcessed = processFinancialData(financialData, ticker_symbol);
 
@@ -343,9 +356,132 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
     }
 };
 
+// Synchroniseer actieve koopkansen (zowel losse kwaliteitsaandelen als ETF DCA) naar PF_Notifications
+// Zorgt voor 100% consistentie met de Tijdlijn & Strategie tabbladen:
+// - Losse aandelen: Uitsluitend als er echt gekocht moet worden (Score 5/5, koers <= 1.05x intrinsiek, WV niet gedaald, streefdoel NIET bereikt, actie stuks > 0).
+// - ETF DCA: Uitsluitend als er een valide MACD signaal is met opgebouwde pot en aankoop nog niet is uitgevoerd.
+const syncActiveStrategyAlerts = async (pool, userId = 1) => {
+    try {
+        // 1. LOSSE AANDELEN KOOPKANSEN
+        // Haal de berekende tijdlijn op van de Strategy Advisor (bevat reeds alle streefdoelen, score 5/5, onderwaardering, stabiele WV, etc.)
+        let stockTimeline = [];
+        try {
+            const stocksAdvisor = await calculateStrategyAdvisorInternal(userId, { forceRefresh: false });
+            stockTimeline = stocksAdvisor?.timeline || [];
+        } catch (e) {
+            console.warn('[NotificationSync] Kon Strategy Advisor data niet ophalen:', e.message);
+        }
+
+        // Filter uitsluitend op échte valide openstaande koopacties conform de wens van de gebruiker:
+        // - status === 'OPEN_OPPORTUNITY'
+        // - !isCautionStock
+        // - !isTargetReached
+        // - shares > 0
+        const activeStockBuys = stockTimeline.filter(item =>
+            item.status === 'OPEN_OPPORTUNITY' &&
+            !item.isCautionStock &&
+            !item.isTargetReached &&
+            (Number(item.shares) > 0 || Number(item.actionShares) > 0)
+        );
+
+        // Verwijder eventuele oude koopnotificaties voor aandelen die momenteel NIET meer in activeStockBuys staan (zoals INTU en UNH)
+        const activeStockTickers = activeStockBuys.map(b => b.ticker);
+        if (activeStockTickers.length > 0) {
+            const tickerListStr = activeStockTickers.map(t => "'" + t + "'").join(',');
+            await pool.request().query(
+                "DELETE FROM PF_Notifications WHERE action_type IN ('BUY_OPPORTUNITY', 'BUY_OPPORTUNITY_TARGET_REACHED') AND ticker NOT IN (" + tickerListStr + ")"
+            );
+        } else {
+            await pool.request().query(
+                "DELETE FROM PF_Notifications WHERE action_type IN ('BUY_OPPORTUNITY', 'BUY_OPPORTUNITY_TARGET_REACHED')"
+            );
+        }
+
+        // Voeg de valide koopacties toe indien nog niet aanwezig
+        for (const buy of activeStockBuys) {
+            const notifExists = await pool.request()
+                .input('stock_id', sql.Int, buy.stockId)
+                .input('alert_pattern', sql.NVarChar, '%' + buy.date + '%')
+                .query('SELECT id FROM PF_Notifications WHERE stock_id = @stock_id AND action_type = \'BUY_OPPORTUNITY\' AND message LIKE @alert_pattern');
+
+            if (notifExists.recordset.length === 0) {
+                const totalValEur = buy.totalAmount || (buy.shares * buy.signalPrice);
+                const message = 'MACD Koopsignaal gedetecteerd voor ' + buy.ticker + ' (signaal van ' + buy.date + ').\n\n⚡ ACTIE VEREIST: Koop ' + buy.shares + ' stuks (à ca. € ' + buy.signalPrice.toFixed(2) + ' = € ' + totalValEur.toFixed(2) + ').\nScore: 5/5 Super-Kwaliteit, conform allocatiemodel en binnen streefdoel.';
+
+                await pool.request()
+                    .input('stock_id', sql.Int, buy.stockId)
+                    .input('ticker', sql.NVarChar, buy.ticker)
+                    .input('message', sql.NVarChar, message)
+                    .input('action_required', sql.Bit, 1)
+                    .input('action_type', sql.NVarChar, 'BUY_OPPORTUNITY')
+                    .input('action_shares', sql.Float, buy.shares)
+                    .input('action_pct', sql.Float, 0)
+                    .input('action_title', sql.NVarChar, '🟢 Koopkans (5/5 Kwaliteit)')
+                    .query('INSERT INTO PF_Notifications (stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, created_at) VALUES (@stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, GETDATE())');
+                console.log('[NotificationSync] Nieuwe losse aandeel koopnotificatie aangemaakt voor ' + buy.ticker);
+            }
+        }
+
+        // 2. ETF DCA KOOPKANSEN
+        let etfTimeline = [];
+        try {
+            const etfAdvisor = await calculateEtfStrategyInternal(userId, { forceRefresh: false });
+            etfTimeline = etfAdvisor?.timeline || [];
+        } catch (e) {
+            console.warn('[NotificationSync] Kon ETF Strategie data niet ophalen:', e.message);
+        }
+
+        const activeEtfBuys = etfTimeline.filter(item =>
+            item.status === 'OPEN_OPPORTUNITY' &&
+            (Number(item.shares) >= 1 || Number(item.actionShares) >= 1)
+        );
+
+        const activeEtfTickers = activeEtfBuys.map(b => b.ticker);
+        if (activeEtfTickers.length > 0) {
+            const etfListStr = activeEtfTickers.map(t => "'" + t + "'").join(',');
+            await pool.request().query(
+                "DELETE FROM PF_Notifications WHERE action_type = 'ETF_BUY_OPPORTUNITY' AND ticker NOT IN (" + etfListStr + ")"
+            );
+        } else {
+            await pool.request().query(
+                "DELETE FROM PF_Notifications WHERE action_type = 'ETF_BUY_OPPORTUNITY'"
+            );
+        }
+
+        for (const etfBuy of activeEtfBuys) {
+            const notifExists = await pool.request()
+                .input('stock_id', sql.Int, etfBuy.stockId)
+                .input('date_pattern', sql.NVarChar, '%' + etfBuy.date + '%')
+                .query('SELECT id FROM PF_Notifications WHERE stock_id = @stock_id AND action_type = \'ETF_BUY_OPPORTUNITY\' AND message LIKE @date_pattern');
+
+            if (notifExists.recordset.length === 0) {
+                const totalInvest = etfBuy.totalAmount || (etfBuy.shares * etfBuy.signalPrice);
+                const message = 'MACD Koopsignaal gedetecteerd voor ' + etfBuy.ticker + ' (' + etfBuy.name + ') op ' + etfBuy.date + '.\n\n⚡ ACTIE VEREIST: Koop ' + etfBuy.shares + ' stuks (à ca. € ' + etfBuy.signalPrice.toFixed(2) + ' = € ' + totalInvest.toFixed(2) + ').\nConform Arne 100% Buy & Hold DCA ETF strategie.';
+
+                await pool.request()
+                    .input('stock_id', sql.Int, etfBuy.stockId)
+                    .input('ticker', sql.NVarChar, etfBuy.ticker)
+                    .input('message', sql.NVarChar, message)
+                    .input('action_required', sql.Bit, 1)
+                    .input('action_type', sql.NVarChar, 'ETF_BUY_OPPORTUNITY')
+                    .input('action_shares', sql.Float, etfBuy.shares)
+                    .input('action_pct', sql.Float, 0)
+                    .input('action_title', sql.NVarChar, '🟢 ETF DCA Koopkans')
+                    .query('INSERT INTO PF_Notifications (stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, created_at) VALUES (@stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, GETDATE())');
+                console.log('[NotificationSync] Nieuwe ETF koopnotificatie aangemaakt voor ' + etfBuy.ticker);
+            }
+        }
+    } catch (err) {
+        console.error('Fout bij synchroniseren strategie notificaties:', err.message);
+    }
+};
+
 const getNotifications = async (req, res) => {
     try {
         const pool = await sql.connect(config);
+        const userId = req.user?.id || 1;
+        await syncActiveStrategyAlerts(pool, userId);
+
         const result = await pool.request().query(`
             SELECT id, stock_id, ticker, message, created_at, is_read, new_quarter, new_year,
                    action_required, action_type, action_shares, action_pct, action_title 
@@ -382,5 +518,6 @@ const markAsRead = async (req, res) => {
 module.exports = {
     checkNewSecQuarters,
     getNotifications,
-    markAsRead
+    markAsRead,
+    syncActiveStrategyAlerts
 };
