@@ -1,6 +1,87 @@
 // c:\Arne\ArneVR\PortfolioVR\backend\controllers\calculationController.js
 const sql = require('mssql');
 const dbConfig = require('../config/database');
+const { getEffectiveUserId, isAdminUser, buildUserPermissions } = require('../middleware/authMiddleware');
+
+async function canRequesterViewFormulas(req, pool) {
+    if (!req || !req.user) return true;
+    if (isAdminUser(req.user)) return true;
+    const uid = getEffectiveUserId(req);
+    if (uid === 1) return true;
+    try {
+        const dbPool = pool || await sql.connect(dbConfig);
+        const userRes = await dbPool.request()
+            .input('uid', sql.Int, uid)
+            .query('SELECT id, role, strategy_mode, permissions FROM PF_Users WHERE id = @uid');
+        if (userRes.recordset.length === 0) return false;
+        const perms = buildUserPermissions(userRes.recordset[0]);
+        return !!perms.canViewFormulas;
+    } catch (e) {
+        return false;
+    }
+}
+
+function stripFormulaFieldsFromRow(row) {
+    if (!row) return row;
+    const hasWv = row.waarde_verdeling !== null && row.waarde_verdeling !== undefined;
+    const hasPrevWv = row.previous_waarde_verdeling !== null && row.previous_waarde_verdeling !== undefined;
+    const isWvDropping = row.is_wv_dropping !== undefined
+        ? row.is_wv_dropping
+        : (hasWv && hasPrevWv ? Number(row.waarde_verdeling) < Number(row.previous_waarde_verdeling) : false);
+    const hasPrice = row.current_price !== null && row.current_price !== undefined && Number(row.current_price) > 0;
+    const hasIntrinsic = row.intrinsieke_waarde !== null && row.intrinsieke_waarde !== undefined && Number(row.intrinsieke_waarde) > 0;
+    const isUndervalued = hasPrice && hasIntrinsic
+        ? Number(row.current_price) <= Number(row.intrinsieke_waarde) * 1.3
+        : null;
+    const koopmargefactor = hasPrice && hasIntrinsic
+        ? Math.max(0, (1.3 - (Number(row.current_price) / Number(row.intrinsieke_waarde))) / 0.3)
+        : 0;
+
+    return {
+        ...row,
+        is_blackbox: true,
+        is_wv_dropping: isWvDropping,
+        is_undervalued: isUndervalued,
+        koopmargefactor: Number(koopmargefactor.toFixed(4)),
+        intrinsieke_waarde: null,
+        waarde_verdeling: null,
+        previous_waarde_verdeling: null,
+        highest_previous_waarde_verdeling: null,
+        max_waarde_verdeling: null,
+        gem_groeipercentage_FCF: null,
+        standaard_deviatie_FCF: null,
+        waardefactor_FCF: null,
+        gemiddelde_stijging_ROE_10_Y: null,
+        standaard_deviatie_ROE: null,
+        waardefactor_ROE: null,
+        ltd_equity_mean: null,
+        waardefactor_LTD_equity: null,
+        dcf_sum: null,
+        discounted_terminal_value: null,
+        total_value: null,
+        calculation_details: null,
+    };
+}
+
+function sanitizeSummaryRowsForBlackBox(rows) {
+    if (!Array.isArray(rows)) return [];
+    const totalIdealWv = rows
+        .filter(r => Number(r.selectiecriteria) === 5 && Number(r.waarde_verdeling) > 0)
+        .reduce((sum, r) => sum + Number(r.waarde_verdeling || 0), 0);
+
+    return rows.map(row => {
+        const wv = Number(row.waarde_verdeling || 0);
+        const isScore5 = Number(row.selectiecriteria) === 5 && wv > 0;
+        const idealWeightPct = (isScore5 && totalIdealWv > 0)
+            ? Number(((wv / totalIdealWv) * 100).toFixed(2))
+            : 0;
+
+        return {
+            ...stripFormulaFieldsFromRow(row),
+            ideal_weight_pct: idealWeightPct
+        };
+    });
+}
 
 // --- Helper Functions ---
 const getShiftedValue = (arr, index, periods) => {
@@ -244,8 +325,20 @@ exports.getCalculationsForStock = async (req, res) => {
     const { stockId } = req.params;
     try {
         const pool = await sql.connect(dbConfig);
+        const canViewFormulas = await canRequesterViewFormulas(req, pool);
         const result = await pool.request().input('stockId', sql.Int, stockId).query('SELECT * FROM stock_calculations WHERE stock_id = @stockId ORDER BY period_end_date DESC');
-        res.status(200).json(result.recordset);
+        if (canViewFormulas) {
+            return res.status(200).json(result.recordset);
+        }
+        // Resultaat staat op period_end_date DESC, dus index + 1 is het chronologisch voorgaande kwartaal
+        const rowsWithTrend = result.recordset.map((row, idx, arr) => {
+            const olderRow = arr[idx + 1];
+            const isWvDropping = (olderRow && row.waarde_verdeling != null && olderRow.waarde_verdeling != null)
+                ? Number(row.waarde_verdeling) < Number(olderRow.waarde_verdeling)
+                : false;
+            return stripFormulaFieldsFromRow({ ...row, is_wv_dropping: isWvDropping });
+        });
+        res.status(200).json(rowsWithTrend);
     } catch (error) {
         console.error('Error fetching calculations:', error);
         res.status(500).send('Error fetching calculations.');
@@ -261,6 +354,10 @@ exports.getCalculationDetails = async (req, res) => {
     }
 
     try {
+        const canViewFormulas = await canRequesterViewFormulas(req);
+        if (!canViewFormulas) {
+            return res.status(403).json({ message: 'Geen toegang tot onderliggende DCF-formules.' });
+        }
         // Run calculation in memory (does not save to DB) to get the details
         const result = await performCalculations(stockId, new Date(period_end_date));
         res.status(200).json(result);
@@ -572,7 +669,8 @@ exports.getLatestCalculationsSummary = async (req, res) => {
                 lc.waarde_verdeling DESC;
         `;
         const result = await pool.request().query(query);
-        res.status(200).json(result.recordset);
+        const canViewFormulas = await canRequesterViewFormulas(req, pool);
+        res.status(200).json(canViewFormulas ? result.recordset : sanitizeSummaryRowsForBlackBox(result.recordset));
     } catch (error) {
         console.error('Error fetching latest calculations summary:', error);
         res.status(500).send('Error fetching latest calculations summary.');
@@ -611,6 +709,7 @@ exports.getMACDAlerts = async (req, res) => {
     const { stockId } = req.params;
     try {
         const pool = await sql.connect(dbConfig);
+        const canViewFormulas = await canRequesterViewFormulas(req, pool);
         const result = await pool.request()
             .input('stockId', sql.Int, stockId)
             .query(`
@@ -633,7 +732,16 @@ exports.getMACDAlerts = async (req, res) => {
                 WHERE a.aandeel_id = @stockId 
                 ORDER BY a.date ASC
             `);
-        res.status(200).json(result.recordset);
+        if (canViewFormulas) {
+            return res.status(200).json(result.recordset);
+        }
+        const sanitized = result.recordset.map(r => ({
+            ...r,
+            is_wv_dropping: r.diff_percentage !== null && r.diff_percentage < 0,
+            diff_percentage: r.diff_percentage === null ? null : (r.diff_percentage < 0 ? -1 : (r.diff_percentage > 0 ? 1 : 0)),
+            trade_amount: (r.type_melding === 'Verkoopsignaal' && r.signal_line_value === null) ? null : r.trade_amount
+        }));
+        res.status(200).json(sanitized);
     } catch (error) {
         console.error('Error fetching MACD alerts:', error);
         res.status(500).send('Error fetching MACD alerts.');
@@ -687,13 +795,15 @@ exports.getSummaryByDate = async (req, res) => {
     const cacheKey = `summary_${date}`;
     const cached = summaryByDateCache.get(cacheKey);
     if (cached && (Date.now() - cached.timestamp < SUMMARY_CACHE_TTL_MS)) {
-        return res.status(200).json(cached.data);
+        const canViewFormulas = await canRequesterViewFormulas(req);
+        return res.status(200).json(canViewFormulas ? cached.data : sanitizeSummaryRowsForBlackBox(cached.data));
     }
 
     if (summaryByDateInFlight.has(cacheKey)) {
         try {
             const data = await summaryByDateInFlight.get(cacheKey);
-            return res.status(200).json(data);
+            const canViewFormulas = await canRequesterViewFormulas(req);
+            return res.status(200).json(canViewFormulas ? data : sanitizeSummaryRowsForBlackBox(data));
         } catch (err) {
             return res.status(500).send('Error fetching calculations summary by date.');
         }
@@ -800,7 +910,8 @@ exports.getSummaryByDate = async (req, res) => {
     summaryByDateInFlight.set(cacheKey, computePromise);
     try {
         const data = await computePromise;
-        return res.status(200).json(data);
+        const canViewFormulas = await canRequesterViewFormulas(req);
+        return res.status(200).json(canViewFormulas ? data : sanitizeSummaryRowsForBlackBox(data));
     } catch (error) {
         console.error('Error fetching calculations summary by date:', error);
         return res.status(500).send('Error fetching calculations summary by date.');

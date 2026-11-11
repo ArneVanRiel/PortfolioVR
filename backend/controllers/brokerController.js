@@ -1,5 +1,6 @@
 const { sql, config } = require('../config/database');
 const axios = require('axios');
+const { getEffectiveUserId, isAdminUser } = require('../middleware/authMiddleware');
 
 const getAllBrokers = async (req, res) => {
     try {
@@ -60,7 +61,7 @@ const deleteBroker = async (req, res) => {
 
 const getBrokerSettings = async (req, res) => {
     try {
-        const userId = req.user?.userID || req.user?.id || req.query.userId || 1;
+        const userId = getEffectiveUserId(req);
         const pool = await sql.connect(config);
 
         // 1. Credentials
@@ -150,7 +151,10 @@ const getBrokerSettings = async (req, res) => {
 
 const saveBrokerSettings = async (req, res) => {
     try {
-        const userId = req.user?.userID || req.user?.id || req.body.userId || req.query.userId || 1;
+        if (req.user?.role === 'demo') {
+            return res.status(403).json({ message: 'Demo-account kan geen broker-instellingen wijzigen.' });
+        }
+        const userId = getEffectiveUserId(req);
         const { brokerName, apiKey, userKey, cashBalance, cashCurrency } = req.body;
 
         if (!brokerName) {
@@ -197,17 +201,18 @@ const saveBrokerSettings = async (req, res) => {
                     const cleanEur = Math.round(valEur * 100) / 100;
                     
                     await pool.request()
+                        .input('user_id', sql.Int, userId)
                         .input('balance_type_id', sql.Int, typeId)
                         .input('amount', sql.Decimal(18, 2), cleanEur)
                         .query(`
                             MERGE INTO AvailableBalances AS target
-                            USING (SELECT @balance_type_id AS balance_type_id, CAST(GETDATE() AS DATE) AS update_date) AS source
-                            ON target.balance_type_id = source.balance_type_id AND target.update_date = source.update_date
+                            USING (SELECT @user_id AS user_id, @balance_type_id AS balance_type_id, CAST(GETDATE() AS DATE) AS update_date) AS source
+                            ON target.user_id = source.user_id AND target.balance_type_id = source.balance_type_id AND target.update_date = source.update_date
                             WHEN MATCHED THEN
                                 UPDATE SET amount = @amount
                             WHEN NOT MATCHED THEN
-                                INSERT (balance_type_id, amount, update_date)
-                                VALUES (@balance_type_id, @amount, CAST(GETDATE() AS DATE));
+                                INSERT (user_id, balance_type_id, amount, update_date)
+                                VALUES (@user_id, @balance_type_id, @amount, CAST(GETDATE() AS DATE));
                         `);
                 }
             } catch (balErr) {
@@ -224,7 +229,10 @@ const saveBrokerSettings = async (req, res) => {
 
 const disconnectBroker = async (req, res) => {
     try {
-        const userId = req.user?.userID || req.user?.id || req.query.userId || 1;
+        if (req.user?.role === 'demo') {
+            return res.status(403).json({ message: 'Demo-account kan geen broker ontkoppelen.' });
+        }
+        const userId = getEffectiveUserId(req);
         const { brokerName } = req.params;
 
         const pool = await sql.connect(config);
@@ -242,7 +250,10 @@ const disconnectBroker = async (req, res) => {
 
 const syncEtoroData = async (req, res) => {
     try {
-        const userId = req.user?.userID || req.user?.id || req.body.userId || req.query.userId || 1;
+        if (req.user?.role === 'demo') {
+            return res.status(403).json({ message: 'Demo-account kan niet synchroniseren.' });
+        }
+        const userId = getEffectiveUserId(req);
         const pool = await sql.connect(config);
 
         // Haal credentials op uit database
@@ -254,9 +265,9 @@ const syncEtoroData = async (req, res) => {
         let dbApiKey = credRes.recordset.length > 0 ? credRes.recordset[0].api_key : '';
         let dbUserKey = credRes.recordset.length > 0 ? credRes.recordset[0].user_key : '';
 
-        // Fallback naar .env variabelen indien leeg in DB
-        let envKey = process.env.ETORO_KEY || process.env.ETORO_API_KEY || '';
-        let envUserKey = process.env.ETORO_USER_KEY || '';
+        // Fallback naar .env variabelen uitsluitend voor User 1 (Arne)
+        let envKey = Number(userId) === 1 ? (process.env.ETORO_KEY || process.env.ETORO_API_KEY || '') : '';
+        let envUserKey = Number(userId) === 1 ? (process.env.ETORO_USER_KEY || '') : '';
 
         let rawApiKey = (dbApiKey || envKey || '').trim();
         let rawUserKey = (dbUserKey || envUserKey || '').trim();
@@ -374,17 +385,18 @@ const syncEtoroData = async (req, res) => {
             const etoroEur = Math.round((fetchedCash / fxRate) * 100) / 100;
             
             await pool.request()
+                .input('user_id', sql.Int, userId)
                 .input('balance_type_id', sql.Int, 1)
                 .input('amount', sql.Decimal(18, 2), etoroEur)
                 .query(`
                     MERGE INTO AvailableBalances AS target
-                    USING (SELECT @balance_type_id AS balance_type_id, CAST(GETDATE() AS DATE) AS update_date) AS source
-                    ON target.balance_type_id = source.balance_type_id AND target.update_date = source.update_date
+                    USING (SELECT @user_id AS user_id, @balance_type_id AS balance_type_id, CAST(GETDATE() AS DATE) AS update_date) AS source
+                    ON target.user_id = source.user_id AND target.balance_type_id = source.balance_type_id AND target.update_date = source.update_date
                     WHEN MATCHED THEN
                         UPDATE SET amount = @amount
                     WHEN NOT MATCHED THEN
-                        INSERT (balance_type_id, amount, update_date)
-                        VALUES (@balance_type_id, @amount, CAST(GETDATE() AS DATE));
+                        INSERT (user_id, balance_type_id, amount, update_date)
+                        VALUES (@user_id, @balance_type_id, @amount, CAST(GETDATE() AS DATE));
                 `);
         }
 
@@ -424,7 +436,7 @@ const syncEtoroData = async (req, res) => {
 
 const getLedgerMetadata = async (req, res) => {
     try {
-        const userId = req.user?.userID || req.user?.id || req.query.userId || 1;
+        const userId = getEffectiveUserId(req);
         const pool = await sql.connect(config);
 
         // 1. eToro credentials & last sync

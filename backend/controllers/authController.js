@@ -4,6 +4,11 @@ const jwt = require('jsonwebtoken');
 const { sql } = require('../config/database');
 const nodemailer = require('nodemailer');
 const crypto = require('crypto');
+const {
+    isAdminUser,
+    buildUserPermissions,
+    DEFAULT_PERMISSIONS_BY_MODE
+} = require('../middleware/authMiddleware');
 
 // In-memory store voor OTP's
 const otpStore = new Map();
@@ -12,12 +17,12 @@ const otpStore = new Map();
 const transporter = nodemailer.createTransport({
     host: "smtp-mail.outlook.com",
     port: 587,
-    secure: false, // true voor 465, false voor andere poorten
+    secure: false,
     auth: {
         user: process.env.MAIL_USER,
         pass: process.env.MAIL_PASS
     },
-    family: 4, // Forceert IPv4 en voorkomt de ENETUNREACH IPv6 fout!
+    family: 4,
     connectionTimeout: 10000,
     greetingTimeout: 10000,
     socketTimeout: 10000
@@ -36,6 +41,10 @@ const loginStep1 = async (req, res) => {
     }
 
     const user = result.recordset[0];
+    if (Number(user.id) !== 1 && user.is_active === false) {
+      return res.status(403).json({ message: 'Dit account is gedeactiveerd door de beheerder.' });
+    }
+
     const wachtwoordMatch = await bcrypt.compare(password, user.password);
 
     if (!wachtwoordMatch) {
@@ -76,7 +85,6 @@ const loginStep1 = async (req, res) => {
                </div>`
     };
 
-    // Voor lokaal testen: print de code altijd in je terminal!
     console.log(`\n=========================================`);
     console.log(`🔑 JOUW LOGIN CODE VOOR ${username}: ${otp}`);
     console.log(`=========================================\n`);
@@ -86,8 +94,6 @@ const loginStep1 = async (req, res) => {
         res.json({ message: 'Verificatiecode is verstuurd naar je e-mailadres.' });
     } catch (mailError) {
         console.error('Email verzenden mislukt:', mailError);
-        // We geven TOCH een succesmelding aan de frontend zodat het scherm doorgaat naar Stap 2.
-        // Zo kun je lokaal altijd inloggen met de code uit je terminal, zelfs als de mail faalt!
         res.status(200).json({ message: 'Mail mislukt door netwerk, maar gebruik de code uit de terminal!' });
     }
   } catch (error) {
@@ -115,93 +121,230 @@ const loginStep2 = async (req, res) => {
             return res.status(401).json({ message: 'Onjuiste verificatiecode.' });
         }
 
-        // Code is correct!
         const user = storedOtpData.user;
         let userID = user.id;
-        const role = user.role || user.Roles;
+        let role = Number(user.id) === 1 ? 'admin' : (user.role || user.Roles || 'user');
+        let strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
 
-        // Forceer demo gebruiker naar de data van ArneVR
+        // Forceer demo gebruiker naar de data van ArneVR (alleen-lezen)
         if (role === 'demo' || username.toLowerCase() === 'demo') {
-            try {
-                const arneReq = new sql.Request();
-                // Pas de naam 'ArneVR' hier eventueel aan naar hoe je exact heet in de database
-                const arneRes = await arneReq.query("SELECT id FROM PF_Users WHERE username = 'ArneVR'");
-                if (arneRes.recordset.length > 0) {
-                    userID = arneRes.recordset[0].id;
-                }
-            } catch (err) {
-                console.error("Kon ID van ArneVR niet ophalen:", err);
-            }
+            role = 'demo';
+            userID = 1;
         }
 
-        // Bepaal de geldigheidsduur van het token
+        const permissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
         const expiresIn = rememberMe ? '30d' : '1h';
 
-        const token = jwt.sign({ username, userID }, process.env.JWT_SECRET, { expiresIn });
+        const token = jwt.sign(
+            { username, userID, actualUserId: user.id, role, strategy_mode: strategyMode },
+            process.env.JWT_SECRET,
+            { expiresIn }
+        );
 
-        // Verwijder de gebruikte OTP zodat deze niet opnieuw gebruikt kan worden
         otpStore.delete(username);
 
-        // Sla de inlogtijd op in de database
         const updateReq = new sql.Request();
-        updateReq.input('id', sql.Int, userID);
+        updateReq.input('id', sql.Int, user.id);
         await updateReq.query('UPDATE PF_Users SET last_login = GETDATE() WHERE id = @id');
 
-        // Stuur het token veilig terug in de JSON response
-        res.json({ token, username, userID, role, expiresIn });
+        res.json({
+            token,
+            username,
+            userID,
+            role,
+            strategy_mode: strategyMode,
+            permissions,
+            default_currency: user.default_currency || 'EUR',
+            expiresIn
+        });
     } catch (error) {
         console.error('Fout bij inloggen stap 2:', error);
         res.status(500).json({ message: 'Serverfout bij het verifiëren.' });
     }
 };
 
-const register = async (req, res) => {
-  const { username, email, password, role } = req.body;
+// Haal actuele sessie, rol en toegangsrechten op voor de ingelogde gebruiker
+const getMe = async (req, res) => {
+    try {
+        const lookupId = Number(req.user?.actualUserId || req.user?.userID || 1);
+        const request = new sql.Request();
+        request.input('id', sql.Int, lookupId);
+        const result = await request.query('SELECT * FROM PF_Users WHERE id = @id');
 
-  if (!username || !email || !password) {
-    return res.status(400).json({ message: 'Vul gebruikersnaam, e-mailadres en wachtwoord in.' });
+        if (result.recordset.length === 0) {
+            return res.status(404).json({ message: 'Gebruiker niet gevonden.' });
+        }
+
+        const user = result.recordset[0];
+        if (Number(user.id) !== 1 && user.is_active === false) {
+            return res.status(403).json({ message: 'Dit account is gedeactiveerd.' });
+        }
+
+        const role = Number(user.id) === 1 ? 'admin' : (user.role || 'user');
+        const strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
+        const permissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
+        const effectiveUserId = role === 'demo' ? 1 : user.id;
+
+        res.json({
+            userID: effectiveUserId,
+            actualUserId: user.id,
+            username: user.username,
+            email: user.email,
+            role,
+            strategy_mode: strategyMode,
+            permissions,
+            default_currency: user.default_currency || 'EUR'
+        });
+    } catch (error) {
+        console.error('Fout bij ophalen actuele gebruiker:', error);
+        res.status(500).json({ message: 'Serverfout bij ophalen gebruikerssessie.' });
+    }
+};
+
+// Alleen toegankelijk voor Admin (User 1): nodig een gebruiker uit / maak een account aan
+const register = async (req, res) => {
+  const {
+    username,
+    email,
+    password,
+    role = 'user',
+    strategy_mode = 'arne_advies',
+    permissions = null,
+    sendInviteEmail = true
+  } = req.body;
+
+  if (!username || !email) {
+    return res.status(400).json({ message: 'Vul een gebruikersnaam en e-mailadres in om iemand uit te nodigen.' });
   }
+
+  // Als er geen wachtwoord is opgegeven, genereer automatisch een sterk tijdelijk wachtwoord
+  const plainPassword = (password && String(password).trim().length >= 6)
+    ? String(password).trim()
+    : `Welkom-${crypto.randomInt(1000, 9999)}!`;
 
   try {
     const request = new sql.Request();
-    request.input('username', sql.NVarChar, username);
-    const existingUser = await request.query('SELECT id FROM PF_Users WHERE username = @username');
+    request.input('username', sql.NVarChar, username.trim());
+    request.input('email', sql.NVarChar, email.trim());
+    const existingUser = await request.query('SELECT id FROM PF_Users WHERE username = @username OR LOWER(email) = LOWER(@email)');
 
     if (existingUser.recordset.length > 0) {
-      return res.status(409).json({ message: 'Deze gebruikersnaam is al in gebruik.' });
+      return res.status(409).json({ message: 'Deze gebruikersnaam of dit e-mailadres is al in gebruik.' });
     }
 
     const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(plainPassword, saltRounds);
+
+    const safeRole = ['user', 'admin', 'demo'].includes(role) ? role : 'user';
+    const safeMode = ['portfolio_only', 'arne_advies', 'full_access'].includes(strategy_mode)
+      ? strategy_mode
+      : (safeRole === 'admin' ? 'full_access' : 'arne_advies');
+    const resolvedPermissions = buildUserPermissions(safeRole, safeMode, permissions, null);
 
     const insertRequest = new sql.Request();
-    insertRequest.input('username', sql.NVarChar, username);
-    insertRequest.input('email', sql.NVarChar, email);
+    insertRequest.input('username', sql.NVarChar, username.trim());
+    insertRequest.input('email', sql.NVarChar, email.trim());
     insertRequest.input('password', sql.NVarChar, hashedPassword);
-    insertRequest.input('role', sql.NVarChar, role || 'user');
-    
-    await insertRequest.query(`INSERT INTO PF_Users (username, email, password, role) VALUES (@username, @email, @password, @role)`);
+    insertRequest.input('role', sql.NVarChar, safeRole);
+    insertRequest.input('strategy_mode', sql.NVarChar, safeMode);
+    insertRequest.input('permissions', sql.NVarChar(sql.MAX), JSON.stringify(resolvedPermissions));
 
-    res.status(201).json({ message: 'Account succesvol aangemaakt! Je kan nu inloggen.' });
+    const insertRes = await insertRequest.query(`
+      INSERT INTO PF_Users (username, email, password, role, strategy_mode, permissions, is_active, default_currency, created_at)
+      OUTPUT INSERTED.id
+      VALUES (@username, @email, @password, @role, @strategy_mode, @permissions, 1, 'EUR', GETDATE())
+    `);
+
+    const newUserId = insertRes.recordset[0]?.id;
+
+    // Initialiseer lege (0.00 EUR) saldo-rijen in AvailableBalances voor deze nieuwe gebruiker
+    if (newUserId && safeRole !== 'demo') {
+      const typesRes = await new sql.Request().query('SELECT balance_type_id FROM AvailableBalanceTypes');
+      for (const t of typesRes.recordset) {
+        await new sql.Request()
+          .input('user_id', sql.Int, newUserId)
+          .input('balance_type_id', sql.Int, t.balance_type_id)
+          .query(`
+            INSERT INTO AvailableBalances (user_id, balance_type_id, amount, update_date)
+            VALUES (@user_id, @balance_type_id, 0, CAST(GETDATE() AS DATE))
+          `);
+      }
+    }
+
+    // Probeer optioneel een uitnodigingsmail te sturen
+    let emailSent = false;
+    if (sendInviteEmail && process.env.MAIL_USER && process.env.MAIL_PASS) {
+      try {
+        await transporter.sendMail({
+          from: process.env.MAIL_USER,
+          to: email.trim(),
+          subject: 'Uitnodiging voor PortfolioVR',
+          html: `
+            <div style="font-family: Arial, sans-serif; max-width: 520px; margin: 0 auto; padding: 24px; border: 1px solid #e5e7eb; border-radius: 12px;">
+              <h2 style="color: #1e293b; margin-top: 0;">Je bent uitgenodigd voor PortfolioVR</h2>
+              <p style="color: #475569; line-height: 1.5;">
+                Arne heeft een persoonlijk account voor je klaargezet op <strong>PortfolioVR</strong>.
+              </p>
+              <div style="background: #f8fafc; padding: 16px; border-radius: 8px; margin: 16px 0; border: 1px solid #e2e8f0;">
+                <p style="margin: 4px 0;"><strong>Gebruikersnaam:</strong> ${username.trim()}</p>
+                <p style="margin: 4px 0;"><strong>Tijdelijk wachtwoord:</strong> <code style="background: #fff; padding: 2px 6px; border-radius: 4px;">${plainPassword}</code></p>
+                <p style="margin: 4px 0;"><strong>Gekoppeld e-mailadres:</strong> ${email.trim()}</p>
+              </div>
+              <p style="color: #64748b; font-size: 13px;">
+                Je kunt inloggen met bovenstaande gegevens (of direct via Google/Microsoft als je inlogt met ${email.trim()}). Pas na het inloggen gerust je wachtwoord aan via <em>Mijn Profiel</em>.
+              </p>
+            </div>
+          `
+        });
+        emailSent = true;
+      } catch (mailErr) {
+        console.warn('Uitnodigingsmail kon niet automatisch worden verzonden:', mailErr.message);
+      }
+    }
+
+    res.status(201).json({
+      message: emailSent
+        ? `Uitnodiging en account voor "${username}" aangemaakt (e-mail verstuurd)!`
+        : `Account voor "${username}" aangemaakt! Kopieer hieronder de uitnodiging om door te sturen.`,
+      userId: newUserId,
+      inviteSummary: {
+        username: username.trim(),
+        email: email.trim(),
+        temporaryPassword: plainPassword,
+        strategy_mode: safeMode,
+        emailSent
+      }
+    });
   } catch (error) {
     console.error('Fout bij registratie:', error);
-    res.status(500).json({ message: 'Serverfout bij het registreren.' });
+    res.status(500).json({ message: 'Serverfout bij het uitnodigen/aanmaken.' });
   }
 };
 
 const getProfile = async (req, res) => {
-    const { id } = req.params;
+    const requestedId = Number(req.params.id);
+    const callerId = Number(req.user?.actualUserId || req.user?.userID);
+    const id = isAdminUser(req) ? (requestedId || callerId) : callerId;
+
     try {
         const request = new sql.Request();
         request.input('id', sql.Int, id);
         const result = await request.query(`
-            SELECT username, email, ISNULL(default_currency, 'EUR') as default_currency, ISNULL(manual_exchange_rate, 1.0) as manual_exchange_rate, ISNULL(preferred_login_method, 'password') as preferred_login_method
+            SELECT id, username, email, role,
+                   ISNULL(strategy_mode, 'arne_advies') as strategy_mode,
+                   permissions,
+                   ISNULL(default_currency, 'EUR') as default_currency,
+                   ISNULL(manual_exchange_rate, 1.0) as manual_exchange_rate,
+                   ISNULL(preferred_login_method, 'password') as preferred_login_method
             FROM PF_Users WHERE id = @id
         `);
         
         if (result.recordset.length === 0) return res.status(404).json({ message: 'Gebruiker niet gevonden.' });
         
         const user = result.recordset[0];
+        const role = Number(user.id) === 1 ? 'admin' : (user.role || 'user');
+        const strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
+        const parsedPermissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
         
         const identRequest = new sql.Request();
         identRequest.input('userId', sql.Int, id);
@@ -211,6 +354,9 @@ const getProfile = async (req, res) => {
         
         res.json({
             ...user,
+            role,
+            strategy_mode: strategyMode,
+            permissions: parsedPermissions,
             linkedProviders
         });
     } catch (error) {
@@ -219,9 +365,13 @@ const getProfile = async (req, res) => {
     }
 };
 
-
 const updateProfile = async (req, res) => {
-    const { id } = req.params;
+    const requestedId = Number(req.params.id);
+    const callerId = Number(req.user?.actualUserId || req.user?.userID);
+    if (!isAdminUser(req) && requestedId !== callerId) {
+        return res.status(403).json({ message: 'Je kunt alleen je eigen profiel wijzigen.' });
+    }
+    const id = isAdminUser(req) ? requestedId : callerId;
     const { username, default_currency, manual_exchange_rate } = req.body;
     
     try {
@@ -243,7 +393,12 @@ const updateProfile = async (req, res) => {
 };
 
 const updatePassword = async (req, res) => {
-    const { id } = req.params;
+    const requestedId = Number(req.params.id);
+    const callerId = Number(req.user?.actualUserId || req.user?.userID);
+    if (!isAdminUser(req) && requestedId !== callerId) {
+        return res.status(403).json({ message: 'Je kunt alleen je eigen wachtwoord wijzigen.' });
+    }
+    const id = isAdminUser(req) ? requestedId : callerId;
     const { currentPassword, newPassword } = req.body;
 
     try {
@@ -270,19 +425,33 @@ const updatePassword = async (req, res) => {
 
 const getAllUsers = async (req, res) => {
     try {
-        // 1. Gebruik een sql.Request() object voor een veilige uitvoering
         const request = new sql.Request();
-        const result = await request.query('SELECT * FROM PF_Users');
+        const result = await request.query(`
+            SELECT u.*,
+                   (SELECT COUNT(*) FROM PF_transactions t WHERE t.user_id = u.id) AS tx_count
+            FROM PF_Users u
+            ORDER BY u.id ASC
+        `);
         
-        // 2. Map de database resultaten zodat de frontend altijd exact weet wat hij krijgt,
-        // zelfs als SQL Server de kolommen toevallig met een hoofdletter heeft aangemaakt.
-        const mappedUsers = result.recordset.map(u => ({
-            id: u.id || u.Id || u.ID,
-            username: u.username || u.Username || u.USERNAME,
-            email: u.email || u.Email || u.EMAIL,
-            role: u.role || u.Role || u.Roles || 'user',
-            last_login: u.last_login || u.Last_Login || null
-        }));
+        const mappedUsers = result.recordset.map(u => {
+            const uid = u.id || u.Id || u.ID;
+            const role = Number(uid) === 1 ? 'admin' : (u.role || u.Role || u.Roles || 'user');
+            const strategyMode = Number(uid) === 1 ? 'full_access' : (u.strategy_mode || 'arne_advies');
+            const permissions = buildUserPermissions(role, strategyMode, u.permissions, uid);
+
+            return {
+                id: uid,
+                username: u.username || u.Username || u.USERNAME,
+                email: u.email || u.Email || u.EMAIL,
+                role,
+                strategy_mode: strategyMode,
+                permissions,
+                is_active: Number(uid) === 1 ? true : (u.is_active !== false && u.is_active !== 0),
+                tx_count: u.tx_count || 0,
+                last_login: u.last_login || u.Last_Login || null,
+                created_at: u.created_at || null
+            };
+        });
         
         res.json(mappedUsers);
     } catch (error) {
@@ -292,8 +461,12 @@ const getAllUsers = async (req, res) => {
 };
 
 const updateUserRole = async (req, res) => {
-    const { id } = req.params;
+    const id = Number(req.params.id);
     const { role } = req.body;
+
+    if (id === 1 && role !== 'admin') {
+        return res.status(400).json({ message: 'Gebruiker 1 (ArneVR) is de hoofdontwikkelaar en blijft altijd Admin.' });
+    }
 
     try {
         const request = new sql.Request();
@@ -308,11 +481,107 @@ const updateUserRole = async (req, res) => {
     }
 };
 
+// Uitgebreid toegangsbeheer voor User 1 (Admin): pas rol, strategy_mode, individuele permissions, actief-status of wachtwoord aan
+const updateUserAccess = async (req, res) => {
+    const id = Number(req.params.id);
+    const { role, strategy_mode, permissions, is_active, newPassword, email } = req.body;
+
+    if (id === 1) {
+        return res.status(400).json({ message: 'Gebruiker 1 (ArneVR) heeft als ontwikkelaar altijd volledige toegang.' });
+    }
+
+    try {
+        const curReq = new sql.Request();
+        curReq.input('id', sql.Int, id);
+        const curRes = await curReq.query('SELECT * FROM PF_Users WHERE id = @id');
+        if (curRes.recordset.length === 0) {
+            return res.status(404).json({ message: 'Gebruiker niet gevonden.' });
+        }
+        const current = curRes.recordset[0];
+
+        const nextRole = role || current.role || 'user';
+        const nextMode = strategy_mode || current.strategy_mode || 'arne_advies';
+        const nextActive = typeof is_active === 'boolean' ? is_active : (current.is_active !== false);
+
+        // Als strategy_mode gewijzigd wordt zonder specifieke permissions-override, gebruik de preset van die mode
+        let basePermissions = permissions;
+        if (!basePermissions && strategy_mode && DEFAULT_PERMISSIONS_BY_MODE[strategy_mode]) {
+            basePermissions = DEFAULT_PERMISSIONS_BY_MODE[strategy_mode];
+        }
+        const resolvedPermissions = buildUserPermissions(nextRole, nextMode, basePermissions || current.permissions, id);
+
+        const updateReq = new sql.Request();
+        updateReq.input('id', sql.Int, id);
+        updateReq.input('role', sql.NVarChar, nextRole);
+        updateReq.input('strategy_mode', sql.NVarChar, nextMode);
+        updateReq.input('permissions', sql.NVarChar(sql.MAX), JSON.stringify(resolvedPermissions));
+        updateReq.input('is_active', sql.Bit, nextActive ? 1 : 0);
+        updateReq.input('email', sql.NVarChar, email !== undefined ? email : current.email);
+
+        let query = `
+            UPDATE PF_Users
+            SET role = @role,
+                strategy_mode = @strategy_mode,
+                permissions = @permissions,
+                is_active = @is_active,
+                email = @email
+        `;
+
+        if (newPassword && String(newPassword).trim().length >= 6) {
+            const hashed = await bcrypt.hash(String(newPassword).trim(), 10);
+            updateReq.input('password', sql.NVarChar, hashed);
+            query += `, password = @password`;
+        }
+
+        query += ` WHERE id = @id`;
+        await updateReq.query(query);
+
+        res.json({
+            message: 'Toegangsrechten en instellingen succesvol opgeslagen.',
+            user: {
+                id,
+                role: nextRole,
+                strategy_mode: nextMode,
+                permissions: resolvedPermissions,
+                is_active: nextActive
+            }
+        });
+    } catch (error) {
+        console.error('Fout bij bijwerken toegangsrechten:', error);
+        res.status(500).json({ message: 'Serverfout bij bijwerken toegangsrechten.' });
+    }
+};
+
+const deleteUser = async (req, res) => {
+    const id = Number(req.params.id);
+    if (id === 1) {
+        return res.status(400).json({ message: 'Gebruiker 1 (ArneVR) kan niet worden verwijderd.' });
+    }
+
+    try {
+        const request = new sql.Request();
+        request.input('id', sql.Int, id);
+        await request.query(`
+            DELETE FROM PF_User_Identities WHERE user_id = @id;
+            DELETE FROM PF_User_Watchlist WHERE user_id = @id;
+            DELETE FROM AvailableBalances WHERE user_id = @id;
+            DELETE FROM PF_Notifications WHERE user_id = @id;
+            DELETE FROM UserBrokerCredentials WHERE user_id = @id;
+            DELETE FROM DailyPortfolioValue WHERE user_id = @id;
+            DELETE FROM PF_transactions WHERE user_id = @id;
+            DELETE FROM PF_Users WHERE id = @id;
+        `);
+        res.json({ message: 'Gebruiker en bijbehorende gegevens zijn verwijderd.' });
+    } catch (error) {
+        console.error('Fout bij verwijderen gebruiker:', error);
+        res.status(500).json({ message: 'Serverfout bij verwijderen gebruiker.' });
+    }
+};
+
 const logout = (req, res) => {
     res.json({ message: 'Succesvol uitgelogd' });
 };
 
-// Helper om Google ID Token te verifiëren met Google API
 const verifyGoogleToken = async (idToken) => {
     try {
         const response = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${idToken}`);
@@ -333,7 +602,6 @@ const verifyGoogleToken = async (idToken) => {
     }
 };
 
-// Helper om Microsoft Access Token te verifiëren via Microsoft Graph API
 const verifyMicrosoftToken = async (accessToken) => {
     try {
         const response = await fetch('https://graph.microsoft.com/v1.0/me', {
@@ -363,7 +631,7 @@ const loginProvider = async (req, res) => {
     }
     
     let providerUserId = null;
-    let email = null;
+    let providerEmail = null;
     
     if (provider === 'google') {
         const googleUser = await verifyGoogleToken(token);
@@ -371,14 +639,14 @@ const loginProvider = async (req, res) => {
             return res.status(400).json({ message: 'Ongeldig Google-token.' });
         }
         providerUserId = googleUser.providerId;
-        email = googleUser.email;
+        providerEmail = googleUser.email;
     } else if (provider === 'microsoft') {
         const msUser = await verifyMicrosoftToken(token);
         if (!msUser) {
             return res.status(400).json({ message: 'Ongeldig Microsoft-token.' });
         }
         providerUserId = msUser.providerId;
-        email = msUser.email;
+        providerEmail = msUser.email;
     } else {
         return res.status(400).json({ message: 'Ongeldige inlogprovider.' });
     }
@@ -391,13 +659,35 @@ const loginProvider = async (req, res) => {
             'SELECT user_id FROM PF_User_Identities WHERE provider_name = @providerName AND provider_key = @providerKey'
         );
         
-        if (checkRes.recordset.length === 0) {
-            return res.status(401).json({ 
-                message: `Dit ${provider === 'google' ? 'Google' : 'Microsoft'}-account is niet gekoppeld aan een PortfolioVR gebruiker. Meld je eerst aan met gebruikersnaam/wachtwoord en koppel je account via de profielpagina.` 
-            });
+        let userID = checkRes.recordset[0]?.user_id || null;
+
+        // Als nog niet gekoppeld in PF_User_Identities, kijk of Arne een gebruiker met dit e-mailadres heeft uitgenodigd
+        if (!userID && providerEmail) {
+            const emailReq = new sql.Request();
+            emailReq.input('email', sql.NVarChar, String(providerEmail).trim());
+            const emailRes = await emailReq.query(
+                'SELECT id FROM PF_Users WHERE LOWER(email) = LOWER(@email)'
+            );
+            if (emailRes.recordset.length > 0) {
+                userID = emailRes.recordset[0].id;
+                // Koppel direct automatisch aan dit uitgenodigde account
+                const autoLinkReq = new sql.Request();
+                autoLinkReq.input('userId', sql.Int, userID);
+                autoLinkReq.input('providerName', sql.NVarChar, provider);
+                autoLinkReq.input('providerKey', sql.NVarChar, providerUserId);
+                await autoLinkReq.query(`
+                    IF NOT EXISTS (SELECT 1 FROM PF_User_Identities WHERE user_id = @userId AND provider_name = @providerName)
+                    INSERT INTO PF_User_Identities (user_id, provider_name, provider_key)
+                    VALUES (@userId, @providerName, @providerKey)
+                `);
+            }
         }
         
-        const userID = checkRes.recordset[0].user_id;
+        if (!userID) {
+            return res.status(401).json({ 
+                message: `Toegang geweigerd: dit ${provider === 'google' ? 'Google' : 'Microsoft'}-account (${providerEmail || 'onbekend'}) is niet uitgenodigd. Alleen gebruikers die door de beheerder zijn uitgenodigd hebben toegang.` 
+            });
+        }
         
         const userReq = new sql.Request();
         userReq.input('id', sql.Int, userID);
@@ -408,15 +698,22 @@ const loginProvider = async (req, res) => {
         }
         
         const user = userRes.recordset[0];
+        if (Number(user.id) !== 1 && user.is_active === false) {
+            return res.status(403).json({ message: 'Dit account is gedeactiveerd door de beheerder.' });
+        }
+
+        const role = Number(user.id) === 1 ? 'admin' : (user.role || 'user');
+        const strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
+        const permissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
+        const effectiveUserId = role === 'demo' ? 1 : user.id;
         
-        // Sla de inlogtijd op
         const updateReq = new sql.Request();
         updateReq.input('id', sql.Int, user.id);
         await updateReq.query('UPDATE PF_Users SET last_login = GETDATE() WHERE id = @id');
         
         const expiresIn = '30d';
         const jwtToken = jwt.sign(
-            { username: user.username, userID: user.id },
+            { username: user.username, userID: effectiveUserId, actualUserId: user.id, role, strategy_mode: strategyMode },
             process.env.JWT_SECRET,
             { expiresIn }
         );
@@ -424,8 +721,11 @@ const loginProvider = async (req, res) => {
         res.json({
             token: jwtToken,
             username: user.username,
-            userID: user.id,
-            role: user.role || 'user',
+            userID: effectiveUserId,
+            role,
+            strategy_mode: strategyMode,
+            permissions,
+            default_currency: user.default_currency || 'EUR',
             expiresIn
         });
     } catch (error) {
@@ -446,7 +746,7 @@ const linkGoogle = async (req, res) => {
     }
     
     try {
-        const userID = req.user.userID;
+        const userID = req.user.actualUserId || req.user.userID;
         
         const checkReq = new sql.Request();
         checkReq.input('providerKey', sql.NVarChar, googleUser.providerId);
@@ -480,7 +780,7 @@ const linkMicrosoft = async (req, res) => {
     }
     
     try {
-        const userID = req.user.userID;
+        const userID = req.user.actualUserId || req.user.userID;
         
         const checkReq = new sql.Request();
         checkReq.input('providerKey', sql.NVarChar, msUser.providerId);
@@ -510,7 +810,7 @@ const unlinkProvider = async (req, res) => {
     }
     
     try {
-        const userID = req.user.userID;
+        const userID = req.user.actualUserId || req.user.userID;
         
         const request = new sql.Request();
         request.input('id', sql.Int, userID);
@@ -555,7 +855,7 @@ const updatePreference = async (req, res) => {
     }
     
     try {
-        const userID = req.user.userID;
+        const userID = req.user.actualUserId || req.user.userID;
         const request = new sql.Request();
         request.input('preferredMethod', sql.NVarChar, preferredMethod);
         request.input('id', sql.Int, userID);
@@ -568,19 +868,97 @@ const updatePreference = async (req, res) => {
     }
 };
 
+const updateMyStrategyMode = async (req, res) => {
+    const callerId = Number(req.user?.actualUserId || req.user?.userID);
+    const { strategy_mode } = req.body;
+
+    if (!['portfolio_only', 'arne_advies'].includes(strategy_mode)) {
+        return res.status(400).json({ message: 'Ongeldige gebruiksmodus. Kies tussen "portfolio_only" (Modus 1) of "arne_advies" (Modus 2).' });
+    }
+
+    if (callerId === 1) {
+        return res.status(400).json({ message: 'Als hoofdbeheerder (User 1) heb je altijd volledige ontwikkelaarstoegang.' });
+    }
+
+    try {
+        const getReq = new sql.Request();
+        getReq.input('id', sql.Int, callerId);
+        const currentRes = await getReq.query('SELECT role, permissions FROM PF_Users WHERE id = @id');
+        if (currentRes.recordset.length === 0) {
+            return res.status(404).json({ message: 'Gebruiker niet gevonden.' });
+        }
+
+        const userRow = currentRes.recordset[0];
+        const role = userRow.role || 'user';
+        let existingPerms = {};
+        if (userRow.permissions) {
+            try {
+                existingPerms = typeof userRow.permissions === 'string' ? JSON.parse(userRow.permissions) : userRow.permissions;
+            } catch (e) {
+                existingPerms = {};
+            }
+        }
+
+        const isAdvies = strategy_mode === 'arne_advies';
+        const updatedPermissions = buildUserPermissions(
+            role,
+            strategy_mode,
+            {
+                canViewDashboard: isAdvies,
+                canViewPortfolio: true,
+                canUseStockStrategy: isAdvies,
+                canUseEtfStrategy: isAdvies,
+                canViewAnalysis: true,
+                canReceiveStrategyAlerts: isAdvies,
+                // Zorg dat een reguliere gebruiker nooit zelf zijn rechten kan verhogen naar formule/screener/systeem-toegang
+                canViewFormulas: false,
+                canViewScreener: Boolean(existingPerms.canViewScreener),
+                canEditSystemData: false
+            },
+            callerId
+        );
+
+        const updateReq = new sql.Request();
+        updateReq.input('id', sql.Int, callerId);
+        updateReq.input('strategy_mode', sql.NVarChar, strategy_mode);
+        updateReq.input('permissions', sql.NVarChar, JSON.stringify(updatedPermissions));
+        await updateReq.query(`
+            UPDATE PF_Users
+            SET strategy_mode = @strategy_mode,
+                permissions = @permissions
+            WHERE id = @id
+        `);
+
+        res.json({
+            message: strategy_mode === 'portfolio_only'
+                ? 'Modus 1 geactiveerd: Enkel Portfolio Tracking.'
+                : 'Modus 2 geactiveerd: Portfolio + Arne\'s Strategie Advies (Black-Box).',
+            strategy_mode,
+            permissions: updatedPermissions
+        });
+    } catch (error) {
+        console.error('Fout bij wijzigen gebruiksmodus:', error);
+        res.status(500).json({ message: 'Serverfout bij wijzigen gebruiksmodus.' });
+    }
+};
+
 module.exports = { 
     loginStep1, 
     loginStep2, 
+    getMe,
     register, 
     getProfile, 
     updateProfile, 
     updatePassword, 
     getAllUsers, 
     updateUserRole, 
+    updateUserAccess,
+    deleteUser,
     logout,
     loginProvider,
     linkGoogle,
     linkMicrosoft,
     unlinkProvider,
-    updatePreference
+    updatePreference,
+    updateMyStrategyMode
 };

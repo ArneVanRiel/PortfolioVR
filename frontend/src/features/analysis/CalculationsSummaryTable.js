@@ -60,23 +60,56 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
     const [chartTitle, setChartTitle] = useState('');
     const isIncognito = useIncognito();
 
-    const ALL_COLUMNS = useMemo(() => [
-        { key: 'name', label: 'Aandeel', sortable: true, defaultVisible: true, type: 'string' },
-        { key: 'selectiecriteria', label: 'Score', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'portfolio_status', label: 'Status', sortable: false, defaultVisible: true, type: 'string' },
-        { key: 'current_price', label: 'Laatste Prijs', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'waarde_verdeling', label: 'Waardeverdeling', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'percentage', label: 'Percentage', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'ideal_invested', label: 'Ideaal Geïnvesteerd', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'intrinsieke_waarde', label: 'Intrinsieke Waarde', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'price_to_intrinsic', label: 'Koopmarge', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'period_end_date', label: 'Period End Date', sortable: true, defaultVisible: true, type: 'date' },
-        { key: 'current_signal_line', label: 'Signal Line', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'latest_alert_type', label: 'Type Melding', sortable: true, defaultVisible: true, type: 'string' },
-        { key: 'latest_alert_date', label: 'Laatste Alert', sortable: true, defaultVisible: true, type: 'date' },
-        { key: 'latest_trade_amount', label: 'Trade Bedrag (Alert)', sortable: true, defaultVisible: true, type: 'number' },
-        { key: 'current_recommended_amount', label: 'Aanbevolen Bedrag (Huidig)', sortable: true, defaultVisible: true, type: 'number' },
-    ], []);
+    const { canViewFormulas, canEditSystemData } = useMemo(() => {
+        const uid = Number(localStorage.getItem('userID') || 0);
+        const role = localStorage.getItem('role') || 'user';
+        if (uid === 1 || role === 'admin') {
+            return { canViewFormulas: true, canEditSystemData: true };
+        }
+        try {
+            const raw = localStorage.getItem('user_permissions');
+            const perms = raw ? JSON.parse(raw) : {};
+            return {
+                canViewFormulas: !!perms.canViewFormulas,
+                canEditSystemData: !!perms.canEditSystemData
+            };
+        } catch (e) {
+            return { canViewFormulas: false, canEditSystemData: false };
+        }
+    }, []);
+
+    const ALL_COLUMNS = useMemo(() => {
+        const cols = [
+            { key: 'name', label: 'Aandeel', sortable: true, defaultVisible: true, type: 'string' },
+            { key: 'selectiecriteria', label: 'Score', sortable: true, defaultVisible: true, type: 'number' },
+            { key: 'portfolio_status', label: 'Status', sortable: false, defaultVisible: true, type: 'string' },
+            { key: 'current_price', label: 'Laatste Prijs', sortable: true, defaultVisible: true, type: 'number' },
+        ];
+        if (canViewFormulas) {
+            cols.push({ key: 'waarde_verdeling', label: 'Waardeverdeling', sortable: true, defaultVisible: true, type: 'number' });
+        } else {
+            cols.push({ key: 'blackbox_status', label: 'Strategie Status', sortable: false, defaultVisible: true, type: 'string' });
+        }
+        cols.push(
+            { key: 'percentage', label: 'Percentage', sortable: true, defaultVisible: true, type: 'number' },
+            { key: 'ideal_invested', label: 'Ideaal Geïnvesteerd', sortable: true, defaultVisible: true, type: 'number' },
+        );
+        if (canViewFormulas) {
+            cols.push(
+                { key: 'intrinsieke_waarde', label: 'Intrinsieke Waarde', sortable: true, defaultVisible: true, type: 'number' },
+                { key: 'price_to_intrinsic', label: 'Koopmarge', sortable: true, defaultVisible: true, type: 'number' },
+            );
+        }
+        cols.push(
+            { key: 'period_end_date', label: 'Period End Date', sortable: true, defaultVisible: true, type: 'date' },
+            { key: 'current_signal_line', label: 'Signal Line', sortable: true, defaultVisible: true, type: 'number' },
+            { key: 'latest_alert_type', label: 'Type Melding', sortable: true, defaultVisible: true, type: 'string' },
+            { key: 'latest_alert_date', label: 'Laatste Alert', sortable: true, defaultVisible: true, type: 'date' },
+            { key: 'latest_trade_amount', label: 'Trade Bedrag (Alert)', sortable: true, defaultVisible: true, type: 'number' },
+            { key: 'current_recommended_amount', label: 'Aanbevolen Bedrag (Huidig)', sortable: true, defaultVisible: true, type: 'number' },
+        );
+        return cols;
+    }, [canViewFormulas]);
 
     const [visibleColumnKeys, setVisibleColumnKeys] = useState(
         ALL_COLUMNS.filter(col => col.defaultVisible).map(col => col.key)
@@ -131,7 +164,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                 }),
                 Array.isArray(sharedHoldingsData) && !forceFetch
                     ? Promise.resolve({ data: sharedHoldingsData })
-                    : http.get('/portfolio/holdings?userId=1')
+                    : http.get('/portfolio/holdings')
             ]);
             setSummaryData(summaryResponse.data);
             applyHoldingsData(holdingsResponse.data);
@@ -209,11 +242,15 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
             let prevDiffPercentage = null;
             if (item.previous_waarde_verdeling) {
                 prevDiffPercentage = ((item.waarde_verdeling - item.previous_waarde_verdeling) / item.previous_waarde_verdeling) * 100;
+            } else if (item.is_wv_dropping) {
+                prevDiffPercentage = -1;
             }
 
-            const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
-                ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
-                : 0;
+            const percentage = item.ideal_weight_pct != null
+                ? Number(item.ideal_weight_pct)
+                : (totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
+                    ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
+                    : 0);
 
             const holding = holdingsData.find(h => h.ticker === item.ticker_symbol);
             const actual_invested = holding ? (holding.value || 0) : 0;
@@ -629,26 +666,30 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                         </div>
 
                         {/* Button: Voeg Aandeel Toe */}
-                        <button
-                            type="button"
-                            onClick={() => handleOpenAddModal('watchlist')}
-                            className="bg-blue-600 text-white font-extrabold text-xs py-2 px-3.5 rounded-xl shadow-sm hover:bg-blue-700 transition-all flex items-center gap-1.5 cursor-pointer"
-                        >
-                            <span>➕ Voeg Aandeel Toe</span>
-                        </button>
+                        {canEditSystemData && (
+                            <button
+                                type="button"
+                                onClick={() => handleOpenAddModal('watchlist')}
+                                className="bg-blue-600 text-white font-extrabold text-xs py-2 px-3.5 rounded-xl shadow-sm hover:bg-blue-700 transition-all flex items-center gap-1.5 cursor-pointer"
+                            >
+                                <span>➕ Voeg Aandeel Toe</span>
+                            </button>
+                        )}
 
-                        <div className="flex items-center ml-2">
-                            <input
-                                id="showHighestEver"
-                                type="checkbox"
-                                checked={showHighestEver}
-                                onChange={(e) => setShowHighestEver(e.target.checked)}
-                                className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
-                            />
-                            <label htmlFor="showHighestEver" className="ml-1.5 block text-xs font-medium text-gray-700">
-                                % vs Hoogste Ooit
-                            </label>
-                        </div>
+                        {canViewFormulas && (
+                            <div className="flex items-center ml-2">
+                                <input
+                                    id="showHighestEver"
+                                    type="checkbox"
+                                    checked={showHighestEver}
+                                    onChange={(e) => setShowHighestEver(e.target.checked)}
+                                    className="h-4 w-4 text-indigo-600 focus:ring-indigo-500 border-gray-300 rounded"
+                                />
+                                <label htmlFor="showHighestEver" className="ml-1.5 block text-xs font-medium text-gray-700">
+                                    % vs Hoogste Ooit
+                                </label>
+                            </div>
+                        )}
                     </div>
                 </div>
                 <div className="mb-6 grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
@@ -689,14 +730,16 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                             <option value="idealePortfolio">🏆 Ideale Portfolio</option>
                         </select>
                     </div>
-                    <div>
-                        <label htmlFor="priceToIntrinsicFilter" className="block text-sm font-semibold text-gray-700 mb-1">Prijs/Intrinsiek</label>
-                        <select id="priceToIntrinsicFilter" value={priceToIntrinsicFilter} onChange={e => setPriceToIntrinsicFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
-                            <option value="">Alles</option>
-                            <option value="lt">Lager dan -25%</option>
-                            <option value="gt">Hoger dan -25%</option>
-                        </select>
-                    </div>
+                    {canViewFormulas && (
+                        <div>
+                            <label htmlFor="priceToIntrinsicFilter" className="block text-sm font-semibold text-gray-700 mb-1">Prijs/Intrinsiek</label>
+                            <select id="priceToIntrinsicFilter" value={priceToIntrinsicFilter} onChange={e => setPriceToIntrinsicFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
+                                <option value="">Alles</option>
+                                <option value="lt">Lager dan -25%</option>
+                                <option value="gt">Hoger dan -25%</option>
+                            </select>
+                        </div>
+                    )}
                     <div>
                         <label htmlFor="signalLineFilter" className="block text-sm font-semibold text-gray-700 mb-1">Signal Line</label>
                         <select id="signalLineFilter" value={signalLineFilter} onChange={e => setSignalLineFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
@@ -713,14 +756,16 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                             <option value="Verkoopsignaal">Verkoopsignaal</option>
                         </select>
                     </div>
-                    <div>
-                        <label htmlFor="percentageFilter" className="block text-sm font-semibold text-gray-700 mb-1">Percentage ({showHighestEver ? 'H' : 'Q'})</label>
-                        <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
-                            <option value="">Alles</option>
-                            <option value="gt0">Boven 0%</option>
-                            <option value="lt0">Onder 0%</option>
-                        </select>
-                    </div>
+                    {canViewFormulas && (
+                        <div>
+                            <label htmlFor="percentageFilter" className="block text-sm font-semibold text-gray-700 mb-1">Percentage ({showHighestEver ? 'H' : 'Q'})</label>
+                            <select id="percentageFilter" value={percentageFilter} onChange={e => setPercentageFilter(e.target.value)} className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 sm:text-sm py-2">
+                                <option value="">Alles</option>
+                                <option value="gt0">Boven 0%</option>
+                                <option value="lt0">Onder 0%</option>
+                            </select>
+                        </div>
+                    )}
                 </div>
                 <table className="min-w-full divide-y divide-gray-200 border border-gray-200 rounded-lg overflow-hidden">
                     <thead className="bg-gray-50 border-b border-gray-200">
@@ -763,7 +808,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
 
                                 const highlightClass = getHighlightClass(item.period_end_date, selectedDate);
 
-                                let koopmargefactor = 1;
+                                let koopmargefactor = item.koopmargefactor != null ? Number(item.koopmargefactor) : 1;
                                 if (item.current_price && item.intrinsieke_waarde && item.intrinsieke_waarde > 0) {
                                     const ratio = item.current_price / item.intrinsieke_waarde;
                                     if (item.current_price < item.intrinsieke_waarde * 0.75) {
@@ -798,6 +843,29 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                                             🏆 Ideale PF
                                                         </span>
                                                     ) : null}
+                                                </div>
+                                            );
+                                        case 'blackbox_status':
+                                            return (
+                                                <div className="flex flex-col gap-1">
+                                                    {item.is_undervalued === true ? (
+                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 w-fit">
+                                                            🟢 Koopwaardig
+                                                        </span>
+                                                    ) : item.is_undervalued === false ? (
+                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 w-fit">
+                                                            ⚠️ Boven Grens
+                                                        </span>
+                                                    ) : null}
+                                                    {item.is_wv_dropping ? (
+                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-50 text-red-700 w-fit">
+                                                            📉 Dalende Trend
+                                                        </span>
+                                                    ) : (
+                                                        <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-700 w-fit">
+                                                            📈 Stabiel/Stijgend
+                                                        </span>
+                                                    )}
                                                 </div>
                                             );
                                         case 'waarde_verdeling':
@@ -857,6 +925,9 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                              return value ? new Date(value).toLocaleDateString() : 'N/A';
                                         case 'latest_trade_amount':
                                             if (displayAlertType === 'Verkoopsignaal') {
+                                                if (!canViewFormulas || value == null) {
+                                                    return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">Deelverkoop</span>;
+                                                }
                                                 // Backend geeft percentage als decimaal (bv -0.05), wij tonen %
                                                 return <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800 privacy-blur">{isIncognito ? '••••••' : `${(value * 100).toFixed(2)}%`}</span>;
                                             }
@@ -890,17 +961,19 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                                             >
                                                 ⭐
                                             </button>
-                                            <button
-                                                onClick={() => handleToggleStockFlag(item, 'idealePortfolio')}
-                                                className={`px-1.5 py-0.5 rounded border text-[11px] font-bold transition-all ${
-                                                    item.inIdealePortfolio 
-                                                        ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100' 
-                                                        : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-emerald-50 hover:text-emerald-700'
-                                                }`}
-                                                title={item.inIdealePortfolio ? "Verwijderen uit Ideale Portfolio" : "Toevoegen aan Ideale Portfolio"}
-                                            >
-                                                🏆
-                                            </button>
+                                            {canEditSystemData && (
+                                                <button
+                                                    onClick={() => handleToggleStockFlag(item, 'idealePortfolio')}
+                                                    className={`px-1.5 py-0.5 rounded border text-[11px] font-bold transition-all ${
+                                                        item.inIdealePortfolio 
+                                                            ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100' 
+                                                            : 'bg-gray-50 text-gray-400 border-gray-200 hover:bg-emerald-50 hover:text-emerald-700'
+                                                    }`}
+                                                    title={item.inIdealePortfolio ? "Verwijderen uit Ideale Portfolio" : "Toevoegen aan Ideale Portfolio"}
+                                                >
+                                                    🏆
+                                                </button>
+                                            )}
                                             {highlightClass && (
                                                 <button 
                                                     onClick={() => navigate(`/analysis?ticker=${item.ticker_symbol}`)}

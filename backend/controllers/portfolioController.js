@@ -6,13 +6,12 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const { autoSyncBrokerBalancesInternal } = require('./availableBalanceController');
+const { getEffectiveUserId, isAdminUser, buildUserPermissions } = require('../middleware/authMiddleware');
 
 const recalculateAndStorePortfolioHistory = async (req, res) => {
   try {
-    const { userId, fromDate } = req.body;
-    if (!userId) {
-      return res.status(400).json({ message: 'userId is verplicht.' });
-    }
+    const userId = getEffectiveUserId(req);
+    const { fromDate } = req.body;
 
     // Set headers for streaming response
     res.setHeader('Content-Type', 'application/json');
@@ -622,10 +621,7 @@ const recalculateAndStorePortfolioHistory = async (req, res) => {
 };
 
 const checkAndRepairPriceData = async (req, res) => {
-    const { userId } = req.body;
-    if (!userId) {
-        return res.status(400).json({ message: 'userId is verplicht.' });
-    }
+    const userId = getEffectiveUserId(req);
 
     res.setHeader('Content-Type', 'application/json');
     res.setHeader('Transfer-Encoding', 'chunked');
@@ -873,8 +869,9 @@ const clearPortfolioCache = (userId) => {
 };
 
 const getPortfolioValues = async (req, res) => {
-  const { userId, period, assetTypes, customStartDate, customEndDate, currency } = req.query;
-  const cacheKey = `pv_${userId || 1}_${period || 'All'}_${assetTypes || 'all'}_${customStartDate || ''}_${customEndDate || ''}_${currency || 'USD'}`;
+  const userId = getEffectiveUserId(req);
+  const { period, assetTypes, customStartDate, customEndDate, currency } = req.query;
+  const cacheKey = `pv_${userId}_${period || 'All'}_${assetTypes || 'all'}_${customStartDate || ''}_${customEndDate || ''}_${currency || 'USD'}`;
   const cached = portfolioValuesCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
     return res.status(200).json(cached.data);
@@ -1177,7 +1174,7 @@ const getPortfolioValues = async (req, res) => {
 
 const calculateReturns = async (req, res) => {
   try {
-    const userId = 1; // Haal dit uit een sessie of JWT
+    const userId = getEffectiveUserId(req);
     const { period } = req.query;
 
     let dateFilter;
@@ -1260,7 +1257,7 @@ const calculateReturns = async (req, res) => {
 
 const getPortfolioReturns = async (req, res) => {
   try {
-    const { userId } = req.query;
+    const userId = getEffectiveUserId(req);
     const pool = await sql.connect(config);
 
     const result = await pool.request()
@@ -1280,7 +1277,7 @@ const getPortfolioReturns = async (req, res) => {
 };
 
 const getCurrentPortfolioHoldings = async (req, res) => {
-  const userId = req.query.userId || 1;
+  const userId = getEffectiveUserId(req);
   const { period, customStartDate, customEndDate, currency } = req.query;
   const isEur = currency === 'EUR' || !currency ? 1 : 0;
   const cacheKey = `holdings_${userId}_${period || 'All'}_${customStartDate || ''}_${customEndDate || ''}_${isEur}`;
@@ -1435,7 +1432,7 @@ const getCurrentPortfolioHoldings = async (req, res) => {
 };
 
 const getTransactions = async (req, res) => {
-  const userId = req.query.userId || 1;
+  const userId = getEffectiveUserId(req);
   const { period, customStartDate, customEndDate } = req.query;
   const cacheKey = `tx_${userId}_${period || 'All'}_${customStartDate || ''}_${customEndDate || ''}`;
 
@@ -1607,7 +1604,11 @@ const fetchAndStorePricesForStock = async (aandeel_id) => {
 
 const addTransaction = async (req, res) => {
   try {
-    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, import_source = 'manual' } = req.body;
+    if (req.user?.role === 'demo') {
+      return res.status(403).json({ message: 'Demo-account kan geen transacties toevoegen.' });
+    }
+    const user_id = getEffectiveUserId(req);
+    const { aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, import_source = 'manual' } = req.body;
     const pool = await sql.connect(config);
     const isCash = ['DEPOSIT', 'WITHDRAWAL'].includes(transaction_type);
     
@@ -1669,12 +1670,22 @@ const addTransaction = async (req, res) => {
 
 const updateTransaction = async (req, res) => {
   try {
+    if (req.user?.role === 'demo') {
+      return res.status(403).json({ message: 'Demo-account kan geen transacties bewerken.' });
+    }
     const { id } = req.params;
-    const { user_id, aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, force = false } = req.body;
+    const user_id = getEffectiveUserId(req);
+    const { aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, force = false } = req.body;
     const pool = await sql.connect(config);
     
-    // Controleer of de transactie afkomstig is van een broker import
-    const existing = await pool.request().input('id', sql.Int, id).query('SELECT import_source FROM PF_transactions WHERE id = @id');
+    // Controleer of de transactie van deze gebruiker is en of hij afkomstig is van een broker import
+    const existing = await pool.request()
+      .input('id', sql.Int, id)
+      .input('user_id', sql.Int, user_id)
+      .query('SELECT import_source FROM PF_transactions WHERE id = @id AND user_id = @user_id');
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ message: 'Transactie niet gevonden voor deze gebruiker.' });
+    }
     if (existing.recordset.length > 0) {
       const src = existing.recordset[0].import_source;
       if (src && src !== 'manual' && !force) {
@@ -1691,10 +1702,10 @@ const updateTransaction = async (req, res) => {
       .input('taxes', sql.Decimal(18, 4), taxes).input('exchange_rate', sql.Decimal(18, 6), exchange_rate)
       .query(`
         UPDATE PF_transactions 
-        SET user_id = @user_id, aandeel_id = @aandeel_id, broker_id = @broker_id, transaction_type = @transaction_type, 
+        SET aandeel_id = @aandeel_id, broker_id = @broker_id, transaction_type = @transaction_type, 
             quantity = @quantity, currency = @currency, price = @price, purchase_time = @purchase_time, 
             fees = @fees, taxes = @taxes, exchange_rate = @exchange_rate, updated_at = GETDATE()
-        WHERE id = @id
+        WHERE id = @id AND user_id = @user_id
       `);
     
     if (result.rowsAffected[0] > 0) {
@@ -1714,6 +1725,10 @@ const updateTransaction = async (req, res) => {
 
 const addMultipleTransactions = async (req, res) => {
   try {
+    if (req.user?.role === 'demo') {
+      return res.status(403).json({ message: 'Demo-account kan geen transacties importeren.' });
+    }
+    const effectiveUserId = getEffectiveUserId(req);
     const { transactions } = req.body;
     if (!transactions || !Array.isArray(transactions)) {
         return res.status(400).json({ message: 'Geen geldige transacties meegegeven.' });
@@ -1828,7 +1843,7 @@ const addMultipleTransactions = async (req, res) => {
 
           // 2. Duplicaat check op datum, aandeel, type, qty en prijs
           const duplicateCheck = await pool.request()
-            .input('user_id', sql.Int, t.user_id || 1)
+            .input('user_id', sql.Int, effectiveUserId)
             .input('aandeel_id', sql.Int, isCash ? null : aandeel_id)
             .input('broker_id', sql.Int, t.broker_id || null)
             .input('transaction_type', sql.VarChar, t.transaction_type)
@@ -1856,7 +1871,7 @@ const addMultipleTransactions = async (req, res) => {
 
           // 3. Invoegen in PF_transactions
           await pool.request()
-            .input('user_id', sql.Int, t.user_id || 1)
+            .input('user_id', sql.Int, effectiveUserId)
             .input('aandeel_id', sql.Int, aandeel_id)
             .input('broker_id', sql.Int, t.broker_id || 1)
             .input('transaction_type', sql.VarChar, t.transaction_type)
@@ -1887,9 +1902,8 @@ const addMultipleTransactions = async (req, res) => {
         fetchAndStorePricesForStock(aandeel_id);
     }
 
-    clearPortfolioCache();
-    const importedUserId = transactions?.[0]?.user_id || req.user?.userID || 1;
-    await autoSyncBrokerBalancesInternal(importedUserId).catch(e => console.warn('Auto cash sync error:', e.message));
+    clearPortfolioCache(effectiveUserId);
+    await autoSyncBrokerBalancesInternal(effectiveUserId).catch(e => console.warn('Auto cash sync error:', e.message));
 
     res.status(200).json({ 
         message: `Import voltooid! Toegevoegd: ${added}, Duplicaten overgeslagen: ${duplicates}, Fouten/Niet herkend: ${errors}.`,
@@ -1905,12 +1919,22 @@ const addMultipleTransactions = async (req, res) => {
 
 const deleteTransaction = async (req, res) => {
   try {
+    if (req.user?.role === 'demo') {
+      return res.status(403).json({ message: 'Demo-account kan geen transacties verwijderen.' });
+    }
     const { id } = req.params;
     const { force = false } = req.query;
+    const userId = getEffectiveUserId(req);
     const pool = await sql.connect(config);
 
-    // Controleer of transactie afkomstig is van een broker import
-    const existing = await pool.request().input('id', sql.Int, id).query('SELECT import_source FROM PF_transactions WHERE id = @id');
+    // Controleer of transactie van deze gebruiker is en of hij afkomstig is van een broker import
+    const existing = await pool.request()
+      .input('id', sql.Int, id)
+      .input('user_id', sql.Int, userId)
+      .query('SELECT import_source FROM PF_transactions WHERE id = @id AND user_id = @user_id');
+    if (existing.recordset.length === 0) {
+      return res.status(404).json({ message: 'Transactie niet gevonden voor deze gebruiker.' });
+    }
     if (existing.recordset.length > 0) {
       const src = existing.recordset[0].import_source;
       if (src && src !== 'manual' && String(force) !== 'true') {
@@ -1922,11 +1946,12 @@ const deleteTransaction = async (req, res) => {
 
     const result = await pool.request()
       .input('id', sql.Int, id)
-      .query('DELETE FROM PF_transactions WHERE id = @id');
+      .input('user_id', sql.Int, userId)
+      .query('DELETE FROM PF_transactions WHERE id = @id AND user_id = @user_id');
 
     if (result.rowsAffected[0] > 0) {
-      clearPortfolioCache();
-      autoSyncBrokerBalancesInternal(1).catch(e => console.warn('Auto cash sync error:', e.message));
+      clearPortfolioCache(userId);
+      autoSyncBrokerBalancesInternal(userId).catch(e => console.warn('Auto cash sync error:', e.message));
       res.status(200).json({ message: 'Transactie succesvol verwijderd.' });
     } else {
       res.status(404).json({ message: 'Transactie niet gevonden.' });
@@ -1939,20 +1964,22 @@ const deleteTransaction = async (req, res) => {
 
 const markTobPaid = async (req, res) => {
   try {
+      const userId = getEffectiveUserId(req);
       const { transactionIds, isPaid } = req.body;
       if (!transactionIds || !Array.isArray(transactionIds) || transactionIds.length === 0) {
           return res.status(400).json({ message: 'Geen transacties opgegeven.' });
       }
       
       const pool = await sql.connect(config);
-      // Filter zodat we enkel getallen hebben om SQL-injecties te voorkomen
       const cleanIds = transactionIds.map(id => parseInt(id)).filter(id => !isNaN(id));
       if (cleanIds.length === 0) return res.status(400).json({ message: 'Ongeldige IDs.' });
       
       await pool.request()
           .input('isPaid', sql.Bit, isPaid ? 1 : 0)
-          .query(`UPDATE PF_transactions SET tob_paid = @isPaid WHERE id IN (${cleanIds.join(',')})`);
+          .input('user_id', sql.Int, userId)
+          .query(`UPDATE PF_transactions SET tob_paid = @isPaid WHERE user_id = @user_id AND id IN (${cleanIds.join(',')})`);
           
+      clearPortfolioCache(userId);
       res.status(200).json({ message: 'TOB status succesvol bijgewerkt.' });
   } catch (error) {
       console.error('Fout bij updaten TOB status:', error);
@@ -1962,7 +1989,8 @@ const markTobPaid = async (req, res) => {
 
 const getPortfolioReturnsDynamics = async (req, res) => {
     try {
-        const { userId, period, customStartDate, customEndDate, currency, periodGrouping = 'monthly' } = req.query;
+        const userId = getEffectiveUserId(req);
+        const { period, customStartDate, customEndDate, currency, periodGrouping = 'monthly' } = req.query;
 
         const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
         const isEur = currency === 'EUR';
@@ -2312,7 +2340,7 @@ const applyStockSplit = async (req, res) => {
 };
 
 const getBenchmarkHistory = async (req, res) => {
-    const userId = 1; // Haal dit uit sessie/JWT of default
+    const userId = getEffectiveUserId(req);
     const { ticker = 'SPY', displayCurrency = 'USD' } = req.query;
     const yahooTicker = ticker.toUpperCase().trim();
     const cacheKey = `bench_${userId}_${yahooTicker}_${displayCurrency}`;
@@ -2664,14 +2692,16 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             ORDER BY aandeel_id, date ASC;
         `;
 
-        // 4. balanceQuery voor actuele cash
+        // 4. balanceQuery voor actuele cash van deze gebruiker
         const balanceQuery = `
             SELECT SUM(amount) as total
             FROM AvailableBalances ab
-            WHERE ab.update_date = (
+            WHERE ab.user_id = @userId
+              AND ab.update_date = (
                 SELECT MAX(update_date)
                 FROM AvailableBalances ab2
-                WHERE ab2.balance_type_id = ab.balance_type_id
+                WHERE ab2.user_id = @userId
+                  AND ab2.balance_type_id = ab.balance_type_id
             )
         `;
 
@@ -2734,7 +2764,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             pool.request().query(allCalcsQuery),
             pool.request().query(fundamentalsQuery),
             pool.request().query(pricesQuery),
-            pool.request().query(balanceQuery),
+            pool.request().input('userId', sql.Int, userId).query(balanceQuery),
             pool.request().input('userId', sql.Int, userId).query(userTxQuery),
             pool.request().query(recentAlertsQuery),
             pool.request().input('userId', sql.Int, userId).query(etfTxQuery)
@@ -4210,9 +4240,78 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
     }
 };
 
+// Filter gevoelige DCF- en waardeverdelingsformules weg voor gebruikers die geen formule-toegang hebben (Black-Box IP bescherming)
+const sanitizeAdvisorDataForUser = (data, canViewFormulas = false) => {
+    if (canViewFormulas || !data) return data;
+
+    const scrubFormulaText = (str) => {
+        if (!str || typeof str !== 'string') return str;
+        return str
+            // Vervang exacte "Waardeverdeling (is )?(recent )?gedaald van X% naar Y% (Z% verschil, -W%)" door Black-Box beschrijving
+            .replace(/Waardeverdeling (?:is )?(?:recent )?gedaald van [\d.,]+% naar [\d.,]+%(?: \([^)]*\))?/gi, 'Strategie-kwaliteitsweging is in het nieuwste kwartaal gedaald')
+            // Vervang "(Overgewaardeerd 1.4x: Geen Aankoop)" door "(Overgewaardeerd: Geen Aankoop)"
+            .replace(/Overgewaardeerd\s+[\d.,]+x/gi, 'Overgewaardeerd')
+            // Vervang "Koers (1.45x intrinsiek)" of "noteert 1.45x intrinsieke waarde (> 1.3x)"
+            .replace(/\([\d.,]+x\s*intrinsiek(?:e waarde)?\)/gi, '(boven waarderingsgrens)')
+            .replace(/noteer(?:t|de)\s+[\d.,]+x\s*(?:de\s+)?intrinsieke?(?:\s+waarde)?(?:\s*\([^)]*\))?/gi, 'noteert boven de waarderingsgrens van de strategie')
+            .replace(/boven\s+(?:hun\s+)?intrinsieke\s+waarde\s*\([^)]*\)/gi, 'boven de waarderingsgrens van de strategie')
+            // Vervang "met 18% intrinsieke korting" of "18% korting" of "1.12x"
+            .replace(/met\s+-?[\d.,]+%\s+intrinsieke\s+korting/gi, 'met gunstige waardering binnen de strategie')
+            .replace(/,\s*-?[\d.,]+%\s+korting/gi, ', gunstig gewaardeerd')
+            .replace(/,\s*[\d.,]+x\)/gi, ', gunstig gewaardeerd)');
+    };
+
+    const stripFormulaFields = (obj) => {
+        if (!obj || typeof obj !== 'object') return obj;
+        const copy = { ...obj };
+        copy.isUndervalued = copy.discountPct !== undefined
+            ? copy.discountPct >= 0
+            : (copy.priceToIntrinsicRatio !== undefined && copy.priceToIntrinsicRatio !== null ? copy.priceToIntrinsicRatio <= 1.3 : true);
+        delete copy.intrinsicValue;
+        delete copy.waardeVerdeling;
+        delete copy.prevWaardeVerdeling;
+        delete copy.wvHistory;
+        delete copy.wvDiff;
+        delete copy.wvDiffPct;
+        delete copy.priceToIntrinsicRatio;
+        delete copy.discountPct;
+        delete copy.debtRatio;
+
+        if (copy.actionReason) copy.actionReason = scrubFormulaText(copy.actionReason);
+        if (copy.warning) copy.warning = scrubFormulaText(copy.warning);
+        if (copy.cautionReason) copy.cautionReason = scrubFormulaText(copy.cautionReason);
+        if (copy.cautionNotice) copy.cautionNotice = scrubFormulaText(copy.cautionNotice);
+        if (copy.note) copy.note = scrubFormulaText(copy.note);
+        if (copy.timingTrigger) copy.timingTrigger = scrubFormulaText(copy.timingTrigger);
+        if (copy.rationale) copy.rationale = scrubFormulaText(copy.rationale);
+        if (copy.description) copy.description = scrubFormulaText(copy.description);
+        if (copy.badge) copy.badge = scrubFormulaText(copy.badge);
+        if (copy.fundingSource && typeof copy.fundingSource === 'object') {
+            copy.fundingSource = {
+                ...copy.fundingSource,
+                badge: scrubFormulaText(copy.fundingSource.badge),
+                message: scrubFormulaText(copy.fundingSource.message)
+            };
+        }
+        return copy;
+    };
+
+    return {
+        ...data,
+        isBlackBoxMode: true,
+        holdings: Array.isArray(data.holdings) ? data.holdings.map(stripFormulaFields) : [],
+        idealPortfolio: Array.isArray(data.idealPortfolio) ? data.idealPortfolio.map(stripFormulaFields) : [],
+        topBuyCandidates: Array.isArray(data.topBuyCandidates) ? data.topBuyCandidates.map(stripFormulaFields) : [],
+        dataDrivenAlerts: Array.isArray(data.dataDrivenAlerts) ? data.dataDrivenAlerts.map(stripFormulaFields) : [],
+        timeline: Array.isArray(data.timeline) ? data.timeline.map(stripFormulaFields) : [],
+        exactActions: Array.isArray(data.exactActions) ? data.exactActions.map(stripFormulaFields) : [],
+        actionItems: Array.isArray(data.actionItems) ? data.actionItems.map(stripFormulaFields) : [],
+    };
+};
+
 const getStrategyAdvisorData = async (req, res) => {
     try {
-        const userId = req.query.userId || req.user?.id || 1;
+        const userId = getEffectiveUserId(req);
         const data = await calculateStrategyAdvisorInternal(userId, {
             currency: req.query.currency,
             maxPriceToIntrinsic: req.query.maxPriceToIntrinsic,
@@ -4220,7 +4319,21 @@ const getStrategyAdvisorData = async (req, res) => {
             maxDebtRatio: req.query.maxDebtRatio,
             forceRefresh: req.query.forceRefresh === 'true'
         });
-        res.json(data);
+
+        let canViewFormulas = isAdminUser(req);
+        if (!canViewFormulas && req.user) {
+            const pool = await sql.connect(config);
+            const uRes = await pool.request()
+                .input('id', sql.Int, req.user.actualUserId || userId)
+                .query('SELECT role, strategy_mode, permissions FROM PF_Users WHERE id = @id');
+            if (uRes.recordset.length > 0) {
+                const u = uRes.recordset[0];
+                const perms = buildUserPermissions(u.role, u.strategy_mode, u.permissions, req.user.actualUserId || userId);
+                canViewFormulas = !!perms.canViewFormulas;
+            }
+        }
+
+        res.json(sanitizeAdvisorDataForUser(data, canViewFormulas));
     } catch (err) {
         res.status(500).json({ message: 'Fout bij genereren Strategy Advisor data', error: err.message });
     }
@@ -4291,11 +4404,12 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
                 WHERE t.user_id = @user_id AND s.aandeel_id IN (48, 49, 50, 39, 56)
                 ORDER BY t.purchase_time DESC
             `),
-            pool.request().query(`
+            pool.request().input('user_id', sql.Int, userId).query(`
                 SELECT SUM(amount) as total
                 FROM AvailableBalances ab
-                WHERE ab.update_date = (
-                    SELECT MAX(update_date) FROM AvailableBalances ab2 WHERE ab2.balance_type_id = ab.balance_type_id
+                WHERE ab.user_id = @user_id
+                  AND ab.update_date = (
+                    SELECT MAX(update_date) FROM AvailableBalances ab2 WHERE ab2.user_id = @user_id AND ab2.balance_type_id = ab.balance_type_id
                 )
             `),
             ...etfConfigs.map(etf => pool.request().input('stock_id', sql.Int, etf.stockId).query(`
@@ -4831,7 +4945,7 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
 
 const getEtfStrategyData = async (req, res) => {
     try {
-        const userId = req.query.userId || req.user?.id || 1;
+        const userId = getEffectiveUserId(req);
         const data = await calculateEtfStrategyInternal(userId, {
             monthlyBudget: req.query.monthlyBudget,
             initialPot: req.query.initialPot,

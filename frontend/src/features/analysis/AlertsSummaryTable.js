@@ -64,6 +64,18 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
     const [popupPosition, setPopupPosition] = useState({ x: 0, y: 0 });
 
     const isIncognito = useIncognito();
+    const canViewFormulas = useMemo(() => {
+        const uid = Number(localStorage.getItem('userID') || 0);
+        const role = localStorage.getItem('role') || 'user';
+        if (uid === 1 || role === 'admin') return true;
+        try {
+            const raw = localStorage.getItem('user_permissions');
+            const perms = raw ? JSON.parse(raw) : {};
+            return !!perms.canViewFormulas;
+        } catch (e) {
+            return false;
+        }
+    }, []);
 
     const ALL_COLUMNS = useMemo(() => [
         { key: 'name', label: 'Aandeel', sortable: true, type: 'string' },
@@ -121,9 +133,11 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
         const score5Ids = new Set();
 
         data.forEach(item => {
-            const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
-                ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
-                : 0;
+            const percentage = item.ideal_weight_pct != null
+                ? Number(item.ideal_weight_pct)
+                : (totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
+                    ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
+                    : 0);
             
             const ideal_invested = (percentage / 100) * totalActualValue;
             const holding = holdings.find(h => h.ticker === item.ticker_symbol);
@@ -155,7 +169,7 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                 http.get('/calculations/summary-by-date', {
                     params: { date: today }
                 }),
-                http.get('/portfolio/holdings?userId=1')
+                http.get('/portfolio/holdings')
             ]);
             applyCalculationContext(response.data || [], holdingsResponse.data || []);
         } catch (err) {
@@ -361,6 +375,9 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                                 return value != null ? `€${Number(value).toFixed(2)}` : 'N/A';
                                             case 'trade_amount':
                                                 if (item.type_melding === 'Verkoopsignaal') {
+                                                    if (value == null) {
+                                                        return <span className={`${badgeBase} bg-red-100 text-red-800`}>Deelverkoop</span>;
+                                                    }
                                                     const pct = value * 100;
                                                     return <span className={`${badgeBase} bg-red-100 text-red-800 privacy-blur`}>{pct.toFixed(2)}%</span>;
                                                 }
@@ -369,9 +386,9 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                                                 const adjustedValue = value != null ? value * (calcContext.percentage / 100) / 10 * calcContext.weight_factor : null;
                                                 return (
                                                     <div 
-                                                        className="cursor-help underline decoration-dotted decoration-gray-400"
-                                                        onMouseEnter={(e) => handleMouseEnterAmount(e, item)}
-                                                        onMouseLeave={handleMouseLeaveAmount}
+                                                        className={canViewFormulas ? "cursor-help underline decoration-dotted decoration-gray-400" : ""}
+                                                        onMouseEnter={(e) => canViewFormulas && handleMouseEnterAmount(e, item)}
+                                                        onMouseLeave={() => canViewFormulas && handleMouseLeaveAmount()}
                                                     >
                                                         {adjustedValue != null ? <span className="privacy-blur">{isIncognito ? '€ ••••••' : `€${Number(adjustedValue).toFixed(2)}`}</span> : 'N/A'}
                                                     </div>

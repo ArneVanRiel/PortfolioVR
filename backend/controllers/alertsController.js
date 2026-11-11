@@ -1,5 +1,24 @@
 const sql = require('mssql');
 const dbConfig = require('../config/database');
+const { getEffectiveUserId, isAdminUser, buildUserPermissions } = require('../middleware/authMiddleware');
+
+async function canRequesterViewFormulas(req, pool) {
+    if (!req || !req.user) return true;
+    if (isAdminUser(req.user)) return true;
+    const uid = getEffectiveUserId(req);
+    if (uid === 1) return true;
+    try {
+        const dbPool = pool || await sql.connect(dbConfig);
+        const userRes = await dbPool.request()
+            .input('uid', sql.Int, uid)
+            .query('SELECT id, role, strategy_mode, permissions FROM PF_Users WHERE id = @uid');
+        if (userRes.recordset.length === 0) return false;
+        const perms = buildUserPermissions(userRes.recordset[0]);
+        return !!perms.canViewFormulas;
+    } catch (e) {
+        return false;
+    }
+}
 
 exports.getAllAlerts = async (req, res) => {
     const { stockId, type, ticker, page = 1, limit = 10 } = req.query;
@@ -71,9 +90,18 @@ exports.getAllAlerts = async (req, res) => {
         
         // Re-using the same request object is fine as long as the parameters are not cleared and are needed for both queries.
         const dataResult = await request.query(dataQuery);
+        const canViewFormulas = await canRequesterViewFormulas(req, pool);
+        const alerts = canViewFormulas
+            ? dataResult.recordset
+            : dataResult.recordset.map(r => ({
+                ...r,
+                is_wv_dropping: r.diff_percentage !== null && r.diff_percentage < 0,
+                diff_percentage: r.diff_percentage === null ? null : (r.diff_percentage < 0 ? -1 : (r.diff_percentage > 0 ? 1 : 0)),
+                trade_amount: (r.type_melding === 'Verkoopsignaal' && r.signal_line_value === null) ? null : r.trade_amount
+            }));
 
         res.status(200).json({
-            alerts: dataResult.recordset,
+            alerts,
             totalCount,
             totalPages: Math.ceil(totalCount / limitNum),
             currentPage: pageNum

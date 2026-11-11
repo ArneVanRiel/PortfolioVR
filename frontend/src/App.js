@@ -71,10 +71,46 @@ const MobileBottomLink = ({ to, iconClass, children, isActive, onClick }) => {
   );
 };
 
+const getStoredPermissions = () => {
+  const uid = Number(localStorage.getItem('userID'));
+  const role = localStorage.getItem('role') || 'user';
+  if (uid === 1 || role === 'admin') {
+    return {
+      canViewDashboard: true,
+      canViewPortfolio: true,
+      canUseStockStrategy: true,
+      canUseEtfStrategy: true,
+      canViewAnalysis: true,
+      canViewScreener: true,
+      canViewFormulas: true,
+      canEditSystemData: true,
+      canReceiveStrategyAlerts: true,
+    };
+  }
+  try {
+    const raw = localStorage.getItem('user_permissions');
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return {
+    canViewDashboard: true,
+    canViewPortfolio: true,
+    canUseStockStrategy: true,
+    canUseEtfStrategy: true,
+    canViewAnalysis: true,
+    canViewScreener: false,
+    canViewFormulas: false,
+    canEditSystemData: false,
+    canReceiveStrategyAlerts: true,
+  };
+};
+
 function App() {
-  const userRole = localStorage.getItem('role') || 'user';
+  const [userID, setUserID] = useState(() => Number(localStorage.getItem('userID')) || 0);
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('role') || 'user');
+  const [permissions, setPermissions] = useState(getStoredPermissions);
+
   const isDemo = userRole === 'demo';
-  const isAdmin = userRole === 'admin';
+  const isAdmin = userID === 1 || userRole === 'admin';
 
   const [activeTab, setActiveTab] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -83,6 +119,45 @@ function App() {
   const [isIncognito, setIsIncognito] = useState(isDemo || localStorage.getItem('incognito') === 'true');
   const location = useLocation();
   const navigate = useNavigate();
+
+  // Synchroniseer bij laden van de app altijd de actuele rechten van de gebruiker vanaf de server
+  useEffect(() => {
+    const syncAuthSession = async () => {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      try {
+        const res = await http.get('/auth/me');
+        if (res.data) {
+          const { userID: uid, role, strategy_mode, permissions: perms, username, default_currency } = res.data;
+          localStorage.setItem('userID', uid);
+          localStorage.setItem('role', role);
+          if (username) localStorage.setItem('username', username);
+          if (strategy_mode) localStorage.setItem('strategy_mode', strategy_mode);
+          if (default_currency) localStorage.setItem('preferred_currency', default_currency);
+          if (perms) localStorage.setItem('user_permissions', JSON.stringify(perms));
+          setUserID(Number(uid));
+          setUserRole(role);
+          setPermissions(getStoredPermissions());
+          window.dispatchEvent(new Event('permissionsUpdated'));
+        }
+      } catch (err) {
+        if (err.response?.status === 401 || err.response?.status === 403) {
+          localStorage.removeItem('token');
+          navigate('/login');
+        }
+      }
+    };
+
+    syncAuthSession();
+    const onAuthChanged = () => {
+      setUserID(Number(localStorage.getItem('userID')) || 0);
+      setUserRole(localStorage.getItem('role') || 'user');
+      setPermissions(getStoredPermissions());
+      syncAuthSession();
+    };
+    window.addEventListener('authChanged', onAuthChanged);
+    return () => window.removeEventListener('authChanged', onAuthChanged);
+  }, [navigate]);
 
   // Functies voor zoekmodal
   const handleOpenSearchModal = () => setShowSearchModal(true);
@@ -105,6 +180,8 @@ function App() {
     localStorage.removeItem('userID');
     localStorage.removeItem('role');
     localStorage.removeItem('username');
+    localStorage.removeItem('strategy_mode');
+    localStorage.removeItem('user_permissions');
     setDropdownOpen(false);
     navigate('/login');
   };
@@ -206,8 +283,8 @@ function App() {
               {/* Data & Sync Status Indicator */}
               {!isDemo && <DataStatusIndicator />}
 
-              {/* Meldingen element */}
-              {!isDemo && <NotificationBell />}
+              {/* Meldingen element (alleen als gebruiker strategie-meldingen mag ontvangen of Admin is) */}
+              {!isDemo && (isAdmin || permissions.canReceiveStrategyAlerts !== false) && <NotificationBell />}
 
               {/* Gebruikersprofiel en dropdown */}
               <div
@@ -264,9 +341,15 @@ function App() {
             </div>
             
             <nav className="flex flex-col flex-1 gap-2">
-              <SidebarLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')} isSidebarPinned={isSidebarPinned}>Dashboard</SidebarLink>
-              <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analysis</SidebarLink>
-              <SidebarLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')} isSidebarPinned={isSidebarPinned}>Portfolio</SidebarLink>
+              {(isAdmin || permissions.canViewDashboard !== false) && (
+                <SidebarLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')} isSidebarPinned={isSidebarPinned}>Dashboard</SidebarLink>
+              )}
+              {(isAdmin || permissions.canViewAnalysis !== false) && (
+                <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analysis</SidebarLink>
+              )}
+              {(isAdmin || permissions.canViewPortfolio !== false) && (
+                <SidebarLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')} isSidebarPinned={isSidebarPinned}>Portfolio</SidebarLink>
+              )}
               
               {isAdmin && (
                 <div className="mt-auto mb-2">
@@ -283,13 +366,13 @@ function App() {
             <Routes>
               <Route path='/login' element={<LoginPageTest/>} />
               <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
-              <Route path='/dashboard' element={<ProtectedRoute><Dashboard/></ProtectedRoute>} />
-              <Route path='/analysis/*' element={<ProtectedRoute><Analysis /></ProtectedRoute>} />
+              <Route path='/dashboard' element={<ProtectedRoute>{(isAdmin || permissions.canViewDashboard !== false) ? <Dashboard/> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
+              <Route path='/analysis/*' element={<ProtectedRoute>{(isAdmin || permissions.canViewAnalysis !== false) ? <Analysis /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager/></ProtectedRoute>} />
-              <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings/> : <Navigate to="/dashboard" replace />}</ProtectedRoute>} />
+              <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings/> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/profile' element={<ProtectedRoute><Profile/></ProtectedRoute>} />
-              {/* Fallback route voor onbekende urls -> verwijst naar dashboard wat dan de token check doet */}
-              <Route path='*' element={<Navigate to="/dashboard" replace />} />
+              {/* Fallback route voor onbekende urls */}
+              <Route path='*' element={<Navigate to={(isAdmin || permissions.canViewDashboard !== false) ? "/dashboard" : "/portfolio"} replace />} />
             </Routes>
           </div>
         </main>
@@ -297,9 +380,15 @@ function App() {
         {/* Mobile Bottom Navigation */}
         {!isLoginPage && (
           <nav className="md:hidden bg-white border-t border-gray-200 flex flex-row justify-around z-50 w-full h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)]">
-            <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')}>Dashboard</MobileBottomLink>
-            <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')}>Analysis</MobileBottomLink>
-            <MobileBottomLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')}>Portfolio</MobileBottomLink>
+            {(isAdmin || permissions.canViewDashboard !== false) && (
+              <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')}>Dashboard</MobileBottomLink>
+            )}
+            {(isAdmin || permissions.canViewAnalysis !== false) && (
+              <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')}>Analysis</MobileBottomLink>
+            )}
+            {(isAdmin || permissions.canViewPortfolio !== false) && (
+              <MobileBottomLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')}>Portfolio</MobileBottomLink>
+            )}
             
             {isAdmin && (
               <MobileBottomLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')}>Settings</MobileBottomLink>

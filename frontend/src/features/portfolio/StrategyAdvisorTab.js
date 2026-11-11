@@ -106,6 +106,22 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDro
 
 const StrategyAdvisorTab = () => {
   const uid = localStorage.getItem('userID') || 1;
+  const userRole = localStorage.getItem('role') || 'user';
+  const isAdmin = Number(uid) === 1 || userRole === 'admin';
+  const userPermissions = useMemo(() => {
+    if (isAdmin) {
+      return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: true };
+    }
+    try {
+      const saved = localStorage.getItem('user_permissions');
+      return saved ? JSON.parse(saved) : { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
+    } catch {
+      return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
+    }
+  }, [isAdmin]);
+  const canUseStocks = isAdmin || userPermissions.canUseStockStrategy !== false;
+  const canUseEtf = isAdmin || userPermissions.canUseEtfStrategy !== false;
+
   const [data, setData] = useState(() => {
     try {
       const cached = localStorage.getItem(`cached_strategy_advisor_stocks_${uid}`);
@@ -128,7 +144,7 @@ const StrategyAdvisorTab = () => {
   const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'ACTIONABLE' | 'CAUTION' | 'SELL' | 'ROTATION'
   const [matrixFilter, setMatrixFilter] = useState('ALL');
   const [showTimingRules, setShowTimingRules] = useState(false);
-  const [strategyType, setStrategyType] = useState('stocks'); // 'stocks' | 'etf'
+  const [strategyType, setStrategyType] = useState(() => (canUseStocks ? 'stocks' : 'etf')); // 'stocks' | 'etf'
   const [isCashWidgetOpen, setIsCashWidgetOpen] = useState(false);
 
   const isIncognito = useIncognito();
@@ -283,8 +299,10 @@ const StrategyAdvisorTab = () => {
     dataDrivenAlerts = [],
     idealPortfolio = [],
     holdings = [],
-    dataFreshness
+    dataFreshness,
+    isBlackBoxMode = false
   } = data;
+  const hideFormulas = !isAdmin && (isBlackBoxMode || !userPermissions.canViewFormulas);
 
   const filteredAlerts = dataDrivenAlerts.filter(a => {
     const matchesSearch = a.ticker.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -393,7 +411,7 @@ const StrategyAdvisorTab = () => {
             <div className="flex items-center justify-between">
               <span className="text-[11px] font-bold text-gray-700 flex items-center gap-1.5">
                 <i className="ph-bold ph-chart-line text-indigo-600"></i>
-                Waardeverdeling Trend (Kwartalen):
+                {hideFormulas ? 'Strategie Kwaliteitstrend:' : 'Waardeverdeling Trend (Kwartalen):'}
               </span>
               {!isBuy ? (
                 <span className="text-[10px] text-rose-700 font-bold">
@@ -408,24 +426,38 @@ const StrategyAdvisorTab = () => {
               )}
             </div>
 
-            <WvSparkline
-              history={alert.wvHistory || []}
-              currentWv={alert.waardeVerdeling}
-              prevWv={alert.prevWaardeVerdeling}
-              wvDiff={alert.wvDiff}
-              wvDiffPct={alert.wvDiffPct}
-              isDropping={isWvDropping}
-            />
-
-            {/* Expliciete Waarschuwing bij Daling */}
-            {isWvDropping && alert.prevWaardeVerdeling !== null && (
-              <div className="p-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-[11px] flex items-start gap-1.5 leading-tight">
-                <i className="ph-fill ph-trend-down text-rose-600 text-sm shrink-0 mt-0.5"></i>
-                <span>
-                  <strong>Waardeverdeling gezakt:</strong> Van {alert.prevWaardeVerdeling.toFixed(1)}% naar {alert.waardeVerdeling.toFixed(1)}% 
-                  <strong className="text-rose-700"> ({alert.wvDiff < 0 ? alert.wvDiff.toFixed(1) : `-${alert.wvDiff}`}% / {alert.wvDiffPct.toFixed(1)}%)</strong>.
+            {hideFormulas ? (
+              <div className="flex items-center justify-between pt-0.5">
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-bold border ${
+                  isWvDropping
+                    ? 'bg-rose-50 text-rose-800 border-rose-200'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                }`}>
+                  {isWvDropping ? '📉 Dalende Kwaliteitstrend (Kwartaal)' : '📈 Stabiele / Stijgende Kwaliteitstrend'}
                 </span>
               </div>
+            ) : (
+              <>
+                <WvSparkline
+                  history={alert.wvHistory || []}
+                  currentWv={alert.waardeVerdeling}
+                  prevWv={alert.prevWaardeVerdeling}
+                  wvDiff={alert.wvDiff}
+                  wvDiffPct={alert.wvDiffPct}
+                  isDropping={isWvDropping}
+                />
+
+                {/* Expliciete Waarschuwing bij Daling */}
+                {isWvDropping && alert.prevWaardeVerdeling !== null && alert.prevWaardeVerdeling !== undefined && (
+                  <div className="p-2 rounded-xl bg-rose-50 border border-rose-200 text-rose-900 text-[11px] flex items-start gap-1.5 leading-tight">
+                    <i className="ph-fill ph-trend-down text-rose-600 text-sm shrink-0 mt-0.5"></i>
+                    <span>
+                      <strong>Waardeverdeling gezakt:</strong> Van {alert.prevWaardeVerdeling.toFixed(1)}% naar {alert.waardeVerdeling?.toFixed(1)}% 
+                      <strong className="text-rose-700"> ({alert.wvDiff < 0 ? alert.wvDiff?.toFixed(1) : `-${alert.wvDiff}`}% / {alert.wvDiffPct?.toFixed(1)}%)</strong>.
+                    </span>
+                  </div>
+                )}
+              </>
             )}
           </div>
 
@@ -437,17 +469,25 @@ const StrategyAdvisorTab = () => {
             </div>
 
             <div className="bg-white p-2.5 rounded-xl border border-gray-200 flex flex-col justify-between">
-              <span className="text-[10px] text-gray-400 font-bold uppercase">Waardering (x Intr.)</span>
-              <span className={`font-black ${
-                alert.priceToIntrinsicRatio <= 1.0 
-                  ? 'text-emerald-700' 
-                  : alert.priceToIntrinsicRatio <= 1.3 
-                  ? 'text-teal-700' 
-                  : 'text-amber-800'
-              }`}>
-                {alert.priceToIntrinsicRatio ? `${alert.priceToIntrinsicRatio.toFixed(2)}x` : '-'}
-                {alert.isOvervalued && <span className="text-[10px] font-bold text-amber-700 block">(Overgewaardeerd)</span>}
+              <span className="text-[10px] text-gray-400 font-bold uppercase">
+                {hideFormulas ? 'Waardering Status' : 'Waardering (x Intr.)'}
               </span>
+              {hideFormulas ? (
+                <span className={`font-black ${alert.isOvervalued ? 'text-amber-800' : 'text-emerald-700'}`}>
+                  {alert.isOvervalued ? '⚠️ Overgewaardeerd' : '🟢 Koopwaardig'}
+                </span>
+              ) : (
+                <span className={`font-black ${
+                  alert.priceToIntrinsicRatio <= 1.0 
+                    ? 'text-emerald-700' 
+                    : alert.priceToIntrinsicRatio <= 1.3 
+                    ? 'text-teal-700' 
+                    : 'text-amber-800'
+                }`}>
+                  {alert.priceToIntrinsicRatio ? `${alert.priceToIntrinsicRatio.toFixed(2)}x` : '-'}
+                  {alert.isOvervalued && <span className="text-[10px] font-bold text-amber-700 block">(Overgewaardeerd)</span>}
+                </span>
+              )}
             </div>
           </div>
 
@@ -682,43 +722,45 @@ const StrategyAdvisorTab = () => {
     <div className="space-y-3 sm:space-y-6 animate-fade-in">
       
       {/* HOOFDSTRATEGIE SELECTOR: Losse Aandelen vs ETF DCA Strategie */}
-      <div className="flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 bg-slate-900/5 border border-slate-200 rounded-xl sm:rounded-3xl">
-        <button
-          onClick={() => setStrategyType('stocks')}
-          className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
-            strategyType === 'stocks'
-              ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
-              : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
-          }`}
-        >
-          <i className="ph-fill ph-diamonds-four text-xs sm:text-base text-amber-300"></i>
-          <span>Losse Aandelen</span>
-          <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
-            strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
-          }`}>
-            Score 5 & Waardeverdeling
-          </span>
-        </button>
+      {(canUseStocks && canUseEtf) && (
+        <div className="flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 bg-slate-900/5 border border-slate-200 rounded-xl sm:rounded-3xl">
+          <button
+            onClick={() => setStrategyType('stocks')}
+            className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
+              strategyType === 'stocks'
+                ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
+                : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+            }`}
+          >
+            <i className="ph-fill ph-diamonds-four text-xs sm:text-base text-amber-300"></i>
+            <span>Losse Aandelen</span>
+            <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
+              strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
+            }`}>
+              Score 5 & Waardeverdeling
+            </span>
+          </button>
 
-        <button
-          onClick={() => setStrategyType('etf')}
-          className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
-            strategyType === 'etf'
-              ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
-              : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
-          }`}
-        >
-          <i className="ph-fill ph-chart-line-up text-xs sm:text-base text-emerald-300"></i>
-          <span>ETF DCA</span>
-          <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
-            strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
-          }`}>
-            4 ETF's • €450/mnd
-          </span>
-        </button>
-      </div>
+          <button
+            onClick={() => setStrategyType('etf')}
+            className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
+              strategyType === 'etf'
+                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
+                : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+            }`}
+          >
+            <i className="ph-fill ph-chart-line-up text-xs sm:text-base text-emerald-300"></i>
+            <span>ETF DCA</span>
+            <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
+              strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
+            }`}>
+              4 ETF's • €450/mnd
+            </span>
+          </button>
+        </div>
+      )}
 
-      {strategyType === 'etf' ? (
+      {(strategyType === 'etf' || !canUseStocks) ? (
         <EtfStrategyAdvisor />
       ) : (
         <>
@@ -738,6 +780,12 @@ const StrategyAdvisorTab = () => {
                 <span className={`w-2 h-2 rounded-full ${dataFreshness.isUpdatedToday ? 'bg-emerald-400' : 'bg-amber-400 animate-pulse'}`}></span>
                 <span>{dataFreshness.isUpdatedToday ? `🟢 Up-to-date (${dataFreshness.lastUpdatedDate})` : `⚠️ Laatste data: ${dataFreshness.lastUpdatedDate} (Update aanbevolen)`}</span>
               </span>
+              {hideFormulas && (
+                <span className="px-2.5 py-0.5 bg-purple-500/20 text-purple-200 rounded-full text-[10px] sm:text-xs font-bold border border-purple-400/30 flex items-center gap-1.5">
+                  <i className="ph-fill ph-shield-check text-purple-300"></i>
+                  <span>Arne's Strategie Advies</span>
+                </span>
+              )}
             </div>
             
             <h1 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight">
@@ -976,7 +1024,9 @@ const StrategyAdvisorTab = () => {
                 🟢 Kolom 1: Directe Koopkansen
               </div>
               <p className="leading-relaxed">
-                MACD koopsignalen voor <strong>Score 5/5</strong> aandelen die <strong>ondergewaardeerd zijn ($\le 1.3\times$ intrinsieke waarde)</strong> én waarvan de Waardeverdeling stabiel is of stijgt. Dit zijn de eerste keuzes voor nieuwe inleg.
+                {hideFormulas
+                  ? 'Koopsignalen voor Super-Kwaliteit aandelen (Score 5/5) die gunstig gewaardeerd zijn binnen de strategie én een stabiele of stijgende kwaliteitstrend vertonen. Dit zijn de eerste keuzes voor nieuwe inleg.'
+                  : 'MACD koopsignalen voor Score 5/5 aandelen die ondergewaardeerd zijn (≤ 1.3x intrinsieke waarde) én waarvan de Waardeverdeling stabiel is of stijgt. Dit zijn de eerste keuzes voor nieuwe inleg.'}
               </p>
             </div>
 
@@ -986,7 +1036,9 @@ const StrategyAdvisorTab = () => {
                 ⚠️ Kolom 2: Aandacht / Overgewaardeerd
               </div>
               <p className="leading-relaxed">
-                MACD crossovers van aandelen die <strong>overgewaardeerd zijn ($> 1.3\times$)</strong> of waarvan de <strong>Waardeverdeling recent gedaald is</strong>. Deze staan onder toezicht en worden in de strategie defensief geremd.
+                {hideFormulas
+                  ? 'Signalen van aandelen die momenteel boven de waarderingsgrens noteren of waarvan de kwaliteitstrend recent gedaald is. Deze staan onder toezicht en worden niet aangekocht.'
+                  : 'MACD crossovers van aandelen die overgewaardeerd zijn (> 1.3x) of waarvan de Waardeverdeling recent gedaald is. Deze staan onder toezicht en worden in de strategie defensief geremd.'}
               </p>
             </div>
 
@@ -996,7 +1048,7 @@ const StrategyAdvisorTab = () => {
                 🔴 Kolom 3: Verplichte Verkooporders
               </div>
               <p className="leading-relaxed">
-                Posities in portefeuille met <strong>Score &lt; 5/5</strong> (100% verkoop) of <strong>dalende Waardeverdeling</strong> (proportionele deelverkoop). Dienen verplicht verkocht te worden om kapitaal te beschermen en te heralloceren.
+                Posities in portefeuille met <strong>Score &lt; 5/5</strong> (100% verkoop) of een <strong>dalende kwaliteitstrend</strong> (proportionele deelverkoop). Dienen verkocht te worden om kapitaal te beschermen en te heralloceren.
               </p>
             </div>
           </div>
@@ -1125,7 +1177,7 @@ const StrategyAdvisorTab = () => {
                       ⚠️ Onder Toezicht ({cautionBuyAlerts.length})
                     </h2>
                     <p className="text-[11px] text-amber-800 mt-0.5 font-semibold">
-                      🛑 Géén aankoop • Overgewaardeerd (&gt;1.3x) of dalende WV
+                      {hideFormulas ? '🛑 Géén aankoop • Boven waarderingsgrens of dalende trend' : '🛑 Géén aankoop • Overgewaardeerd (>1.3x) of dalende WV'}
                     </p>
                   </div>
                   <span className="px-2.5 py-1 bg-amber-600 text-white font-black text-xs rounded-xl shadow-xs">
@@ -1293,21 +1345,33 @@ const StrategyAdvisorTab = () => {
                         </span>
                       </td>
                       <td className="py-2 px-3 text-center min-w-[140px]">
-                        <WvSparkline
-                          history={item.wvHistory || []}
-                          currentWv={item.waardeVerdeling}
-                          prevWv={item.prevWaardeVerdeling}
-                          wvDiff={item.wvDiff}
-                          wvDiffPct={item.wvDiffPct}
-                          isDropping={item.isWvDropping}
-                          compact={true}
-                        />
+                        {hideFormulas ? (
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                            item.isWvDropping ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
+                          }`}>
+                            {item.isWvDropping ? '📉 Dalende Trend' : '📈 Stabiel/Stijgend'}
+                          </span>
+                        ) : (
+                          <WvSparkline
+                            history={item.wvHistory || []}
+                            currentWv={item.waardeVerdeling}
+                            prevWv={item.prevWaardeVerdeling}
+                            wvDiff={item.wvDiff}
+                            wvDiffPct={item.wvDiffPct}
+                            isDropping={item.isWvDropping}
+                            compact={true}
+                          />
+                        )}
                       </td>
                       <td className="py-3 px-3 text-right font-bold text-gray-900">
                         {formatCurrency(item.currentPrice)}
                       </td>
                       <td className="py-3 px-3 text-right font-bold text-emerald-700">
-                        {formatCurrency(item.intrinsicValue)}
+                        {hideFormulas ? (
+                          <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">🔒 Beschermd</span>
+                        ) : (
+                          formatCurrency(item.intrinsicValue)
+                        )}
                       </td>
                       <td className="py-3 px-3 text-center font-extrabold text-indigo-700">
                         {item.targetWeightPct}%
@@ -1458,6 +1522,12 @@ const StrategyAdvisorTab = () => {
                     <td className="py-2 px-3 text-center min-w-[130px]">
                       {h.assetType === 'ETF' ? (
                         <span className="text-gray-400 text-[11px] italic">Index ETF</span>
+                      ) : hideFormulas ? (
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                          h.isWvDropping ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
+                        }`}>
+                          {h.isWvDropping ? '📉 Dalende Trend' : '📈 Stabiel/Stijgend'}
+                        </span>
                       ) : (
                         <WvSparkline
                           history={h.wvHistory || []}
@@ -1478,7 +1548,9 @@ const StrategyAdvisorTab = () => {
 
                     {/* Intrinsiek */}
                     <td className="py-3.5 px-3 text-right">
-                      {h.intrinsicValue ? (
+                      {hideFormulas ? (
+                        <span className="text-[11px] font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">🔒 Beschermd</span>
+                      ) : h.intrinsicValue ? (
                         <span className="font-bold text-emerald-700">
                           {formatCurrency(h.intrinsicValue)}
                         </span>
@@ -1489,7 +1561,9 @@ const StrategyAdvisorTab = () => {
 
                     {/* Waardering x */}
                     <td className="py-3.5 px-3 text-center">
-                      {h.priceToIntrinsicRatio ? (
+                      {hideFormulas ? (
+                        <span className="text-[11px] font-semibold text-gray-500">🔒</span>
+                      ) : h.priceToIntrinsicRatio ? (
                         <span className={`px-2 py-0.5 rounded-full font-bold text-xs ${
                           h.priceToIntrinsicRatio <= 1.0
                             ? 'bg-emerald-100 text-emerald-800'

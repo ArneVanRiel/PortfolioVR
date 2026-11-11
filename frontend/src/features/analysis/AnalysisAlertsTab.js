@@ -50,7 +50,7 @@ const AnalysisAlertsTab = ({ selectedStock, useSharedData = false, sharedAlerts 
                     const today = new Date().toISOString().split('T')[0];
                     const [contextResponse, holdingsResponse] = await Promise.all([
                         http.get('/calculations/summary-by-date', { params: { date: today } }),
-                        http.get('/portfolio/holdings?userId=1')
+                        http.get('/portfolio/holdings')
                     ]);
                     summaryData = contextResponse.data;
                     holdings = holdingsResponse.data;

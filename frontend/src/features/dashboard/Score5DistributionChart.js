@@ -17,12 +17,14 @@ const Score5DistributionChart = ({ sharedSummaryData, sharedHoldingsData }) => {
   useEffect(() => {
     const processChartData = (calcData, holdingsData) => {
       // --- Verwerk Ideale Portfolio ---
-      const idealStocks = calcData.filter(item => item.selectiecriteria === 5 && item.waarde_verdeling > 0);
-      const totalIdealWaarde = idealStocks.reduce((sum, item) => sum + item.waarde_verdeling, 0);
+      const idealStocks = calcData.filter(item => item.selectiecriteria === 5 && ((item.waarde_verdeling != null && item.waarde_verdeling > 0) || (item.ideal_weight_pct != null && item.ideal_weight_pct > 0)));
+      const totalIdealWaarde = idealStocks.reduce((sum, item) => sum + (item.waarde_verdeling || 0), 0);
       
       const idealMap = {};
       idealStocks.forEach(item => {
-        idealMap[item.ticker_symbol] = totalIdealWaarde > 0 ? (item.waarde_verdeling / totalIdealWaarde) * 100 : 0;
+        idealMap[item.ticker_symbol] = item.ideal_weight_pct != null
+          ? Number(item.ideal_weight_pct)
+          : (totalIdealWaarde > 0 ? (item.waarde_verdeling / totalIdealWaarde) * 100 : 0);
       });
 
       // --- Verwerk Huidige Portfolio ---
@@ -59,7 +61,7 @@ const Score5DistributionChart = ({ sharedSummaryData, sharedHoldingsData }) => {
         const today = new Date().toISOString().split('T')[0];
         const [calcResponse, holdingsResponse] = await Promise.all([
           http.get('/calculations/summary-by-date', { params: { date: today } }),
-          http.get('/portfolio/holdings?userId=1')
+          http.get('/portfolio/holdings')
         ]);
         processChartData(calcResponse.data || [], holdingsResponse.data || []);
       } catch (err) {

@@ -43,6 +43,19 @@ const PortfolioManager = () => {
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
   const uid = localStorage.getItem('userID') || 1;
+  const isAdmin = Number(uid) === 1 || userRole === 'admin';
+  const userPermissions = useMemo(() => {
+    if (isAdmin) {
+      return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: true };
+    }
+    try {
+      const saved = localStorage.getItem('user_permissions');
+      return saved ? JSON.parse(saved) : { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
+    } catch {
+      return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
+    }
+  }, [isAdmin]);
+  const canUseAdvisor = isAdmin || userPermissions.canUseStockStrategy || userPermissions.canUseEtfStrategy;
 
   const [rawHoldings, setRawHoldings] = useState([]);
   const [rawTransactions, setRawTransactions] = useState([]);
@@ -1174,7 +1187,7 @@ const PortfolioManager = () => {
 
                 return {
                     ...row,
-                    user_id: 1,
+                    user_id: Number(uid) || 1,
                     _isDuplicate: !!matchedTransaction, // Interne flag voor weergave
                     _duplicateMatch: matchedTransaction, // Bewaar de originele transactie
                     _dayReferences: dayTransactions, // Bewaar referentietransacties van die dag
@@ -1410,7 +1423,7 @@ const PortfolioManager = () => {
   // --- Tab Configuratie (Snowball Stijl) ---
   const TABS = [
     { id: 'common', label: 'Common', icon: 'ph-chart-pie' },
-    { id: 'advisor', label: 'Strategie Assistent', icon: 'ph-sparkle' },
+    ...(canUseAdvisor ? [{ id: 'advisor', label: 'Strategie Assistent', icon: 'ph-sparkle' }] : []),
     { id: 'diversification', label: 'Diversification', icon: 'ph-chart-polar' },
     { id: 'dividends', label: 'Dividends', icon: 'ph-money' },
     { id: 'growth', label: 'Growth', icon: 'ph-trend-up' },
@@ -2452,7 +2465,7 @@ const PortfolioManager = () => {
         </div>
       )}
 
-      {activeTab === 'advisor' && (
+      {activeTab === 'advisor' && canUseAdvisor && (
         <StrategyAdvisorTab />
       )}
 

@@ -75,17 +75,26 @@ const LoginPageTest = () => {
         return () => clearInterval(interval);
     }, [preferredMethod, step]);
 
-    const handleLoginSuccess = (token, userID, role, name) => {
+    const handleLoginSuccess = (token, userID, role, name, strategyMode = 'arne_advies', permissions = null, defaultCurrency = 'EUR') => {
         localStorage.setItem('token', token);
         localStorage.setItem('userID', userID);
-        localStorage.setItem('role', role);
+        localStorage.setItem('role', Number(userID) === 1 ? 'admin' : role);
         localStorage.setItem('username', name);
+        localStorage.setItem('strategy_mode', Number(userID) === 1 ? 'full_access' : strategyMode);
+        if (defaultCurrency) {
+            localStorage.setItem('preferred_currency', defaultCurrency);
+        }
+        if (permissions) {
+            localStorage.setItem('user_permissions', JSON.stringify(permissions));
+        }
 
         if (role === 'demo') {
             localStorage.setItem('incognito', 'true');
         }
 
-        navigate('/dashboard');
+        window.dispatchEvent(new Event('authChanged'));
+        const canViewDashboard = Number(userID) === 1 || role === 'admin' || (permissions ? permissions.canViewDashboard !== false : strategyMode !== 'portfolio_only');
+        navigate(canViewDashboard ? '/dashboard' : '/portfolio');
     };
 
     // Verwerk Google login token
@@ -102,8 +111,8 @@ const LoginPageTest = () => {
             localStorage.setItem('preferredLoginMethod', 'google');
             setPreferredMethod('google');
             
-            const { token, userID, role, username: name } = res.data;
-            handleLoginSuccess(token, userID, role, name);
+            const { token, userID, role, username: name, strategy_mode, permissions, default_currency } = res.data;
+            handleLoginSuccess(token, userID, role, name, strategy_mode, permissions, default_currency);
         } catch (err) {
             console.error(err);
             setAlert({ type: 'error', message: err.response?.data?.message || "Inloggen met Google mislukt." });
@@ -153,8 +162,8 @@ const LoginPageTest = () => {
                     localStorage.setItem('preferredLoginMethod', 'microsoft');
                     setPreferredMethod('microsoft');
                     
-                    const { token: jwtToken, userID, role, username: name } = res.data;
-                    handleLoginSuccess(jwtToken, userID, role, name);
+                    const { token: jwtToken, userID, role, username: name, strategy_mode, permissions, default_currency } = res.data;
+                    handleLoginSuccess(jwtToken, userID, role, name, strategy_mode, permissions, default_currency);
                 } catch (err) {
                     console.error(err);
                     setAlert({ type: 'error', message: err.response?.data?.message || "Inloggen met Microsoft mislukt." });
@@ -204,8 +213,8 @@ const LoginPageTest = () => {
         setLoading(true);
         try {
             const response = await axios.post(`${API_URL}/auth/login-step2`, { username, otp, rememberMe });
-            const { token, userID, role } = response.data;
-            handleLoginSuccess(token, userID, role, username);
+            const { token, userID, role, strategy_mode, permissions, default_currency } = response.data;
+            handleLoginSuccess(token, userID, role, username, strategy_mode, permissions, default_currency);
         } catch (error) {
             setAlert({ type: 'error', message: error.response?.data?.message || 'Onjuiste verificatiecode.' });
         } finally {
@@ -345,6 +354,10 @@ const LoginPageTest = () => {
                                         Microsoft
                                     </button>
                                 </div>
+
+                                <p className="text-center text-xs text-gray-400 pt-2">
+                                    🔒 Alleen toegankelijk op uitnodiging van de beheerder.
+                                </p>
                             </>
                         )}
                     </div>

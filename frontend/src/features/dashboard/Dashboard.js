@@ -66,7 +66,7 @@ const Dashboard = () => {
       const today = new Date().toISOString().split('T')[0];
       const [summaryRes, holdingsRes] = await Promise.all([
         http.get('/calculations/summary-by-date', { params: { date: today } }),
-        http.get('/portfolio/holdings?userId=1')
+        http.get('/portfolio/holdings')
       ]);
       setSharedSummaryData(summaryRes.data || []);
       setSharedHoldingsData(holdingsRes.data || []);
@@ -81,7 +81,19 @@ const Dashboard = () => {
   }, [checkUpdateStatus, fetchSharedDashboardData]);
 
   const userRole = localStorage.getItem('role') || 'user';
+  const userId = Number(localStorage.getItem('userID') || 0);
+  const isAdmin = userId === 1 || userRole === 'admin';
   const isDemo = userRole === 'demo';
+  const userPermissions = (() => {
+    try {
+      const raw = localStorage.getItem('user_permissions');
+      return raw ? JSON.parse(raw) : {};
+    } catch (e) {
+      return {};
+    }
+  })();
+  const canEditSystemData = isAdmin || !!userPermissions.canEditSystemData;
+  const canViewFormulas = isAdmin || !!userPermissions.canViewFormulas;
 
   const toggleExpand = (cardId) => {
     setExpandedCard(expandedCard === cardId ? null : cardId);
@@ -102,7 +114,7 @@ const Dashboard = () => {
     try {
       const [response, holdingsResponse] = await Promise.all([
         http.get('/calculations/summary-by-date', { params: { date: exportDate } }),
-        http.get('/portfolio/holdings?userId=1')
+        http.get('/portfolio/holdings')
       ]);
       return { summaryData: response.data, holdingsData: holdingsResponse.data };
     } catch (error) {
@@ -312,7 +324,7 @@ const Dashboard = () => {
         <h1 className="text-3xl font-bold text-gray-800">Dashboard</h1>
         <div className="flex flex-wrap gap-2 sm:gap-3 w-full md:w-auto">
           {/* Knoppen */}
-          {!isDemo && (
+          {!isDemo && canEditSystemData && (
             <>
               <button
                 onClick={handleAddStock}
@@ -340,12 +352,14 @@ const Dashboard = () => {
                   Forceer update
                 </button>
               )}
-              <button
-                onClick={handleOpenExportModal}
-                className="w-full sm:w-auto bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200 text-sm sm:text-base"
-              >
-                Generate Report
-              </button>
+              {canViewFormulas && (
+                <button
+                  onClick={handleOpenExportModal}
+                  className="w-full sm:w-auto bg-white text-gray-700 border border-gray-300 px-4 py-2 rounded-lg shadow-sm hover:bg-gray-50 hover:text-gray-900 transition-all duration-200 text-sm sm:text-base"
+                >
+                  Generate Report
+                </button>
+              )}
             </>
           )}
         </div>
@@ -386,8 +400,8 @@ const Dashboard = () => {
         onDataChanged={fetchSharedDashboardData}
       />
 
-      {/* Incomplete Data Widget */}
-      <IncompleteDataWidget />
+      {/* Incomplete Data Widget (enkel voor Admin / Systeembeheer) */}
+      {canEditSystemData && <IncompleteDataWidget />}
 
       {/* Export Modal */}
       <Modal isOpen={showExportModal} onClose={handleCloseExportModal}>

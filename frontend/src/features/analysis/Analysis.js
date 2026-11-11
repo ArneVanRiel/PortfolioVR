@@ -33,7 +33,20 @@ const Analysis = () => {
   });
 
   const userRole = localStorage.getItem('role') || 'user';
+  const uid = localStorage.getItem('userID') || 1;
   const isDemo = userRole === 'demo';
+  const isAdmin = Number(uid) === 1 || userRole === 'admin';
+  const userPermissions = useMemo(() => {
+    if (isAdmin) {
+      return { canViewScreener: true, canViewFormulas: true, canEditSystemData: true };
+    }
+    try {
+      const saved = localStorage.getItem('user_permissions');
+      return saved ? JSON.parse(saved) : { canViewScreener: false, canViewFormulas: false, canEditSystemData: false };
+    } catch {
+      return { canViewScreener: false, canViewFormulas: false, canEditSystemData: false };
+    }
+  }, [isAdmin]);
 
   // Haal de aandelenlijst slechts 1x op bij het laden van de pagina (niet bij elke tab-switch)
   useEffect(() => {
@@ -124,11 +137,13 @@ const Analysis = () => {
 
   const TABS = [
     { id: 'Analyse', label: 'Overzicht & Grafieken', icon: 'ph-chart-line-up' },
-    { id: 'screener', label: 'Aandelen Screener', icon: 'ph-funnel' },
-    { id: 'backtest', label: 'Strategie Backtest', icon: 'ph-trend-up' },
+    ...((isAdmin || userPermissions.canViewScreener) ? [
+      { id: 'screener', label: 'Aandelen Screener', icon: 'ph-funnel' },
+      { id: 'backtest', label: 'Strategie Backtest', icon: 'ph-trend-up' },
+    ] : []),
     { id: 'portfolio', label: 'Portfolio', icon: 'ph-briefcase' },
-    // Voeg Data Beheer, Berekeningen en SEC velden zoeken enkel toe als het geen demo account is
-    ...(!isDemo ? [
+    // Voeg Data Beheer, Berekeningen en SEC velden zoeken enkel toe voor Admin / systeemdata beheerders
+    ...((!isDemo && (isAdmin || userPermissions.canEditSystemData)) ? [
       { id: 'data', label: 'Data Beheer', icon: 'ph-database' },
       { id: 'calculations', label: 'Berekeningen', icon: 'ph-calculator' },
       { id: 'SecFields', label: 'SEC Velden Zoeken', icon: 'ph-magnifying-glass' }
@@ -227,11 +242,13 @@ const Analysis = () => {
                     sharedCalculations={sharedStockData.stockId === selectedStockId ? sharedStockData.calculations : null}
                     sharedAlerts={sharedStockData.stockId === selectedStockId ? sharedStockData.alerts : null}
                   />
-                  <AnalysisCalculationsChart
-                    selectedStock={selectedStock}
-                    useSharedData={true}
-                    sharedCalculations={sharedStockData.stockId === selectedStockId ? sharedStockData.calculations : null}
-                  />
+                  {(isAdmin || userPermissions.canViewFormulas) && (
+                    <AnalysisCalculationsChart
+                      selectedStock={selectedStock}
+                      useSharedData={true}
+                      sharedCalculations={sharedStockData.stockId === selectedStockId ? sharedStockData.calculations : null}
+                    />
+                  )}
                   <AnalysisAlertsTab
                     selectedStock={selectedStock}
                     useSharedData={true}

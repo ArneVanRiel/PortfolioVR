@@ -34,6 +34,19 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
   const [activeRange, setActiveRange] = useState('All');
   const chartRef = useRef(null);
 
+  const canViewFormulas = useMemo(() => {
+    const uid = Number(localStorage.getItem('userID') || 0);
+    const role = localStorage.getItem('role') || 'user';
+    if (uid === 1 || role === 'admin') return true;
+    try {
+      const raw = localStorage.getItem('user_permissions');
+      const perms = raw ? JSON.parse(raw) : {};
+      return !!perms.canViewFormulas;
+    } catch (e) {
+      return false;
+    }
+  }, []);
+
   const fetchAnalysisChartData = useCallback(async () => {
     if (!selectedStock) return;
     if (useSharedData && (!sharedCalculations || !sharedAlerts)) {
@@ -104,11 +117,11 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
 
             const score = Number(c.selectiecriteria);
             const prevScore = prevC ? Number(prevC.selectiecriteria) : null;
-            const wv = Number(c.waarde_verdeling);
-            const prevWv = prevC ? Number(prevC.waarde_verdeling) : null;
+            const wv = c.waarde_verdeling != null ? Number(c.waarde_verdeling) : null;
+            const prevWv = (prevC && prevC.waarde_verdeling != null) ? Number(prevC.waarde_verdeling) : null;
 
             const isScoreDrop = (score < 5 && score > 0) || (prevScore === 5 && score < 5);
-            const isWvDrop = (prevWv != null && wv != null && wv < prevWv && (prevWv - wv) >= 0.05);
+            const isWvDrop = c.is_wv_dropping === true || (prevWv != null && wv != null && wv < prevWv && (prevWv - wv) >= 0.05);
 
             if (isScoreDrop || isWvDrop) {
                 if (!alertsMap.has(d)) alertsMap.set(d, []);
@@ -118,7 +131,9 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
                     isMandatorySell: true,
                     reason: isScoreDrop 
                         ? `Verplichte verkoop (Score ${score}/5)`
-                        : `Verplichte deelverkoop (WV daling ${prevWv?.toFixed(1)}% ➔ ${wv?.toFixed(1)}%)`,
+                        : (canViewFormulas && prevWv != null && wv != null
+                            ? `Verplichte deelverkoop (WV daling ${prevWv?.toFixed(1)}% ➔ ${wv?.toFixed(1)}%)`
+                            : `Verplichte deelverkoop (Dalende strategie-weging)`),
                     prijs_op_moment: calcPrice
                 });
             }
@@ -164,89 +179,97 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
             sellSignalData.push(sellVal);
         });
 
+        const datasets = [
+            {
+                label: 'Prijs',
+                data: priceData,
+                borderColor: 'rgb(75, 192, 192)',
+                backgroundColor: 'rgba(75, 192, 192, 0.5)',
+                yAxisID: 'y',
+                pointRadius: 0,
+                borderWidth: 2,
+                tension: 0.1,
+                order: 2
+            }
+        ];
+
+        if (canViewFormulas) {
+            datasets.push({
+                label: 'Waardeverdeling',
+                data: waardeverdelingData,
+                borderColor: 'rgb(153, 102, 255)',
+                backgroundColor: 'rgba(153, 102, 255, 0.5)',
+                yAxisID: 'y1',
+                spanGaps: true,
+                pointRadius: 4,
+                borderWidth: 2,
+                tension: 0.1,
+                order: 1
+            });
+        }
+
+        datasets.push(
+            {
+                label: 'Signal Line',
+                data: signalLineData,
+                borderColor: 'rgb(255, 99, 132)',
+                backgroundColor: 'rgba(255, 99, 132, 0.5)',
+                yAxisID: 'y_macd',
+                pointRadius: 0,
+                borderWidth: 1.5,
+                tension: 0.1,
+                order: 3
+            },
+            {
+                label: 'MACD Line',
+                data: macdLineData,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                yAxisID: 'y_macd',
+                pointRadius: 0,
+                borderWidth: 1.5,
+                tension: 0.1,
+                order: 3
+            },
+            {
+                label: 'Zero Line',
+                data: zeroLineData,
+                borderColor: 'black',
+                borderWidth: 1,
+                pointRadius: 0,
+                borderDash: [5, 5],
+                yAxisID: 'y_macd',
+                order: 4
+            },
+            {
+                label: 'Koopsignaal',
+                data: buySignalData,
+                borderColor: 'green',
+                backgroundColor: 'green',
+                pointStyle: 'triangle',
+                pointRadius: 8,
+                rotation: 0,
+                showLine: false,
+                yAxisID: 'y',
+                order: 0
+            },
+            {
+                label: 'Verkoopsignaal',
+                data: sellSignalData,
+                borderColor: 'red',
+                backgroundColor: 'red',
+                pointStyle: 'triangle',
+                pointRadius: 8,
+                rotation: 180,
+                showLine: false,
+                yAxisID: 'y',
+                order: 0
+            }
+        );
+
         setAnalysisChartData({
             labels: sortedDates.map(d => new Date(d).toLocaleDateString()),
-            datasets: [
-                {
-                    label: 'Prijs',
-                    data: priceData,
-                    borderColor: 'rgb(75, 192, 192)',
-                    backgroundColor: 'rgba(75, 192, 192, 0.5)',
-                    yAxisID: 'y',
-                    pointRadius: 0,
-                    borderWidth: 2,
-                    tension: 0.1,
-                    order: 2
-                },
-                {
-                    label: 'Waardeverdeling',
-                    data: waardeverdelingData,
-                    borderColor: 'rgb(153, 102, 255)',
-                    backgroundColor: 'rgba(153, 102, 255, 0.5)',
-                    yAxisID: 'y1',
-                    spanGaps: true,
-                    pointRadius: 4,
-                    borderWidth: 2,
-                    tension: 0.1,
-                    order: 1
-                },
-                {
-                    label: 'Signal Line',
-                    data: signalLineData,
-                    borderColor: 'rgb(255, 99, 132)',
-                    backgroundColor: 'rgba(255, 99, 132, 0.5)',
-                    yAxisID: 'y_macd',
-                    pointRadius: 0,
-                    borderWidth: 1.5,
-                    tension: 0.1,
-                    order: 3
-                },
-                {
-                    label: 'MACD Line',
-                    data: macdLineData,
-                    borderColor: 'rgb(54, 162, 235)',
-                    backgroundColor: 'rgba(54, 162, 235, 0.5)',
-                    yAxisID: 'y_macd',
-                    pointRadius: 0,
-                    borderWidth: 1.5,
-                    tension: 0.1,
-                    order: 3
-                },
-                {
-                    label: 'Zero Line',
-                    data: zeroLineData,
-                    borderColor: 'black',
-                    borderWidth: 1,
-                    pointRadius: 0,
-                    borderDash: [5, 5],
-                    yAxisID: 'y_macd',
-                    order: 4
-                },
-                {
-                    label: 'Koopsignaal',
-                    data: buySignalData,
-                    borderColor: 'green',
-                    backgroundColor: 'green',
-                    pointStyle: 'triangle',
-                    pointRadius: 8,
-                    rotation: 0,
-                    showLine: false,
-                    yAxisID: 'y',
-                    order: 0
-                },
-                {
-                    label: 'Verkoopsignaal',
-                    data: sellSignalData,
-                    borderColor: 'red',
-                    backgroundColor: 'red',
-                    pointStyle: 'triangle',
-                    pointRadius: 8,
-                    rotation: 180,
-                    showLine: false,
-                    yAxisID: 'y',
-                    order: 0
-                }
-            ]
+            datasets
         });
 
     } catch (err) {
@@ -255,7 +278,7 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
     } finally {
         setLoading(false);
     }
-  }, [selectedStock, useSharedData, sharedCalculations, sharedAlerts]);
+  }, [selectedStock, useSharedData, sharedCalculations, sharedAlerts, canViewFormulas]);
 
   useEffect(() => {
     if (selectedStock) {
