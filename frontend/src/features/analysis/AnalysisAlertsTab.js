@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import http from '../../http-common';
 
-const AnalysisAlertsTab = ({ selectedStock }) => {
+const AnalysisAlertsTab = ({ selectedStock, useSharedData = false, sharedAlerts = null }) => {
     const [alerts, setAlerts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -12,6 +12,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
         percentage: 0,
         weight_factor: 1,
     });
+    const [cachedSummaryContext, setCachedSummaryContext] = useState(null);
 
     // Pagination state
     const [currentPage, setCurrentPage] = useState(1);
@@ -27,21 +28,34 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
     useEffect(() => {
         const fetchData = async () => {
             if (!selectedStock) return;
+            if (useSharedData && !sharedAlerts) {
+                setLoading(true);
+                return;
+            }
             
             setLoading(true);
             try {
-                // 1. Haal Alerts op (Koop én Verkoop staan nu correct in DB)
-                const alertsResponse = await http.get(`/calculations/${selectedStock.stock_id}/macd-alerts`);
-                setAlerts(alertsResponse.data || []);
+                // 1. Haal Alerts op (uit gedeelde prop of rechtstreeks van DB)
+                if (useSharedData) {
+                    setAlerts(sharedAlerts || []);
+                } else {
+                    const alertsResponse = await http.get(`/calculations/${selectedStock.stock_id}/macd-alerts`);
+                    setAlerts(alertsResponse.data || []);
+                }
 
-                // 2. Haal Calculation Context op (voor percentage weging en Q-diff)
-                const today = new Date().toISOString().split('T')[0];
-                const [contextResponse, holdingsResponse] = await Promise.all([
-                    http.get('/calculations/summary-by-date', { params: { date: today } }),
-                    http.get('/portfolio/holdings?userId=1')
-                ]);
-                const summaryData = contextResponse.data;
-                const holdings = holdingsResponse.data;
+                // 2. Haal Calculation Context op (voor percentage weging en Q-diff), gecached per sessie
+                let summaryData = cachedSummaryContext?.summaryData;
+                let holdings = cachedSummaryContext?.holdings;
+                if (!summaryData || !holdings) {
+                    const today = new Date().toISOString().split('T')[0];
+                    const [contextResponse, holdingsResponse] = await Promise.all([
+                        http.get('/calculations/summary-by-date', { params: { date: today } }),
+                        http.get('/portfolio/holdings?userId=1')
+                    ]);
+                    summaryData = contextResponse.data;
+                    holdings = holdingsResponse.data;
+                    setCachedSummaryContext({ summaryData, holdings });
+                }
                 const totalActualValue = holdings.reduce((sum, h) => sum + (h.value || 0), 0);
 
                 // Bereken totaal voor weging
@@ -56,7 +70,6 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
                 
                 let percentage = 0;
                 let weight_factor = 1;
-                let diffPercentage = null;
 
                 if (stockItem) {
                     // Bereken percentage weging
@@ -81,7 +94,7 @@ const AnalysisAlertsTab = ({ selectedStock }) => {
         };
 
         fetchData();
-    }, [selectedStock]);
+    }, [selectedStock, useSharedData, sharedAlerts, cachedSummaryContext]);
 
     const handleSort = (key) => {
         let direction = 'asc';

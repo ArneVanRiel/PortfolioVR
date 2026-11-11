@@ -19,11 +19,13 @@ import { useIncognito } from '../../hooks/useIncognito';
 ChartJS.register(CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend);
 
 const CalculationsSummaryTable = forwardRef((props, ref) => {
+    const { sharedSummaryData, sharedHoldingsData } = props;
     const navigate = useNavigate();
     const [summaryData, setSummaryData] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
-    const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split('T')[0]);
+    const todayStr = useMemo(() => new Date().toISOString().split('T')[0], []);
+    const [selectedDate, setSelectedDate] = useState(todayStr);
     const [baseAmount, setBaseAmount] = useState(30000); // Default fallback
     const [holdingsData, setHoldingsData] = useState([]);
     const [totalActualValue, setTotalActualValue] = useState(0);
@@ -99,26 +101,40 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
         fetchBalance();
     }, []);
 
-    const fetchSummary = useCallback(async () => {
+    const applyHoldingsData = useCallback((holdings) => {
+        setHoldingsData(holdings || []);
+        let actualSum = 0;
+        if (holdings && Array.isArray(holdings)) {
+            actualSum = holdings.reduce((sum, h) => sum + (h.total_value || h.value || 0), 0);
+        }
+        setTotalActualValue(actualSum);
+    }, []);
+
+    const fetchSummary = useCallback(async (forceFetch = false) => {
+        if (!forceFetch && selectedDate === todayStr) {
+            if (Array.isArray(sharedSummaryData) && Array.isArray(sharedHoldingsData)) {
+                setSummaryData(sharedSummaryData);
+                applyHoldingsData(sharedHoldingsData);
+                setError('');
+                setLoading(false);
+                return;
+            }
+            if (sharedSummaryData === null || sharedHoldingsData === null) {
+                return;
+            }
+        }
         try {
             setLoading(true);
             const [summaryResponse, holdingsResponse] = await Promise.all([
                 http.get('/calculations/summary-by-date', {
                     params: { date: selectedDate }
                 }),
-                http.get('/portfolio/holdings?userId=1')
+                Array.isArray(sharedHoldingsData) && !forceFetch
+                    ? Promise.resolve({ data: sharedHoldingsData })
+                    : http.get('/portfolio/holdings?userId=1')
             ]);
             setSummaryData(summaryResponse.data);
-            
-            const holdings = holdingsResponse.data;
-            setHoldingsData(holdings);
-
-            let actualSum = 0;
-            if (holdings && Array.isArray(holdings)) {
-                actualSum = holdings.reduce((sum, h) => sum + (h.total_value || 0), 0);
-            }
-            setTotalActualValue(actualSum);
-
+            applyHoldingsData(holdingsResponse.data);
             setError('');
         } catch (err) {
             console.error('Error fetching calculations summary:', err);
@@ -126,20 +142,16 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
         } finally {
             setLoading(false);
         }
-    }, [selectedDate]);
-
-    useImperativeHandle(ref, () => ({
-        openAddStockModal: (targetView = 'watchlist') => {
-            handleOpenAddModal(targetView);
-        },
-        refreshData: fetchSummary
-    }));
+    }, [selectedDate, todayStr, sharedSummaryData, sharedHoldingsData, applyHoldingsData]);
 
     useEffect(() => {
         fetchSummary();
     }, [fetchSummary]);
 
     useImperativeHandle(ref, () => ({
+        openAddStockModal: (targetView = 'watchlist') => {
+            handleOpenAddModal(targetView);
+        },
         updateStockLocal: (updatedData) => {
             setSummaryData(prevData => prevData.map(item => {
                 if (item.stock_id === updatedData.aandeel_id) {
@@ -154,7 +166,7 @@ const CalculationsSummaryTable = forwardRef((props, ref) => {
                 return item;
             }));
         },
-        refreshData: fetchSummary
+        refreshData: () => fetchSummary(true)
     }));
 
     const totalWaardeVerdeling = useMemo(() => summaryData

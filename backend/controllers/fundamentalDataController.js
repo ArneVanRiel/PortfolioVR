@@ -146,6 +146,7 @@ const addManualFundamentalData = async (req, res) => {
         }
 
         await transaction.commit();
+        clearTickerOverviewCache();
         res.status(200).json({ message: 'Fundamental data successfully saved/updated.' });
 
     } catch (err) {
@@ -239,6 +240,7 @@ const saveFetchedSecData = async (req, res) => {
         }
 
         await transaction.commit();
+        clearTickerOverviewCache();
         res.status(200).json({ message: 'Fetched SEC data successfully saved.' });
 
     } catch (err) {
@@ -252,32 +254,6 @@ const saveFetchedSecData = async (req, res) => {
             }
         }
         res.status(500).json({ message: 'Error saving SEC data.', error: err.message });
-    }
-};
-
-// Function to fetch earnings calendar dates for a ticker
-const getEarningsCalendarDatesByTicker = async (req, res) => {
-    const { tickerSymbol } = req.params;
-    if (!tickerSymbol) {
-        return res.status(400).json({ message: 'Ticker symbol is required.' });
-    }
-
-    try {
-        const request = new sql.Request(); // Use global pool
-        const result = await request.input('ticker', sql.NVarChar(50), tickerSymbol)
-            .query`SELECT ticker, reportDate, fiscalDateEnding FROM earningsCalender WHERE ticker = @ticker ORDER BY fiscalDateEnding DESC`;
-
-        const formattedDates = result.recordset.map(row => ({
-            ticker: row.ticker,
-            reportDate: row.reportDate ? row.reportDate.toISOString().split('T')[0] : null,
-            fiscalDateEnding: row.fiscalDateEnding ? row.fiscalDateEnding.toISOString().split('T')[0] : null,
-            fiscalPeriod: getFiscalPeriodFromDate(row.fiscalDateEnding)
-        }));
-
-        res.status(200).json(formattedDates);
-    } catch (err) {
-        console.error('Error fetching earnings calendar dates:', err);
-        res.status(500).json({ message: 'Error fetching earnings calendar dates.', error: err.message });
     }
 };
 
@@ -411,6 +387,7 @@ const saveFetchedAlphaVantageData = async (req, res) => {
         }
 
         await transaction.commit();
+        clearTickerOverviewCache();
         res.status(200).json({ message: 'Fundamental data successfully saved/updated.' });
 
     } catch (err) {
@@ -626,6 +603,7 @@ const deleteFundamentalData = async (req, res) => {
             .query`DELETE FROM fundamental_data WHERE id = @id`;
 
         if (result.rowsAffected[0] > 0) {
+            clearTickerOverviewCache();
             res.status(200).json({ message: 'Fundamental data successfully deleted.' });
         } else {
             res.status(404).json({ message: 'No matching fundamental data found to delete.' });
@@ -689,6 +667,10 @@ const getFiscalPeriodIdFromDate = (date) => {
 };
 
 
+const tickerOverviewCache = new Map();
+const TICKER_OVERVIEW_CACHE_TTL_MS = 15 * 60 * 1000; // 15 minuten cache
+const clearTickerOverviewCache = () => tickerOverviewCache.clear();
+
 /**
  * NEW: Function to get an overview of fundamental data analysis for multiple tickers.
  * Includes data completeness, multiple entries per quarter, and fiscal period sequence checks.
@@ -700,6 +682,12 @@ const getTickerOverviewAnalysis = async (req, res) => {
 
     if (!dataPeriods || !selectedDate || !maxLookbackMonths) {
         return res.status(400).json({ message: 'Missing required parameters: dataPeriods, selectedDate, maxLookbackMonths.' });
+    }
+
+    const cacheKey = `${selectedDate}_${maxLookbackMonths}_${JSON.stringify(dataPeriods)}`;
+    const cached = tickerOverviewCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < TICKER_OVERVIEW_CACHE_TTL_MS)) {
+        return res.status(200).json(cached.data);
     }
 
     const referenceDate = new Date(selectedDate);
@@ -715,27 +703,38 @@ const getTickerOverviewAnalysis = async (req, res) => {
             WHERE s.inWatchlist = 1 OR s.inIdealePortfolio = 1;
         `).recordset;
 
+        // Haal alle fundamentele data voor alle relevante aandelen in 1 enkele batch-query op (elimineert ~50 N+1 SQL-queries)
+        const batchRequest = new sql.Request();
+        const allFundamentalRows = (await batchRequest
+            .input('earliest_date', sql.Date, earliestAllowedDate)
+            .input('latest_date', sql.Date, referenceDate)
+            .query`
+                SELECT fd.stock_id, fd.period_end_date, fd.fy, fd.fp_id, fd.data_type, fd.value
+                FROM fundamental_data fd
+                INNER JOIN [dbo].[Stocks] s ON fd.stock_id = s.aandeel_id
+                WHERE (s.inWatchlist = 1 OR s.inIdealePortfolio = 1)
+                AND fd.period_end_date BETWEEN @earliest_date AND @latest_date
+                ORDER BY fd.stock_id ASC, fd.period_end_date ASC, fd.data_type ASC
+            `).recordset;
+
+        const fundamentalByStock = new Map();
+        for (const row of allFundamentalRows) {
+            if (!fundamentalByStock.has(row.stock_id)) {
+                fundamentalByStock.set(row.stock_id, []);
+            }
+            fundamentalByStock.get(row.stock_id).push(row);
+        }
+
+        const validDataTypeKeys = new Set(FUNDAMENTAL_DATA_TYPES.map(t => t.key));
         const analysisResults = [];
 
         for (const stock of stocksToAnalyze) {
             const stockId = stock.aandeel_id;
-            
-            // Fetch all fundamental data for the current stock within the lookback period
-            const stockRequest = new sql.Request();
-            const fundamentalData = (await stockRequest.input('stock_id', sql.Int, stockId)
-                .input('earliest_date', sql.Date, earliestAllowedDate)
-                .input('latest_date', sql.Date, referenceDate)
-                .query`
-                    SELECT period_end_date, fy, fp_id, data_type, value
-                    FROM fundamental_data
-                    WHERE stock_id = @stock_id
-                    AND period_end_date BETWEEN @earliest_date AND @latest_date
-                    ORDER BY period_end_date ASC, data_type ASC
-                `).recordset;
+            const fundamentalData = fundamentalByStock.get(stockId) || [];
 
             // Filter fundamentalData to only include types defined in FUNDAMENTAL_DATA_TYPES
             const relevantFundamentalData = fundamentalData.filter(item =>
-                FUNDAMENTAL_DATA_TYPES.some(type => type.key === item.data_type)
+                validDataTypeKeys.has(item.data_type)
             );
 
             // --- Analysis Logic ---
@@ -983,6 +982,7 @@ const getTickerOverviewAnalysis = async (req, res) => {
             });
         }
 
+        tickerOverviewCache.set(cacheKey, { timestamp: Date.now(), data: analysisResults });
         res.status(200).json(analysisResults);
 
     } catch (err) {
@@ -1407,6 +1407,7 @@ const updateDataPoint = async (req, res) => {
         const result = await request.query(query);
 
         if (result.rowsAffected[0] > 0) {
+            clearTickerOverviewCache();
             res.status(200).json({ message: 'Data point updated successfully.' });
         } else {
             res.status(404).json({ message: 'Data point not found.' });
@@ -1421,7 +1422,6 @@ module.exports = {
     addManualFundamentalData,
     fetchAndParseSecData,
     saveFetchedSecData,
-    getEarningsCalendarDatesByTicker,
     fetchAndParseAlphaVantageData,
     saveFetchedAlphaVantageData,
     getAllFundamentalDataForStock,
@@ -1431,6 +1431,7 @@ module.exports = {
     getFiscalPeriods,
     getForms,
     getTickerOverviewAnalysis,
+    clearTickerOverviewCache,
     getSingleStockAnalysis, // Export the new function
     runPythonSecScript,
     getLatestFundamentalDataPivoted,

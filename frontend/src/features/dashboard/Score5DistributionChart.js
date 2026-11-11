@@ -7,7 +7,7 @@ import { useIncognito } from '../../hooks/useIncognito';
 
 ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
 
-const Score5DistributionChart = () => {
+const Score5DistributionChart = ({ sharedSummaryData, sharedHoldingsData }) => {
   const [portfolioData, setPortfolioData] = useState(null);
   const isIncognito = useIncognito();
   const [sortBy, setSortBy] = useState('ideal'); // 'ideal' of 'actual'
@@ -15,50 +15,53 @@ const Score5DistributionChart = () => {
   const [error, setError] = useState(null);
 
   useEffect(() => {
+    const processChartData = (calcData, holdingsData) => {
+      // --- Verwerk Ideale Portfolio ---
+      const idealStocks = calcData.filter(item => item.selectiecriteria === 5 && item.waarde_verdeling > 0);
+      const totalIdealWaarde = idealStocks.reduce((sum, item) => sum + item.waarde_verdeling, 0);
+      
+      const idealMap = {};
+      idealStocks.forEach(item => {
+        idealMap[item.ticker_symbol] = totalIdealWaarde > 0 ? (item.waarde_verdeling / totalIdealWaarde) * 100 : 0;
+      });
+
+      // --- Verwerk Huidige Portfolio ---
+      const totalActualValue = holdingsData.reduce((sum, item) => sum + item.value, 0);
+      const actualMap = {};
+      const actualValueMap = {};
+      holdingsData.forEach(item => {
+        actualMap[item.ticker] = totalActualValue > 0 ? (item.value / totalActualValue) * 100 : 0;
+        actualValueMap[item.ticker] = item.value || 0;
+      });
+
+      const allTickers = Array.from(new Set([...Object.keys(idealMap), ...Object.keys(actualMap)])).sort();
+
+      setPortfolioData({
+        idealMap,
+        actualMap,
+        actualValueMap,
+        allTickers
+      });
+      setLoading(false);
+    };
+
+    if (Array.isArray(sharedSummaryData) && Array.isArray(sharedHoldingsData)) {
+      processChartData(sharedSummaryData, sharedHoldingsData);
+      return;
+    }
+    if (sharedSummaryData === null || sharedHoldingsData === null) {
+      // Wacht op gedeelde data van Dashboard
+      return;
+    }
+
     const fetchData = async () => {
       try {
         const today = new Date().toISOString().split('T')[0];
-        
-        // 1. Haal de ideale portfolio (berekende waardeverdeling) op
-        const calcResponse = await http.get('/calculations/summary-by-date', {
-          params: { date: today }
-        });
-        const calcData = calcResponse.data;
-
-        // 2. Haal de huidige portfolio (actuele holdings) op
-        const holdingsResponse = await http.get('/portfolio/holdings?userId=1');
-        const holdingsData = holdingsResponse.data;
-        
-        // --- Verwerk Ideale Portfolio ---
-        // Neem alle aandelen met een score van 5 en een positieve waardeverdeling
-        const idealStocks = calcData.filter(item => item.selectiecriteria === 5 && item.waarde_verdeling > 0);
-        const totalIdealWaarde = idealStocks.reduce((sum, item) => sum + item.waarde_verdeling, 0);
-        
-        const idealMap = {};
-        idealStocks.forEach(item => {
-          idealMap[item.ticker_symbol] = totalIdealWaarde > 0 ? (item.waarde_verdeling / totalIdealWaarde) * 100 : 0;
-        });
-
-        // --- Verwerk Huidige Portfolio ---
-        const totalActualValue = holdingsData.reduce((sum, item) => sum + item.value, 0);
-        const actualMap = {};
-        const actualValueMap = {};
-        holdingsData.forEach(item => {
-          actualMap[item.ticker] = totalActualValue > 0 ? (item.value / totalActualValue) * 100 : 0;
-          actualValueMap[item.ticker] = item.value || 0;
-        });
-
-        // Combineer alle unieke tickers en sorteer alfabetisch
-        const allTickers = Array.from(new Set([...Object.keys(idealMap), ...Object.keys(actualMap)])).sort();
-
-        // Sla de ruwe data op in de state zodat we kunnen sorteren zonder de database opnieuw aan te spreken
-        setPortfolioData({
-          idealMap,
-          actualMap,
-          actualValueMap,
-          allTickers
-        });
-        setLoading(false);
+        const [calcResponse, holdingsResponse] = await Promise.all([
+          http.get('/calculations/summary-by-date', { params: { date: today } }),
+          http.get('/portfolio/holdings?userId=1')
+        ]);
+        processChartData(calcResponse.data || [], holdingsResponse.data || []);
       } catch (err) {
         console.error("Fout bij ophalen data voor portfolio comparison chart", err);
         setError("Kon data niet laden");
@@ -67,7 +70,7 @@ const Score5DistributionChart = () => {
     };
 
     fetchData();
-  }, []);
+  }, [sharedSummaryData, sharedHoldingsData]);
 
   // Bouw de grafiekdata op basis van de gekozen sortering
   const chartData = useMemo(() => {

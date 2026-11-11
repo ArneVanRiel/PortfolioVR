@@ -24,7 +24,7 @@ ChartJS.register(
   zoomPlugin
 );
 
-const AnalysisCalculationsChart = ({ selectedStock }) => {
+const AnalysisCalculationsChart = ({ selectedStock, useSharedData = false, sharedCalculations = null }) => {
   const [calculations, setCalculations] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -32,6 +32,16 @@ const AnalysisCalculationsChart = ({ selectedStock }) => {
 
   const fetchCalculations = useCallback(async () => {
     if (!selectedStock) return;
+    if (useSharedData) {
+      if (!sharedCalculations) {
+        setLoading(true);
+        return;
+      }
+      const sorted = [...sharedCalculations].sort((a, b) => new Date(a.period_end_date) - new Date(b.period_end_date));
+      setCalculations(sorted);
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     try {
       const response = await http.get(`/calculations/${selectedStock.stock_id}`);
@@ -43,7 +53,7 @@ const AnalysisCalculationsChart = ({ selectedStock }) => {
     } finally {
       setLoading(false);
     }
-  }, [selectedStock]);
+  }, [selectedStock, useSharedData, sharedCalculations]);
 
   useEffect(() => {
     fetchCalculations();

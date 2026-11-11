@@ -105,7 +105,14 @@ const PortfolioManager = () => {
       // ignore
     }
   };
-  const [displayCurrency, setDisplayCurrency] = useState('USD');
+  const [displayCurrency, setDisplayCurrency] = useState(() => {
+    try {
+      return localStorage.getItem('preferred_currency') || 'EUR';
+    } catch {
+      return 'EUR';
+    }
+  });
+  const [isCurrencyLoaded, setIsCurrencyLoaded] = useState(false);
   const [selectedBenchmark, setSelectedBenchmark] = useState('SPY');
   const [benchmarkHistory, setBenchmarkHistory] = useState([]);
 
@@ -117,9 +124,16 @@ const PortfolioManager = () => {
               const res = await http.get(`/auth/profile/${uid}`);
               if (res.data && res.data.default_currency) {
                   setDisplayCurrency(res.data.default_currency);
+                  try {
+                      localStorage.setItem('preferred_currency', res.data.default_currency);
+                  } catch (e) {
+                      // ignore
+                  }
               }
           } catch (err) {
               console.error("Kon voorkeursvaluta niet laden", err);
+          } finally {
+              setIsCurrencyLoaded(true);
           }
       };
       fetchProfileCurrency();
@@ -247,37 +261,43 @@ const PortfolioManager = () => {
     }
   };
 
+  const isGrowthTab = activeTab === 'growth';
+
   // Haalt de historische data specifiek voor de geselecteerde filters op
   const fetchHistoryData = async () => {
     const typesParam = selectedTypes.length > 0 ? `&assetTypes=${selectedTypes.join(',')}` : '';
-    const periodToFetch = activeTab === 'growth' ? 'All' : chartPeriod;
+    const periodToFetch = isGrowthTab ? 'All' : chartPeriod;
     const customStartParam = periodToFetch === 'Custom' && customStartDate ? `&customStartDate=${customStartDate}` : '';
     const customEndParam = periodToFetch === 'Custom' && customEndDate ? `&customEndDate=${customEndDate}` : '';
     const currencyParam = `&currency=${displayCurrency}`;
     try {
       const res = await http.get(`/portfolio/calculatePortfolioValues?userId=${uid}&period=${periodToFetch}${typesParam}${customStartParam}${customEndParam}${currencyParam}`);
       setHistory(res.data);
-
-      if (activeTab === 'growth' && availableAssetTypes.length > 0) {
-        const catPromises = availableAssetTypes.map(cat => 
-          http.get(`/portfolio/calculatePortfolioValues?userId=${uid}&period=All&assetTypes=${cat}${currencyParam}`)
-            .then(r => ({ cat, data: r.data }))
-            .catch(err => {
-              console.error(`Fout bij ophalen geschiedenis voor ${cat}:`, err);
-              return { cat, data: [] };
-            })
-        );
-        const catResults = await Promise.all(catPromises);
-        const catMap = {};
-        catResults.forEach(r => {
-          catMap[r.cat] = r.data;
-        });
-        setCategoryHistories(catMap);
-      }
     } catch (e) {
       console.error("Fout bij ophalen van historische grafiek:", e);
     }
   };
+
+  // Haal categorie-historie alleen op wanneer de Growth-tab daadwerkelijk actief is
+  useEffect(() => {
+    if (!isCurrencyLoaded || !isGrowthTab || availableAssetTypes.length === 0) return;
+    const currencyParam = `&currency=${displayCurrency}`;
+    const catPromises = availableAssetTypes.map(cat =>
+      http.get(`/portfolio/calculatePortfolioValues?userId=${uid}&period=All&assetTypes=${cat}${currencyParam}`)
+        .then(r => ({ cat, data: r.data }))
+        .catch(err => {
+          console.error(`Fout bij ophalen geschiedenis voor ${cat}:`, err);
+          return { cat, data: [] };
+        })
+    );
+    Promise.all(catPromises).then(catResults => {
+      const catMap = {};
+      catResults.forEach(r => {
+        catMap[r.cat] = r.data;
+      });
+      setCategoryHistories(catMap);
+    });
+  }, [isCurrencyLoaded, isGrowthTab, displayCurrency, availableAssetTypes.join(','), uid]);
 
   const fetchDynamicsData = async () => {
     // Wacht met fetchen als er Custom is gekozen maar de datums nog niet volledig of geldig zijn
@@ -311,18 +331,33 @@ const PortfolioManager = () => {
     setTransCurrentPage(1);
   }, [transSearch, transTypeFilter, transSort, selectedTypes, chartPeriod]);
 
+  // Haal basis portefeuilledata (holdings, transacties, cash) op zonder te herladen bij tab-wissel of categorie-filter
   useEffect(() => {
+    if (!isCurrencyLoaded) return;
     if (chartPeriod === 'Custom') {
       if (!customStartDate || !customEndDate) return;
       if (customStartDate.length !== 10 || customEndDate.length !== 10) return;
       const d1 = new Date(customStartDate);
       const d2 = new Date(customEndDate);
       if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return;
-      if (d1 > d2) return; // Wacht met fetchen als de startdatum na de einddatum ligt
+      if (d1 > d2) return;
     }
     fetchPortfolioData();
+  }, [isCurrencyLoaded, chartPeriod, customStartDate, customEndDate, displayCurrency]);
+
+  // Haal grafiekhistorie op wanneer relevante grafiekfilters wijzigen
+  useEffect(() => {
+    if (!isCurrencyLoaded) return;
+    if (chartPeriod === 'Custom' && !isGrowthTab) {
+      if (!customStartDate || !customEndDate) return;
+      if (customStartDate.length !== 10 || customEndDate.length !== 10) return;
+      const d1 = new Date(customStartDate);
+      const d2 = new Date(customEndDate);
+      if (isNaN(d1.getTime()) || isNaN(d2.getTime())) return;
+      if (d1 > d2) return;
+    }
     fetchHistoryData();
-  }, [selectedTypes, chartPeriod, customStartDate, customEndDate, displayCurrency, activeTab, availableAssetTypes.join(',')]);
+  }, [isCurrencyLoaded, selectedTypes, chartPeriod, customStartDate, customEndDate, displayCurrency, isGrowthTab]);
 
   const fetchBenchmarkData = async () => {
     try {
@@ -334,16 +369,18 @@ const PortfolioManager = () => {
     }
   };
 
+  // Haal benchmark (Yahoo Finance SPY) alleen op wanneer de Growth-tab geopend is
   useEffect(() => {
+    if (!isCurrencyLoaded || !isGrowthTab) return;
     fetchBenchmarkData();
-  }, [selectedBenchmark, displayCurrency, history]);
+  }, [isCurrencyLoaded, isGrowthTab, selectedBenchmark, displayCurrency]);
 
   // Aparte useEffect voor Dynamics Data zodat deze direct herlaadt als enkel de Dynamics filters wijzigen
   useEffect(() => {
-    if (activeTab === 'growth') {
+    if (isCurrencyLoaded && isGrowthTab) {
       fetchDynamicsData();
     }
-  }, [dynPeriod, dynStart, dynEnd, displayCurrency, dynamicsPeriod, activeTab]);
+  }, [isCurrencyLoaded, dynPeriod, dynStart, dynEnd, displayCurrency, dynamicsPeriod, isGrowthTab]);
 
   // Functie om de historische waarden en rendementen opnieuw te berekenen en op te slaan
   const handleRecalculateHistory = async (isBackground = false, fromDate = null) => {

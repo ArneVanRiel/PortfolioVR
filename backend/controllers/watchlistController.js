@@ -411,9 +411,13 @@ const removeStockFromPortfolio = async (req, res) => {
  * @param {boolean} isStartup - Geeft aan of de functie wordt aangeroepen bij server startup.
  * @returns {Promise<void>}
  */
+let isWatchlistSyncRunning = false;
+const getIsSyncRunning = () => isWatchlistSyncRunning;
+
 const updateAndProcessStocks = async (req = null, res = null, isStartup = false) => {
   // Gebruik require voor node-fetch in CommonJS module
   const fetch = require('node-fetch');
+  isWatchlistSyncRunning = true;
 
   
   console.log(`[${isStartup ? 'Startup' : 'Manual'}] Starten met het bijwerken en verwerken van aandelen.`);
@@ -755,6 +759,14 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
                       message: `Controleren ${stock.ticker_symbol} (${index + 1}/${totalStocks}) - Al actueel`,
                       progress: progress.toFixed(0)
                   }) + '\n');
+              } else if (
+                  isStartup &&
+                  latestMacdDatesMap[stock.aandeel_id] &&
+                  latestDatesMap[stock.aandeel_id] &&
+                  new Date(latestMacdDatesMap[stock.aandeel_id]) >= new Date(latestDatesMap[stock.aandeel_id])
+              ) {
+                  // Tijdens achtergrond-sync hoeft MACD niet opnieuw berekend te worden als er geen nieuwe prijzen zijn
+                  continue;
               }
           }
 
@@ -866,15 +878,28 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
       }
     }
 
-    // Voer ook automatische SEC kwartaalcontrole uit bij update
+    // Wis caches na prijs/MACD updates
     try {
-      const notificationController = require('./notificationController');
-      if (res) {
-        res.write(JSON.stringify({ type: 'progress', message: "Controleren op nieuwe SEC kwartaalcijfers & filings..." }) + '\n');
+      const calculationController = require('./calculationController');
+      if (calculationController.clearSummaryCache) calculationController.clearSummaryCache();
+      const portfolioController = require('./portfolioController');
+      if (portfolioController.clearAdvisorCache) portfolioController.clearAdvisorCache();
+    } catch (cacheErr) {
+      // ignore
+    }
+
+    // Voer bij handmatige update ook SEC kwartaalcontrole en strategie-alert sync uit
+    if (!isStartup) {
+      try {
+        const notificationController = require('./notificationController');
+        if (res) {
+          res.write(JSON.stringify({ type: 'progress', message: "Controleren op nieuwe SEC kwartaalcijfers & filings..." }) + '\n');
+        }
+        await notificationController.checkNewSecQuarters({ force: true });
+        await notificationController.syncActiveStrategyAlerts(pool, 1);
+      } catch (secErr) {
+        console.warn('[WatchlistUpdate] SEC controle overgeslagen:', secErr.message);
       }
-      await notificationController.checkNewSecQuarters({ force: true });
-    } catch (secErr) {
-      console.warn('[WatchlistUpdate] SEC controle overgeslagen:', secErr.message);
     }
 
     if (res) {
@@ -891,6 +916,8 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
       res.write(JSON.stringify({ type: 'error', message: 'Fout bij het bijwerken en verwerken van aandelen.' }));
       res.end();
     }
+  } finally {
+    isWatchlistSyncRunning = false;
   }
 };
 
@@ -898,6 +925,7 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 module.exports = {
   getStocksByView,
   updateAndProcessStocks,
+  getIsSyncRunning,
   getDailyUpdateStatus,
   addStockToPortfolio,
   removeStockFromPortfolio,

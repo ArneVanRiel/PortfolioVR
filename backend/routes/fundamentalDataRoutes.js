@@ -12,9 +12,6 @@ router.post('/fetch-sec', fundamentalDataController.fetchAndParseSecData);
 // Route om opgehaalde SEC data op te slaan
 router.post('/save-sec-fetched', fundamentalDataController.saveFetchedSecData);
 
-// Route om earnings calendar data op te halen via ticker
-router.get('/earnings-calendar/:tickerSymbol', fundamentalDataController.getEarningsCalendarDatesByTicker);
-
 // Route om Alpha Vantage data op te halen
 router.post('/fetch-alphavantage', fundamentalDataController.fetchAndParseAlphaVantageData);
 

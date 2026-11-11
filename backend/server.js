@@ -7,7 +7,6 @@ const { connectToDatabase, sql } = require('./config/database');
 const secRoutes = require('./routes/secRoutes');
 const watchlistRoutes = require('./routes/watchlistRoutes'); // alle pagina's voor watchlists en ideale portfolio
 const availableBalanceRoutes = require('./routes/availableBalanceRoutes');
-const idealPortfolioRoutes = require('./routes/idealPortfolioRoutes');
 const fundamentalDataRoutes = require('./routes/fundamentalDataRoutes'); // NIEUW
 const secImportRoutes = require('./routes/secImportRoutes');
 const calculationRoutes = require('./routes/calculationRoutes');
@@ -42,14 +41,16 @@ connectToDatabase().then(() => {
       // Voer periodieke update uit op de achtergrond
       await watchlistController.updateAndProcessStocks(null, null, true);
       await notificationController.checkNewSecQuarters();
-      console.log('[Auto-Sync] Data & SEC checks succesvol uitgevoerd.');
+      const pool = await sql.connect();
+      await notificationController.syncActiveStrategyAlerts(pool, 1);
+      console.log('[Auto-Sync] Data, SEC checks & strategie-alerts succesvol uitgevoerd.');
     } catch (schedErr) {
       console.warn('[Auto-Sync Notice] Interne achtergrond-update overgeslagen of mislukt:', schedErr.message);
     }
   };
 
-  // Draai eenmaal 10 seconden na opstarten
-  setTimeout(runInternalAutoSync, 10000);
+  // Draai pas 3 minuten na opstarten zodat na een Render wake-up alle CPU/DB-capaciteit eerst naar de pagina-load van de gebruiker gaat
+  setTimeout(runInternalAutoSync, 3 * 60 * 1000);
   // En vervolgens elke 30 minuten
   setInterval(runInternalAutoSync, 30 * 60 * 1000);
 
@@ -102,7 +103,6 @@ app.all('/public/cron/update-data', async (req, res, next) => {
 app.use('/api', verifyToken, secRoutes);
 app.use('/api/watchlist', verifyToken, watchlistRoutes); 
 app.use('/api/balance/available', verifyToken, availableBalanceRoutes); 
-app.use('/api/ideal-portfolio', verifyToken, idealPortfolioRoutes); 
 app.use('/api/fundamental-data', verifyToken, fundamentalDataRoutes);
 app.use('/api/sec', verifyToken, secImportRoutes);
 app.use('/api/calculations', verifyToken, calculationRoutes);

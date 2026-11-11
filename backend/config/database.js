@@ -18,14 +18,21 @@ const config = {
   }
 };
 
-const connectToDatabase = async () => {
-  try {
-    // Verbind met de globale pool. sql.pool wordt dan automatisch ingesteld.
-    await sql.connect(config);
-    console.log('Database verbonden!');
-  } catch (err) {
-    console.error('Database connectie fout:', err);
-    throw err; // Gooi de error verder zodat de server weet dat de connectie mislukt is
+const connectToDatabase = async (retries = 3, delay = 2000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      // Verbind met de globale pool. sql.pool wordt dan automatisch ingesteld.
+      await sql.connect(config);
+      console.log('Database verbonden!');
+      return;
+    } catch (err) {
+      console.error(`Database connectie poging ${i + 1}/${retries} mislukt:`, err.message);
+      if (i < retries - 1) {
+        await new Promise(r => setTimeout(r, delay));
+      } else {
+        throw err;
+      }
+    }
   }
 };
 

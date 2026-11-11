@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import http from '../../http-common';
 
@@ -24,14 +24,23 @@ const Analysis = () => {
   const [error, setError] = useState('');
   const [activeTab, setActiveTab] = useState('Analyse'); // Standaard tab
 
+  // Gedeelde data voor de 'Analyse' tab zodat subcomponenten geen dubbele API-calls doen
+  const [sharedStockData, setSharedStockData] = useState({
+    stockId: null,
+    calculations: null,
+    alerts: null,
+    loading: false,
+  });
+
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
 
+  // Haal de aandelenlijst slechts 1x op bij het laden van de pagina (niet bij elke tab-switch)
   useEffect(() => {
     const fetchStocks = async () => {
       try {
         const response = await http.get(`/stocks`);
-        setStocks(response.data);
+        setStocks(response.data || []);
       } catch (err) {
         setError('Kon aandelen niet laden.');
         console.error('Error fetching stocks:', err);
@@ -40,7 +49,58 @@ const Analysis = () => {
       }
     };
     fetchStocks();
-  }, [activeTab]);
+  }, []);
+
+  const sortedStocks = useMemo(() => {
+    return [...stocks].sort((a, b) =>
+      (a.ticker || a.ticker_symbol || '').localeCompare(b.ticker || b.ticker_symbol || '')
+    );
+  }, [stocks]);
+
+  // Haal gedeelde berekeningen en MACD-alerts 1x op per geselecteerd aandeel voor de Analyse-tab
+  const selectedStockId = selectedStock?.stock_id || selectedStock?.aandeel_id || null;
+  useEffect(() => {
+    if (!selectedStockId || activeTab !== 'Analyse') return;
+    if (sharedStockData.stockId === selectedStockId && sharedStockData.calculations && sharedStockData.alerts) {
+      return;
+    }
+
+    let isCancelled = false;
+    setSharedStockData({
+      stockId: selectedStockId,
+      calculations: null,
+      alerts: null,
+      loading: true,
+    });
+
+    Promise.all([
+      http.get(`/calculations/${selectedStockId}`),
+      http.get(`/calculations/${selectedStockId}/macd-alerts`),
+    ])
+      .then(([calcsRes, alertsRes]) => {
+        if (isCancelled) return;
+        setSharedStockData({
+          stockId: selectedStockId,
+          calculations: calcsRes.data || [],
+          alerts: alertsRes.data || [],
+          loading: false,
+        });
+      })
+      .catch((err) => {
+        if (isCancelled) return;
+        console.error('Error fetching shared stock analysis data:', err);
+        setSharedStockData({
+          stockId: selectedStockId,
+          calculations: [],
+          alerts: [],
+          loading: false,
+        });
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [selectedStockId, activeTab]);
 
   // Selecteer aandeel automatisch op basis van URL parameter (bijv: ?ticker=AAPL)
   useEffect(() => {
@@ -112,7 +172,7 @@ const Analysis = () => {
                   }}
                 >
                   <option value="">-- Typ of selecteer een aandeel --</option>
-                  {stocks.sort((a,b) => (a.ticker || a.ticker_symbol).localeCompare(b.ticker || b.ticker_symbol)).map(s => (
+                  {sortedStocks.map(s => (
                     <option key={s.stock_id || s.aandeel_id} value={s.stock_id || s.aandeel_id}>
                       {s.ticker || s.ticker_symbol} - {s.name}
                     </option>
@@ -161,9 +221,22 @@ const Analysis = () => {
             )}
             {activeTab === 'Analyse' && (
               <div className="space-y-6">
-                  <AnalysisChartTab selectedStock={selectedStock} />
-                  <AnalysisCalculationsChart selectedStock={selectedStock} />
-                  <AnalysisAlertsTab selectedStock={selectedStock} />
+                  <AnalysisChartTab
+                    selectedStock={selectedStock}
+                    useSharedData={true}
+                    sharedCalculations={sharedStockData.stockId === selectedStockId ? sharedStockData.calculations : null}
+                    sharedAlerts={sharedStockData.stockId === selectedStockId ? sharedStockData.alerts : null}
+                  />
+                  <AnalysisCalculationsChart
+                    selectedStock={selectedStock}
+                    useSharedData={true}
+                    sharedCalculations={sharedStockData.stockId === selectedStockId ? sharedStockData.calculations : null}
+                  />
+                  <AnalysisAlertsTab
+                    selectedStock={selectedStock}
+                    useSharedData={true}
+                    sharedAlerts={sharedStockData.stockId === selectedStockId ? sharedStockData.alerts : null}
+                  />
               </div>
             )}
             {activeTab === 'portfolio' && (

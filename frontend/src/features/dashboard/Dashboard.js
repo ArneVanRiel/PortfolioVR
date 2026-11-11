@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import CalculationsSummaryTable from '../analysis/CalculationsSummaryTable';
 import AlertsSummaryTable from '../analysis/AlertsSummaryTable';
 import Modal from '../../components/ui/modal';
@@ -6,30 +6,8 @@ import http from '../../http-common';
 import toast from 'react-hot-toast';
 import Score5DistributionChart from './Score5DistributionChart';
 import IncompleteDataWidget from './IncompleteDataWidget';
-import WatchlistPortfolioTable from './WatchlistPortfolioTable';
-import { useIncognito } from '../../hooks/useIncognito';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
-
-// Placeholder components for stats and charts
-const StatCard = ({ title, value, trend, trendUp }) => {
-  const isIncognito = useIncognito();
-  return (
-    <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100 hover:shadow-md transition-all duration-300 w-[85vw] sm:w-[48%] md:w-full flex-shrink-0 snap-start">
-      <div className="flex justify-between items-start">
-        <div>
-          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wider">{title}</p>
-          <h3 className="text-2xl font-bold text-gray-900 mt-2 privacy-blur">{isIncognito ? '€ ••••••' : value}</h3>
-        </div>
-        {trend && (
-          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${trendUp ? 'bg-green-100 text-green-800' : 'bg-red-100 text-red-800'}`}>
-            {trend}
-          </span>
-        )}
-      </div>
-    </div>
-  );
-};
 
 const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
   <div
@@ -61,8 +39,7 @@ const ChartCard = ({ title, children, isExpanded, onToggleExpand }) => (
 );
 
 const Dashboard = () => {
-  const isIncognito = useIncognito();
-  const [viewType, setViewType] = useState('idealePortfolio');
+  const [viewType] = useState('idealePortfolio');
   const watchlistTableRef = useRef(null);
   const calculationsTableRef = useRef(null);
   const alertsTableRef = useRef(null);
@@ -72,19 +49,36 @@ const Dashboard = () => {
   const [updateProgress, setUpdateProgress] = useState(0);
   const [expandedCard, setExpandedCard] = useState(null);
   const [isUpdatedToday, setIsUpdatedToday] = useState(false);
+  const [sharedSummaryData, setSharedSummaryData] = useState(null);
+  const [sharedHoldingsData, setSharedHoldingsData] = useState(null);
 
-  const checkUpdateStatus = async () => {
+  const checkUpdateStatus = useCallback(async () => {
     try {
       const response = await http.get('/watchlist/update-status');
       setIsUpdatedToday(response.data.isUpdatedToday);
     } catch (error) {
       console.error("Fout bij ophalen update status:", error);
     }
-  };
+  }, []);
+
+  const fetchSharedDashboardData = useCallback(async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const [summaryRes, holdingsRes] = await Promise.all([
+        http.get('/calculations/summary-by-date', { params: { date: today } }),
+        http.get('/portfolio/holdings?userId=1')
+      ]);
+      setSharedSummaryData(summaryRes.data || []);
+      setSharedHoldingsData(holdingsRes.data || []);
+    } catch (error) {
+      console.error("Fout bij ophalen gedeelde dashboard data:", error);
+    }
+  }, []);
 
   useEffect(() => {
     checkUpdateStatus();
-  }, []);
+    fetchSharedDashboardData();
+  }, [checkUpdateStatus, fetchSharedDashboardData]);
 
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
@@ -303,13 +297,8 @@ const Dashboard = () => {
     } finally {
       setIsUpdatingData(false);
       setUpdateProgress(0);
-      // Optioneel: doe nog een volledige refresh aan het einde om zeker te zijn
-      if (watchlistTableRef.current) {
-        watchlistTableRef.current.refreshData();
-      }
-      if (calculationsTableRef.current) {
-        calculationsTableRef.current.refreshData();
-      }
+      window.dispatchEvent(new Event('dataStatusUpdated'));
+      await fetchSharedDashboardData();
       if (alertsTableRef.current) {
         alertsTableRef.current.refreshData();
       }
@@ -362,36 +351,17 @@ const Dashboard = () => {
         </div>
       </div>
 
-      {/* Stats Grid */}
-      <div className="flex md:grid md:grid-cols-2 lg:grid-cols-4 gap-6 overflow-x-auto md:overflow-x-visible snap-x snap-mandatory pb-4 md:pb-0 scroll-smooth no-scrollbar">
-        <StatCard title="Total Portfolio Value" value="$125,680.50" trend="+2.5%" trendUp={true} />
-        <StatCard title="Available Cash" value="$15,230.00" />
-        <StatCard title="Today's Gain/Loss" value="+$542.30" trend="+0.4%" trendUp={true} />
-        <StatCard title="Asset Allocation" value="60% Stocks" trend="Balanced" trendUp={true} />
-      </div>
-
       {/* Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        <ChartCard
-          title="Portfolio Performance"
-          isExpanded={expandedCard === 'performance'}
-          onToggleExpand={() => toggleExpand('performance')}
-        >
-          <div className="flex items-center justify-center h-full bg-gray-100 rounded-lg incognito-hide">
-            <p className="text-gray-500">Portfolio Performance Chart</p>
-          </div>
-          <div className="incognito-show flex-col items-center justify-center h-full text-gray-400 text-sm">
-            <i className="ph-fill ph-eye-slash text-4xl mb-2 opacity-30"></i>
-            Waardegrafiek verborgen in privacymodus
-          </div>
-        </ChartCard>
-
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <ChartCard
           title="Ideale vs Huidige Portfolio (%)"
           isExpanded={expandedCard === 'distribution'}
           onToggleExpand={() => toggleExpand('distribution')}
         >
-          <Score5DistributionChart />
+          <Score5DistributionChart
+            sharedSummaryData={sharedSummaryData}
+            sharedHoldingsData={sharedHoldingsData}
+          />
         </ChartCard>
 
         <ChartCard
@@ -402,47 +372,22 @@ const Dashboard = () => {
           <AlertsSummaryTable
             ref={alertsTableRef}
             isCompact={expandedCard !== 'alerts'}
+            sharedSummaryData={sharedSummaryData}
+            sharedHoldingsData={sharedHoldingsData}
           />
         </ChartCard>
       </div>
 
       {/* Calculations Summary Table */}
-      <CalculationsSummaryTable ref={calculationsTableRef} />
+      <CalculationsSummaryTable
+        ref={calculationsTableRef}
+        sharedSummaryData={sharedSummaryData}
+        sharedHoldingsData={sharedHoldingsData}
+        onDataChanged={fetchSharedDashboardData}
+      />
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Activity Table */}
-        <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-          <h3 className="text-lg font-semibold text-gray-800 mb-4">Recent Activity</h3>
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Type</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Stock</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Amount</th>
-                <th className="px-6 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">Date</th>
-              </tr>
-            </thead>
-            <tbody className="bg-white divide-y divide-gray-200">
-              {/* Placeholder rows */}
-              <tr className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-emerald-600">BUY</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">AAPL</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">{isIncognito ? '••••••' : '$5,000'}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-21</td>
-              </tr>
-              <tr className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-bold text-red-600">SELL</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900">GOOGL</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 privacy-blur">{isIncognito ? '••••••' : '$3,500'}</td>
-                <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">2025-09-20</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        {/* Incomplete Data Widget */}
-        <IncompleteDataWidget />
-      </div>
+      {/* Incomplete Data Widget */}
+      <IncompleteDataWidget />
 
       {/* Export Modal */}
       <Modal isOpen={showExportModal} onClose={handleCloseExportModal}>

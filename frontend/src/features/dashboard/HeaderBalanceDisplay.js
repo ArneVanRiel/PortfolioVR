@@ -29,66 +29,56 @@ const HeaderBalanceDisplay = () => {
     return null;
   }, []);
 
-  const fetchLatestBalance = useCallback(async (bCash = brokerCash) => {
+  const fetchLatestBalanceOnly = useCallback(async () => {
     try {
-      const [balRes, cashData] = await Promise.all([
-        http.get('/balance/available/latest-balance'),
-        bCash ? Promise.resolve(bCash) : fetchBrokerCash()
-      ]);
-
-      const { totalAmount, balances } = balRes.data;
-      setBalance(totalAmount || 0);
-      
-      // Voorbereiden input velden voor modal
-      const initialInput = {};
-      if (balanceTypes.length > 0) {
-        balanceTypes.forEach(type => {
-          const tName = type.type_name.toLowerCase();
-          if (tName.includes('etoro')) {
-            // eToro Cash automatisch invullen uit broker cash (in EUR)
-            initialInput[type.balance_type_id] = (cashData?.suggestedBalances?.[1] ?? cashData?.etoro?.amountEur ?? balances?.[type.type_name] ?? 0);
-          } else if (tName.includes('degiro')) {
-            // DeGiro Cash automatisch invullen uit broker cash (in EUR)
-            initialInput[type.balance_type_id] = (cashData?.suggestedBalances?.[2] ?? cashData?.degiro?.amountEur ?? balances?.[type.type_name] ?? 0);
-          } else {
-            initialInput[type.balance_type_id] = balances?.[type.type_name] !== undefined ? balances[type.type_name] : '';
-          }
-        });
-        setCurrentInputBalances(initialInput);
-      }
+      const balRes = await http.get('/balance/available/latest-balance');
+      setBalance(balRes.data?.totalAmount || 0);
     } catch (err) {
       console.error("Failed to fetch available balance:", err);
-    }
-  }, [balanceTypes, brokerCash, fetchBrokerCash]);
-
-  const fetchBalanceTypes = useCallback(async () => {
-    try {
-      const response = await http.get('/balance/available/balance-types');
-      setBalanceTypes(response.data);
-    } catch (err) {
-      console.error('Fout bij ophalen saldo types:', err);
     }
   }, []);
 
   useEffect(() => {
-    fetchBalanceTypes();
-  }, [fetchBalanceTypes]);
+    fetchLatestBalanceOnly();
+  }, [fetchLatestBalanceOnly]);
 
   useEffect(() => {
-    fetchLatestBalance();
-  }, [fetchLatestBalance]);
-
-  useEffect(() => {
-    const handleRefresh = () => fetchLatestBalance();
+    const handleRefresh = () => fetchLatestBalanceOnly();
     window.addEventListener('availableBalanceUpdated', handleRefresh);
     return () => window.removeEventListener('availableBalanceUpdated', handleRefresh);
-  }, [fetchLatestBalance]);
+  }, [fetchLatestBalanceOnly]);
 
   const handleDoubleClick = async () => {
     if (isDemo) return;
-    const latestCash = await fetchBrokerCash();
-    await fetchLatestBalance(latestCash);
-    setShowUpdateModal(true);
+    try {
+      const [typesRes, cashRes, balRes] = await Promise.all([
+        balanceTypes.length > 0 ? Promise.resolve({ data: balanceTypes }) : http.get('/balance/available/balance-types'),
+        fetchBrokerCash(),
+        http.get('/balance/available/latest-balance')
+      ]);
+      const types = typesRes?.data || balanceTypes;
+      if (balanceTypes.length === 0 && types.length > 0) {
+        setBalanceTypes(types);
+      }
+      const { totalAmount, balances } = balRes.data || {};
+      setBalance(totalAmount || 0);
+
+      const initialInput = {};
+      types.forEach(type => {
+        const tName = type.type_name.toLowerCase();
+        if (tName.includes('etoro')) {
+          initialInput[type.balance_type_id] = (cashRes?.suggestedBalances?.[1] ?? cashRes?.etoro?.amountEur ?? balances?.[type.type_name] ?? 0);
+        } else if (tName.includes('degiro')) {
+          initialInput[type.balance_type_id] = (cashRes?.suggestedBalances?.[2] ?? cashRes?.degiro?.amountEur ?? balances?.[type.type_name] ?? 0);
+        } else {
+          initialInput[type.balance_type_id] = balances?.[type.type_name] !== undefined ? balances[type.type_name] : '';
+        }
+      });
+      setCurrentInputBalances(initialInput);
+      setShowUpdateModal(true);
+    } catch (err) {
+      console.error('Fout bij openen saldo modal:', err);
+    }
   };
 
   const handleCloseModal = () => {
@@ -120,7 +110,7 @@ const HeaderBalanceDisplay = () => {
 
       await http.post('/balance/available/update-balance', { balances: balancesToUpdate });
       handleCloseModal();
-      await fetchLatestBalance();
+      await fetchLatestBalanceOnly();
       window.dispatchEvent(new Event('availableBalanceUpdated'));
     } catch (err) {
       console.error('Fout bij bijwerken vermogen:', err);

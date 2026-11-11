@@ -26,7 +26,7 @@ ChartJS.register(
   zoomPlugin
 );
 
-const AnalysisChartTab = ({ selectedStock }) => {
+const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculations = null, sharedAlerts = null }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [analysisChartData, setAnalysisChartData] = useState(null);
@@ -36,14 +36,18 @@ const AnalysisChartTab = ({ selectedStock }) => {
 
   const fetchAnalysisChartData = useCallback(async () => {
     if (!selectedStock) return;
+    if (useSharedData && (!sharedCalculations || !sharedAlerts)) {
+        setLoading(true);
+        return;
+    }
     setLoading(true);
     setError('');
     try {
-        const [priceRes, alertsRes, calcsRes, macdRes] = await Promise.all([
+        const [priceRes, macdRes, alertsRes, calcsRes] = await Promise.all([
             http.get(`/calculations/${selectedStock.stock_id}/price-history`),
-            http.get(`/calculations/${selectedStock.stock_id}/macd-alerts`),
-            http.get(`/calculations/${selectedStock.stock_id}`),
-            http.get(`/calculations/${selectedStock.stock_id}/macd-history`)
+            http.get(`/calculations/${selectedStock.stock_id}/macd-history`),
+            useSharedData ? Promise.resolve({ data: sharedAlerts }) : http.get(`/calculations/${selectedStock.stock_id}/macd-alerts`),
+            useSharedData ? Promise.resolve({ data: sharedCalculations }) : http.get(`/calculations/${selectedStock.stock_id}`),
         ]);
 
         const prices = priceRes.data;
@@ -251,7 +255,7 @@ const AnalysisChartTab = ({ selectedStock }) => {
     } finally {
         setLoading(false);
     }
-  }, [selectedStock]);
+  }, [selectedStock, useSharedData, sharedCalculations, sharedAlerts]);
 
   useEffect(() => {
     if (selectedStock) {

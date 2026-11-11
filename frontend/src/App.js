@@ -14,8 +14,8 @@ import MicrosoftCallback from './features/auth/components/MicrosoftCallback.js';
 
 import SearchModal from './components/ui/SearchModal.js';
 import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
-import InvestedBalanceDisplay from './features/dashboard/InvestedBalanceDisplay.js';
 import NotificationBell from './components/ui/NotificationBell.js';
+import DataStatusIndicator from './components/ui/DataStatusIndicator.js';
 
 // Protected Route Component om onbevoegde toegang te blokkeren
 const ProtectedRoute = ({ children }) => {
@@ -198,11 +198,13 @@ function App() {
                 </button>
               )}
 
-              {/* Beschikbaar en Geïnvesteerd Vermogen Displays */}
-              <div className="flex items-center space-x-2 sm:space-x-4 divide-x divide-gray-200">
+              {/* Beschikbaar Vermogen Display */}
+              <div className="flex items-center space-x-2 sm:space-x-4">
                 <HeaderBalanceDisplay />
-                <InvestedBalanceDisplay />
               </div>
+
+              {/* Data & Sync Status Indicator */}
+              {!isDemo && <DataStatusIndicator />}
 
               {/* Meldingen element */}
               {!isDemo && <NotificationBell />}

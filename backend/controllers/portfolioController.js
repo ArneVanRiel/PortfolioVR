@@ -805,7 +805,10 @@ const parseDateRange = (period, customStartDate, customEndDate) => {
 };
 
 const portfolioValuesCache = new Map();
+const portfolioInFlightRequests = new Map();
+const yahooBenchmarkCache = new Map();
 const CACHE_TTL_MS = 180000; // 3 minuten cache
+const YAHOO_BENCHMARK_TTL_MS = 3600000; // 1 uur cache voor externe Yahoo benchmark prijzen
 
 const advisorDataCache = new Map();
 const etfDataCache = new Map();
@@ -870,17 +873,28 @@ const clearPortfolioCache = (userId) => {
 };
 
 const getPortfolioValues = async (req, res) => {
-  try {
-    const { userId, period, assetTypes, customStartDate, customEndDate, currency } = req.query;
-    const cacheKey = `pv_${userId || 1}_${period || 'All'}_${assetTypes || 'all'}_${customStartDate || ''}_${customEndDate || ''}_${currency || 'USD'}`;
-    const cached = portfolioValuesCache.get(cacheKey);
-    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
-      return res.status(200).json(cached.data);
-    }
+  const { userId, period, assetTypes, customStartDate, customEndDate, currency } = req.query;
+  const cacheKey = `pv_${userId || 1}_${period || 'All'}_${assetTypes || 'all'}_${customStartDate || ''}_${customEndDate || ''}_${currency || 'USD'}`;
+  const cached = portfolioValuesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+    return res.status(200).json(cached.data);
+  }
 
+  if (portfolioInFlightRequests.has(cacheKey)) {
+    try {
+      const data = await portfolioInFlightRequests.get(cacheKey);
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(500).json({ message: "Serverfout bij het ophalen van portfolio waarden." });
+    }
+  }
+
+  const computePromise = (async () => {
     const pool = await sql.connect(config);
     const isEur = currency === 'EUR' ? 1 : 0;
     const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
+    const startDateStr = startDate.toISOString().split('T')[0];
+    const endDateStr = endDate.toISOString().split('T')[0];
 
     // If no assetTypes filter is active, return the pre-calculated aggregate history directly (super fast!)
     if (!assetTypes || assetTypes === 'All' || assetTypes.length === 0) {
@@ -895,14 +909,14 @@ const getPortfolioValues = async (req, res) => {
         ORDER BY dpv.date ASC
       `;
       const request = pool.request();
-      request.input('userId', sql.Int, userId);
+      request.input('userId', sql.Int, userId || 1);
       request.input('startDate', sql.Date, startDate);
       request.input('endDate', sql.Date, endDate);
       request.input('isEur', sql.Bit, isEur);
       
       const result = await request.query(query);
       portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: result.recordset });
-      return res.status(200).json(result.recordset);
+      return result.recordset;
     }
 
     // Dynamic category history calculation (Optimized in Node.js to avoid SQL timeout)
@@ -917,14 +931,29 @@ const getPortfolioValues = async (req, res) => {
       ORDER BY pt.purchase_time ASC
     `;
     const txRequest = pool.request();
-    txRequest.input('userId', sql.Int, userId);
+    txRequest.input('userId', sql.Int, userId || 1);
     const txResult = await txRequest.query(txQuery);
     const transactions = txResult.recordset;
 
+    const filterTypes = assetTypes.split(',').map(t => t.trim().toUpperCase());
+    const relevantStockIds = [...new Set(
+      transactions
+        .filter(t => t.aandeel_id && t.asset_type && filterTypes.includes(t.asset_type.toUpperCase()))
+        .map(t => Number(t.aandeel_id))
+        .filter(id => Number.isInteger(id))
+    )];
+
+    if (relevantStockIds.length === 0) {
+      portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: [] });
+      return [];
+    }
+
+    // Haal ALLEEN prijzen op voor de relevante aandelen in deze asset-categorie (+ 7 dagen lookback voor start-weekend/feestdag)
     const priceQuery = `
       SELECT dcp.aandeel_id, dcp.date, dcp.closing_price
       FROM DailyClosingPrices dcp
-      WHERE dcp.date >= @startDate AND dcp.date <= @endDate
+      WHERE dcp.aandeel_id IN (${relevantStockIds.join(',')})
+        AND dcp.date >= DATEADD(day, -7, @startDate) AND dcp.date <= @endDate
       ORDER BY dcp.date ASC
     `;
     const priceRequest = pool.request();
@@ -936,24 +965,13 @@ const getPortfolioValues = async (req, res) => {
     const fxQuery = `
       SELECT date, rate 
       FROM DailyExchangeRates 
-      WHERE currency_pair = 'EURUSD' AND date >= @startDate AND date <= @endDate
+      WHERE currency_pair = 'EURUSD' AND date <= @endDate
       ORDER BY date ASC
     `;
     const fxRequest = pool.request();
-    fxRequest.input('startDate', sql.Date, startDate);
     fxRequest.input('endDate', sql.Date, endDate);
     const fxResult = await fxRequest.query(fxQuery);
     const fxRates = fxResult.recordset;
-
-    // Unique dates list (incorporating closing prices and transaction dates)
-    const datesSet = new Set(closingPrices.map(p => p.date.toISOString().split('T')[0]));
-    transactions.forEach(t => {
-      const dStr = new Date(t.purchase_time).toISOString().split('T')[0];
-      if (dStr >= startDate && dStr <= endDate) {
-        datesSet.add(dStr);
-      }
-    });
-    const sortedDates = Array.from(datesSet).sort();
 
     // Map exchange rates by date
     const fxMap = {};
@@ -969,18 +987,31 @@ const getPortfolioValues = async (req, res) => {
       return lastFx;
     };
 
-    // Map closing prices: pricesMap[aandeel_id][dateStr] = price
-    const pricesMap = {};
-    closingPrices.forEach(p => {
-      const dateStr = p.date.toISOString().split('T')[0];
-      if (!pricesMap[p.aandeel_id]) pricesMap[p.aandeel_id] = {};
-      pricesMap[p.aandeel_id][dateStr] = p.closing_price;
-    });
-
     const fallbackPrices = {};
     const stockExchangeIsEur = {};
+    const pricesMap = {};
+    const datesSet = new Set();
 
-    const filterTypes = assetTypes.split(',').map(t => t.trim().toUpperCase());
+    closingPrices.forEach(p => {
+      const dateStr = p.date.toISOString().split('T')[0];
+      if (dateStr < startDateStr) {
+        fallbackPrices[p.aandeel_id] = p.closing_price;
+      } else {
+        datesSet.add(dateStr);
+        if (!pricesMap[p.aandeel_id]) pricesMap[p.aandeel_id] = {};
+        pricesMap[p.aandeel_id][dateStr] = p.closing_price;
+      }
+    });
+
+    transactions.forEach(t => {
+      if (t.asset_type && filterTypes.includes(t.asset_type.toUpperCase())) {
+        const dStr = new Date(t.purchase_time).toISOString().split('T')[0];
+        if (dStr >= startDateStr && dStr <= endDateStr) {
+          datesSet.add(dStr);
+        }
+      }
+    });
+    const sortedDates = Array.from(datesSet).sort();
 
     const dailyValues = [];
     const holdings = {};
@@ -993,8 +1024,10 @@ const getPortfolioValues = async (req, res) => {
     while (txIdx < transactions.length) {
       const tx = transactions[txIdx];
       const txDateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
-      if (txDateStr < startDate) {
-        fallbackPrices[tx.aandeel_id] = tx.price;
+      if (txDateStr < startDateStr) {
+        if (fallbackPrices[tx.aandeel_id] === undefined) {
+          fallbackPrices[tx.aandeel_id] = tx.price;
+        }
         stockExchangeIsEur[tx.aandeel_id] = tx.currency === 'EUR';
 
         if (filterTypes.includes(tx.asset_type.toUpperCase())) {
@@ -1038,7 +1071,7 @@ const getPortfolioValues = async (req, res) => {
 
     const lastKnownPrices = { ...fallbackPrices };
 
-    // Calculate values day-by-day
+    // Calculate values day-by-day in O(1) per stock per day
     sortedDates.forEach(dateStr => {
       while (txIdx < transactions.length) {
         const tx = transactions[txIdx];
@@ -1086,6 +1119,13 @@ const getPortfolioValues = async (req, res) => {
         }
       }
 
+      // Werk laatst bekende slotkoersen bij voor deze dag (O(1) lookup, geen .filter().sort() meer!)
+      for (const stockId of relevantStockIds) {
+        if (pricesMap[stockId] && pricesMap[stockId][dateStr] !== undefined) {
+          lastKnownPrices[stockId] = pricesMap[stockId][dateStr];
+        }
+      }
+
       let dayVal = 0;
       let dayNetInvested = 0;
       let dayCumulativeDividends = 0;
@@ -1094,17 +1134,7 @@ const getPortfolioValues = async (req, res) => {
 
       for (const [aandeel_id, qty] of Object.entries(holdings)) {
         if (qty > 0.00001) {
-          let price = lastKnownPrices[aandeel_id] || 0;
-          if (pricesMap[aandeel_id] && pricesMap[aandeel_id][dateStr] !== undefined) {
-            price = pricesMap[aandeel_id][dateStr];
-          } else {
-            const assetPrices = pricesMap[aandeel_id] || {};
-            const prevDates = Object.keys(assetPrices).filter(d => d < dateStr).sort();
-            if (prevDates.length > 0) {
-              price = assetPrices[prevDates[prevDates.length - 1]];
-            }
-          }
-
+          const price = lastKnownPrices[aandeel_id] || 0;
           const isAssetEur = stockExchangeIsEur[aandeel_id];
           let priceInTarget = price;
           if (isEur) {
@@ -1129,10 +1159,19 @@ const getPortfolioValues = async (req, res) => {
       });
     });
 
-    res.status(200).json(dailyValues);
+    portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: dailyValues });
+    return dailyValues;
+  })();
+
+  portfolioInFlightRequests.set(cacheKey, computePromise);
+  try {
+    const data = await computePromise;
+    return res.status(200).json(data);
   } catch (error) {
     console.error("Fout bij het ophalen van portfolio waarden:", error);
-    res.status(500).json({ message: "Serverfout bij het ophalen van portfolio waarden." });
+    return res.status(500).json({ message: "Serverfout bij het ophalen van portfolio waarden." });
+  } finally {
+    portfolioInFlightRequests.delete(cacheKey);
   }
 };
 
@@ -1241,14 +1280,30 @@ const getPortfolioReturns = async (req, res) => {
 };
 
 const getCurrentPortfolioHoldings = async (req, res) => {
-  try {
-    const userId = req.query.userId || 1;
-    const { period, customStartDate, customEndDate, currency } = req.query;
+  const userId = req.query.userId || 1;
+  const { period, customStartDate, customEndDate, currency } = req.query;
+  const isEur = currency === 'EUR' || !currency ? 1 : 0;
+  const cacheKey = `holdings_${userId}_${period || 'All'}_${customStartDate || ''}_${customEndDate || ''}_${isEur}`;
+
+  const cached = portfolioValuesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+    return res.status(200).json(cached.data);
+  }
+
+  if (portfolioInFlightRequests.has(cacheKey)) {
+    try {
+      const data = await portfolioInFlightRequests.get(cacheKey);
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(500).json({ message: 'Serverfout bij ophalen van actuele holdings.' });
+    }
+  }
+
+  const computePromise = (async () => {
     const { endDate } = parseDateRange(period, customStartDate, customEndDate);
     const pool = await sql.connect(config);
-    const isEur = currency === 'EUR' || !currency ? 1 : 0;
 
-    // Bereken het actuele bezit op basis van alle transacties en de meest recente slotkoers
+    // Bereken het actuele bezit op basis van alle transacties en zoek alleen voor de aangehouden aandelen de laatste slotkoers op
     const query = `
       WITH Holdings AS (
         SELECT
@@ -1262,17 +1317,8 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         GROUP BY t.aandeel_id
         HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
       ),
-      LatestPrices AS (
-        SELECT aandeel_id, closing_price,
-               ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
-        FROM DailyClosingPrices
-        WHERE date <= @endDate
-      ),
-      LatestTransactionPrices AS (
-        SELECT aandeel_id, price, currency,
-               ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY purchase_time DESC) as rn
-        FROM PF_transactions
-        WHERE user_id = @userId AND purchase_time <= @endDate
+      LatestFX AS (
+        SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= @endDate ORDER BY date DESC
       )
       SELECT
         h.aandeel_id,
@@ -1357,10 +1403,14 @@ const getCurrentPortfolioHoldings = async (req, res) => {
       FROM Holdings h
       JOIN Stocks s ON h.aandeel_id = s.aandeel_id
       LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
-      LEFT JOIN LatestPrices p ON h.aandeel_id = p.aandeel_id AND p.rn = 1
-      LEFT JOIN LatestTransactionPrices ltp ON h.aandeel_id = ltp.aandeel_id AND ltp.rn = 1
       OUTER APPLY (
-        SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= @endDate ORDER BY date DESC
+        SELECT TOP 1 closing_price FROM DailyClosingPrices dcp WHERE dcp.aandeel_id = h.aandeel_id AND dcp.date <= @endDate ORDER BY dcp.date DESC
+      ) p
+      OUTER APPLY (
+        SELECT TOP 1 price, currency FROM PF_transactions pt WHERE pt.user_id = @userId AND pt.aandeel_id = h.aandeel_id AND pt.purchase_time <= @endDate ORDER BY pt.purchase_time DESC
+      ) ltp
+      OUTER APPLY (
+        SELECT rate FROM LatestFX
       ) er;
       `;
     const result = await pool.request()
@@ -1368,17 +1418,42 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         .input('endDate', sql.DateTime, endDate)
         .input('isEur', sql.Bit, isEur)
         .query(query);
-    res.status(200).json(result.recordset);
+    portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: result.recordset });
+    return result.recordset;
+  })();
+
+  portfolioInFlightRequests.set(cacheKey, computePromise);
+  try {
+    const data = await computePromise;
+    return res.status(200).json(data);
   } catch (error) {
     console.error('Fout bij het ophalen van actuele holdings:', error);
-    res.status(500).json({ message: 'Serverfout bij ophalen van actuele holdings.' });
+    return res.status(500).json({ message: 'Serverfout bij ophalen van actuele holdings.' });
+  } finally {
+    portfolioInFlightRequests.delete(cacheKey);
   }
 };
 
 const getTransactions = async (req, res) => {
-  try {
-    const userId = req.query.userId || 1;
-    const { period, customStartDate, customEndDate } = req.query;
+  const userId = req.query.userId || 1;
+  const { period, customStartDate, customEndDate } = req.query;
+  const cacheKey = `tx_${userId}_${period || 'All'}_${customStartDate || ''}_${customEndDate || ''}`;
+
+  const cached = portfolioValuesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+    return res.status(200).json(cached.data);
+  }
+
+  if (portfolioInFlightRequests.has(cacheKey)) {
+    try {
+      const data = await portfolioInFlightRequests.get(cacheKey);
+      return res.status(200).json(data);
+    } catch (err) {
+      return res.status(500).json({ message: 'Serverfout bij ophalen van transacties.' });
+    }
+  }
+
+  const computePromise = (async () => {
     const { startDate, endDate } = parseDateRange(period, customStartDate, customEndDate);
     const pool = await sql.connect(config);
     const result = await pool.request()
@@ -1386,26 +1461,60 @@ const getTransactions = async (req, res) => {
       .input('startDate', sql.DateTime, startDate)
       .input('endDate', sql.DateTime, endDate)
       .query(`
+        WITH DistinctStocks AS (
+            SELECT DISTINCT aandeel_id FROM PF_transactions WHERE user_id = @userId AND aandeel_id IS NOT NULL
+        ),
+        BaselinePrices2025 AS (
+            SELECT ds.aandeel_id, p.closing_price
+            FROM DistinctStocks ds
+            OUTER APPLY (
+                SELECT TOP 1 closing_price 
+                FROM DailyClosingPrices 
+                WHERE aandeel_id = ds.aandeel_id AND date <= '2025-12-31' 
+                ORDER BY date DESC
+            ) p
+        ),
+        BaselineFx2025 AS (
+            SELECT TOP 1 rate 
+            FROM DailyExchangeRates 
+            WHERE currency_pair = 'EURUSD' AND date <= '2025-12-31' 
+            ORDER BY date DESC
+        )
         SELECT t.*, s.ticker_symbol, s.name as stock_name, s.isin, at.type_name as asset_type, b.name as broker_name,
-               er.rate as historical_exchange_rate
+               er.rate as historical_exchange_rate,
+               p2025.closing_price as baseline_price_2025,
+               er2025.rate as baseline_fx_rate_2025
         FROM PF_transactions t
         LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
         LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
         LEFT JOIN Brokers b ON t.broker_id = b.broker_id
+        LEFT JOIN BaselinePrices2025 p2025 ON t.aandeel_id = p2025.aandeel_id
         OUTER APPLY (
             SELECT TOP 1 rate 
             FROM DailyExchangeRates 
             WHERE currency_pair = 'EURUSD' AND date <= CAST(t.purchase_time AS DATE) 
             ORDER BY date DESC
         ) er
+        OUTER APPLY (
+            SELECT rate FROM BaselineFx2025
+        ) er2025
         WHERE t.user_id = @userId
         AND t.purchase_time >= @startDate AND t.purchase_time <= @endDate
         ORDER BY t.purchase_time DESC
       `);
-    res.status(200).json(result.recordset);
+    portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: result.recordset });
+    return result.recordset;
+  })();
+
+  portfolioInFlightRequests.set(cacheKey, computePromise);
+  try {
+    const data = await computePromise;
+    return res.status(200).json(data);
   } catch (error) {
     console.error('Fout bij het ophalen van transacties:', error);
-    res.status(500).json({ message: 'Serverfout bij ophalen van transacties.' });
+    return res.status(500).json({ message: 'Serverfout bij ophalen van transacties.' });
+  } finally {
+    portfolioInFlightRequests.delete(cacheKey);
   }
 };
 
@@ -2194,6 +2303,7 @@ const applyStockSplit = async (req, res) => {
             .input('splitRatio', sql.Decimal(18, 6), parseFloat(splitRatio))
             .query(`INSERT INTO PF_StockSplits (aandeel_id, split_date, split_ratio) VALUES (@stockId, @splitDate, @splitRatio)`);
 
+        clearPortfolioCache();
         res.status(200).json({ message: `Stock split toegepast. ${result.rowsAffected[0]} transacties bijgewerkt.` });
     } catch (error) {
         console.error('Error applying stock split:', error);
@@ -2202,10 +2312,26 @@ const applyStockSplit = async (req, res) => {
 };
 
 const getBenchmarkHistory = async (req, res) => {
-    try {
-        const userId = 1; // Haal dit uit sessie/JWT of default
-        const { ticker = 'SPY', displayCurrency = 'USD' } = req.query;
+    const userId = 1; // Haal dit uit sessie/JWT of default
+    const { ticker = 'SPY', displayCurrency = 'USD' } = req.query;
+    const yahooTicker = ticker.toUpperCase().trim();
+    const cacheKey = `bench_${userId}_${yahooTicker}_${displayCurrency}`;
 
+    const cached = portfolioValuesCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+        return res.json(cached.data);
+    }
+
+    if (portfolioInFlightRequests.has(cacheKey)) {
+        try {
+            const data = await portfolioInFlightRequests.get(cacheKey);
+            return res.json(data);
+        } catch (err) {
+            return res.status(500).json({ message: 'Serverfout bij ophalen benchmark geschiedenis' });
+        }
+    }
+
+    const computePromise = (async () => {
         const pool = await sql.connect(config);
 
         // 1. Haal de vroegste transactiedatum van de gebruiker op
@@ -2226,34 +2352,41 @@ const getBenchmarkHistory = async (req, res) => {
         const period1 = Math.floor(firstDate.getTime() / 1000);
         const period2 = Math.floor(Date.now() / 1000);
 
-        // 2. Haal de koershistorie van de benchmark op via Yahoo Finance API
-        const yahooTicker = ticker.toUpperCase().trim();
-        const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
-        
-        console.log(`[Benchmark] Ophalen van benchmark ${yahooTicker} via Yahoo: ${apiUrl}`);
-        
-        const response = await axios.get(apiUrl, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-            }
-        });
+        // 2. Haal de koershistorie van de benchmark op via Yahoo Finance API (met 1-uurs cache op ticker)
+        let benchmarkPrices = null;
+        const cachedYahoo = yahooBenchmarkCache.get(yahooTicker);
+        if (cachedYahoo && (Date.now() - cachedYahoo.timestamp < YAHOO_BENCHMARK_TTL_MS)) {
+            benchmarkPrices = cachedYahoo.prices;
+        } else {
+            const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
+            console.log(`[Benchmark] Ophalen van benchmark ${yahooTicker} via Yahoo: ${apiUrl}`);
+            
+            const response = await axios.get(apiUrl, {
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            });
 
-        const chartData = response.data?.chart?.result?.[0];
-        if (!chartData) {
-            return res.status(404).json({ message: `Geen koersdata gevonden voor benchmark ${yahooTicker}` });
+            const chartData = response.data?.chart?.result?.[0];
+            if (!chartData) {
+                const err = new Error(`Geen koersdata gevonden voor benchmark ${yahooTicker}`);
+                err.statusCode = 404;
+                throw err;
+            }
+
+            const timestamps = chartData.timestamp || [];
+            const closes = chartData.indicators?.quote?.[0]?.close || [];
+
+            benchmarkPrices = {};
+            timestamps.forEach((ts, idx) => {
+                const dateStr = new Date(ts * 1000).toISOString().split('T')[0];
+                const price = closes[idx];
+                if (price != null) {
+                    benchmarkPrices[dateStr] = price;
+                }
+            });
+            yahooBenchmarkCache.set(yahooTicker, { timestamp: Date.now(), prices: benchmarkPrices });
         }
-
-        const timestamps = chartData.timestamp || [];
-        const closes = chartData.indicators?.quote?.[0]?.close || [];
-
-        const benchmarkPrices = {};
-        timestamps.forEach((ts, idx) => {
-            const dateStr = new Date(ts * 1000).toISOString().split('T')[0];
-            const price = closes[idx];
-            if (price != null) {
-                benchmarkPrices[dateStr] = price;
-            }
-        });
 
         // 3. Haal alle BUY & SELL transacties van de gebruiker op
         const txResult = await pool.request()
@@ -2265,6 +2398,12 @@ const getBenchmarkHistory = async (req, res) => {
                 ORDER BY purchase_time ASC
             `);
         const transactions = txResult.recordset;
+        const txByDateMap = new Map();
+        transactions.forEach(t => {
+            const dStr = new Date(t.date).toISOString().split('T')[0];
+            if (!txByDateMap.has(dStr)) txByDateMap.set(dStr, []);
+            txByDateMap.get(dStr).push(t);
+        });
 
         // Wisselkoersen inladen voor EUR/USD conversie
         const fxResult = await pool.request().query(`
@@ -2279,6 +2418,7 @@ const getBenchmarkHistory = async (req, res) => {
         });
 
         const getExchangeRateForDate = (dateStr) => {
+            if (fxMap[dateStr]) return fxMap[dateStr];
             let curr = new Date(dateStr);
             for (let i = 0; i < 30; i++) {
                 const checkStr = curr.toISOString().split('T')[0];
@@ -2301,7 +2441,8 @@ const getBenchmarkHistory = async (req, res) => {
         const timelineDates = valDatesResult.recordset.map(r => new Date(r.date).toISOString().split('T')[0]);
 
         if (timelineDates.length === 0) {
-            return res.json([]);
+            portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: [] });
+            return [];
         }
 
         const sortedBenchmarkDates = Object.keys(benchmarkPrices).sort();
@@ -2324,8 +2465,8 @@ const getBenchmarkHistory = async (req, res) => {
             const rate = getExchangeRateForDate(dateStr);
             const benchmarkPrice = getBenchmarkPriceForDate(dateStr);
 
-            // Verwerk de transacties die op of voor deze dag hebben plaatsgevonden
-            const dayTxs = transactions.filter(t => new Date(t.date).toISOString().split('T')[0] === dateStr);
+            // Verwerk de transacties die op deze dag hebben plaatsgevonden (O(1) map lookup)
+            const dayTxs = txByDateMap.get(dateStr) || [];
             dayTxs.forEach(t => {
                 let cashValue = t.quantity * t.price;
                 
@@ -2366,11 +2507,22 @@ const getBenchmarkHistory = async (req, res) => {
             });
         });
 
-        res.json(resultTimeline);
+        portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: resultTimeline });
+        return resultTimeline;
+    })();
 
+    portfolioInFlightRequests.set(cacheKey, computePromise);
+    try {
+        const data = await computePromise;
+        return res.json(data);
     } catch (err) {
+        if (err.statusCode === 404) {
+            return res.status(404).json({ message: err.message });
+        }
         console.error('Fout bij ophalen benchmark geschiedenis:', err);
-        res.status(500).json({ message: 'Serverfout bij ophalen benchmark geschiedenis' });
+        return res.status(500).json({ message: 'Serverfout bij ophalen benchmark geschiedenis' });
+    } finally {
+        portfolioInFlightRequests.delete(cacheKey);
     }
 };
 
@@ -4702,28 +4854,100 @@ const getDataStatus = async (req, res) => {
             SELECT 
                 (SELECT MAX(last_updated_at) FROM MACDValues) as last_macd_update,
                 (SELECT MAX(date) FROM DailyClosingPrices) as last_price_date,
+                (SELECT MAX(last_updated_at) FROM DailyClosingPrices) as last_price_sync_at,
                 (SELECT MAX(updated_at) FROM stock_calculations) as last_calc_update,
-                (SELECT MAX(date) FROM DailyExchangeRates) as last_fx_date
+                (SELECT MAX(date) FROM DailyExchangeRates WHERE currency_pair = 'EURUSD') as last_fx_date,
+                (SELECT MAX(last_updated_at) FROM DailyExchangeRates WHERE currency_pair = 'EURUSD') as last_fx_sync_at,
+                (SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' ORDER BY date DESC) as last_fx_rate,
+                (SELECT MAX(date) FROM DailyPortfolioValue) as last_portfolio_value_date
         `);
         const row = result.recordset[0] || {};
         const todayStr = new Date().toISOString().split('T')[0];
         const lastMacdUpdate = row.last_macd_update ? new Date(row.last_macd_update) : null;
+        const lastPriceSyncAt = row.last_price_sync_at ? new Date(row.last_price_sync_at) : null;
         const lastPriceDate = row.last_price_date ? (row.last_price_date instanceof Date ? row.last_price_date.toISOString().split('T')[0] : String(row.last_price_date).split('T')[0]) : null;
         const lastCalcUpdate = row.last_calc_update ? new Date(row.last_calc_update) : null;
-        
-        const isUpdatedToday = (lastMacdUpdate && lastMacdUpdate.toISOString().split('T')[0] === todayStr) || (lastPriceDate && lastPriceDate >= todayStr);
+        const lastFxDate = row.last_fx_date ? (row.last_fx_date instanceof Date ? row.last_fx_date.toISOString().split('T')[0] : String(row.last_fx_date).split('T')[0]) : null;
+        const lastFxSyncAt = row.last_fx_sync_at ? new Date(row.last_fx_sync_at) : null;
+        const lastPortfolioValueDate = row.last_portfolio_value_date ? (row.last_portfolio_value_date instanceof Date ? row.last_portfolio_value_date.toISOString().split('T')[0] : String(row.last_portfolio_value_date).split('T')[0]) : null;
+
+        const latestSyncTimestamp = lastPriceSyncAt && lastMacdUpdate
+            ? (lastPriceSyncAt > lastMacdUpdate ? lastPriceSyncAt : lastMacdUpdate)
+            : (lastPriceSyncAt || lastMacdUpdate);
+
+        const isUpdatedToday = (latestSyncTimestamp && latestSyncTimestamp.toISOString().split('T')[0] === todayStr) || (lastPriceDate && lastPriceDate >= todayStr);
+
+        let isSyncRunning = false;
+        try {
+            const watchlistController = require('./watchlistController');
+            if (watchlistController.getIsSyncRunning) {
+                isSyncRunning = watchlistController.getIsSyncRunning();
+            }
+        } catch (e) {
+            // ignore
+        }
+
+        const uptimeSec = Math.floor(process.uptime());
+        const nextAutoSyncInSeconds = uptimeSec < 180
+            ? (180 - uptimeSec)
+            : (1800 - ((uptimeSec - 180) % 1800));
 
         res.json({
             isUpdatedToday,
+            isSyncRunning,
+            nextAutoSyncInSeconds,
+            uptimeSeconds: uptimeSec,
             lastPriceDate,
+            lastPriceSyncAt,
             lastMacdUpdate,
             lastCalcUpdate,
-            lastFxDate: row.last_fx_date,
-            formattedLastUpdate: lastMacdUpdate ? lastMacdUpdate.toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : (lastPriceDate || 'Onbekend')
+            lastFxDate,
+            lastFxSyncAt,
+            lastFxRate: row.last_fx_rate ? Number(row.last_fx_rate) : null,
+            lastPortfolioValueDate,
+            formattedLastUpdate: latestSyncTimestamp
+                ? latestSyncTimestamp.toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+                : (lastPriceDate || 'Onbekend')
         });
     } catch (err) {
         console.error('Fout bij ophalen data status:', err.message);
         res.status(500).json({ message: 'Fout bij ophalen data status.' });
+    }
+};
+
+const getBaselinePrices2025 = async (req, res) => {
+    try {
+        const pool = await sql.connect(config);
+        const result = await pool.request().query(`
+            SELECT s.aandeel_id, s.ticker_symbol, p.closing_price, er.rate as fx_rate
+            FROM Stocks s
+            OUTER APPLY (
+                SELECT TOP 1 closing_price FROM DailyClosingPrices 
+                WHERE aandeel_id = s.aandeel_id AND date <= '2025-12-31' 
+                ORDER BY date DESC
+            ) p
+            OUTER APPLY (
+                SELECT TOP 1 rate FROM DailyExchangeRates 
+                WHERE currency_pair = 'EURUSD' AND date <= '2025-12-31' 
+                ORDER BY date DESC
+            ) er
+            WHERE s.aandeel_id IN (SELECT DISTINCT aandeel_id FROM PF_transactions WHERE aandeel_id IS NOT NULL)
+        `);
+
+        const baselineMap = {};
+        result.recordset.forEach(r => {
+            const entry = {
+                price: r.closing_price,
+                fx_rate: r.fx_rate || 1.1746
+            };
+            if (r.aandeel_id) baselineMap[r.aandeel_id] = entry;
+            if (r.ticker_symbol) baselineMap[r.ticker_symbol] = entry;
+        });
+
+        res.json(baselineMap);
+    } catch (err) {
+        console.error('Fout bij ophalen 2025 ijkprijzen:', err.message);
+        res.status(500).json({ message: 'Fout bij ophalen 2025 ijkprijzen.' });
     }
 };
 
@@ -4749,5 +4973,6 @@ module.exports = {
   getEtfStrategyData,
   calculateEtfStrategyInternal,
   getDataStatus,
-  clearAdvisorCache
+  clearAdvisorCache,
+  getBaselinePrices2025
 };

@@ -360,8 +360,16 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
 // Zorgt voor 100% consistentie met de Tijdlijn & Strategie tabbladen:
 // - Losse aandelen: Uitsluitend als er echt gekocht moet worden (Score 5/5, koers <= 1.05x intrinsiek, WV niet gedaald, streefdoel NIET bereikt, actie stuks > 0).
 // - ETF DCA: Uitsluitend als er een valide MACD signaal is met opgebouwde pot en aankoop nog niet is uitgevoerd.
-const syncActiveStrategyAlerts = async (pool, userId = 1) => {
+let isStrategySyncRunning = false;
+let lastStrategySyncTime = 0;
+const STRATEGY_SYNC_COOLDOWN_MS = 15 * 60 * 1000; // 15 minuten
+
+const syncActiveStrategyAlerts = async (pool, userId = 1, { force = false } = {}) => {
+    if (isStrategySyncRunning) return;
+    if (!force && (Date.now() - lastStrategySyncTime < STRATEGY_SYNC_COOLDOWN_MS)) return;
+    isStrategySyncRunning = true;
     try {
+        lastStrategySyncTime = Date.now();
         // 1. LOSSE AANDELEN KOOPKANSEN
         // Haal de berekende tijdlijn op van de Strategy Advisor (bevat reeds alle streefdoelen, score 5/5, onderwaardering, stabiele WV, etc.)
         let stockTimeline = [];
@@ -473,6 +481,8 @@ const syncActiveStrategyAlerts = async (pool, userId = 1) => {
         }
     } catch (err) {
         console.error('Fout bij synchroniseren strategie notificaties:', err.message);
+    } finally {
+        isStrategySyncRunning = false;
     }
 };
 
@@ -480,7 +490,16 @@ const getNotifications = async (req, res) => {
     try {
         const pool = await sql.connect(config);
         const userId = req.user?.id || 1;
-        await syncActiveStrategyAlerts(pool, userId);
+
+        // Blokkeer het ophalen van notificaties NIET op de zware strategie-simulatie,
+        // tenzij expliciet ?sync=true wordt meegegeven.
+        if (req.query.sync === 'true') {
+            await syncActiveStrategyAlerts(pool, userId, { force: true });
+        } else if (process.uptime() > 120 && (Date.now() - lastStrategySyncTime >= STRATEGY_SYNC_COOLDOWN_MS)) {
+            syncActiveStrategyAlerts(pool, userId).catch(err =>
+                console.warn('[NotificationSync] Achtergrond-sync fout:', err.message)
+            );
+        }
 
         const result = await pool.request().query(`
             SELECT id, stock_id, ticker, message, created_at, is_read, new_quarter, new_year,

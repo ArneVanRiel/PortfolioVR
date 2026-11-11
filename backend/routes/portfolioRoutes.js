@@ -20,7 +20,8 @@ const { // Renamed calculatePortfolioValues to recalculateAndStorePortfolioHisto
   getBenchmarkHistory,
   getStrategyAdvisorData,
   getEtfStrategyData,
-  getDataStatus
+  getDataStatus,
+  getBaselinePrices2025
 } = require('../controllers/portfolioController');
 
 router.post('/recalculateAndStorePortfolioHistory', recalculateAndStorePortfolioHistory); // New route for recalculation
@@ -30,6 +31,7 @@ router.get('/calculateReturns', calculateReturns);
 router.get('/portfolioReturns', getPortfolioReturns);
 router.get('/holdings', getCurrentPortfolioHoldings);
 router.get('/transactions', getTransactions);
+router.get('/baseline-prices-2025', getBaselinePrices2025);
 router.get('/returns-dynamics', getPortfolioReturnsDynamics);
 router.get('/benchmark-history', getBenchmarkHistory);
 router.get('/strategy-advisor', getStrategyAdvisorData);

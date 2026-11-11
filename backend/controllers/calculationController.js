@@ -425,6 +425,7 @@ exports.runCalculationForStock = async (req, res) => {
         }
 
         // 4. Return the FULL calculation result to the frontend
+        clearSummaryCache();
         res.status(201).json({ message: 'Calculation successful. Data saved to existing columns.', data: fullCalculationResult });
 
     } catch (error) {
@@ -521,6 +522,7 @@ const generateSellAlertsFromHistory = async (req, res) => {
             }
         }
 
+        clearSummaryCache();
         res.status(200).json({ message: `Succesvol ${count} verkoopsignalen gegenereerd uit historie.` });
 
     } catch (error) {
@@ -669,6 +671,12 @@ exports.getFundamentalDataForCalculation = async (req, res) => {
 };
 
 
+const summaryByDateCache = new Map();
+const summaryByDateInFlight = new Map();
+const SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minuten cache
+const clearSummaryCache = () => summaryByDateCache.clear();
+exports.clearSummaryCache = clearSummaryCache;
+
 exports.getSummaryByDate = async (req, res) => {
     const { date } = req.query;
 
@@ -676,7 +684,22 @@ exports.getSummaryByDate = async (req, res) => {
         return res.status(400).send('A date is required.');
     }
 
-    try {
+    const cacheKey = `summary_${date}`;
+    const cached = summaryByDateCache.get(cacheKey);
+    if (cached && (Date.now() - cached.timestamp < SUMMARY_CACHE_TTL_MS)) {
+        return res.status(200).json(cached.data);
+    }
+
+    if (summaryByDateInFlight.has(cacheKey)) {
+        try {
+            const data = await summaryByDateInFlight.get(cacheKey);
+            return res.status(200).json(data);
+        } catch (err) {
+            return res.status(500).send('Error fetching calculations summary by date.');
+        }
+    }
+
+    const computePromise = (async () => {
         const pool = await sql.connect(dbConfig);
         const query = `
             WITH CalculationsOnOrBeforeDate AS (
@@ -713,35 +736,6 @@ exports.getSummaryByDate = async (req, res) => {
                     WHERE p.stock_id = lc.stock_id AND p.period_end_date < lc.period_end_date
                     ORDER BY p.period_end_date DESC
                  ) prev
-            ),
-            LatestDailyData AS (
-                SELECT 
-                    aandeel_id,
-                    closing_price as current_price,
-                    ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
-                FROM
-                    DailyClosingPrices
-            ),
-            LatestMACD AS (
-                 SELECT
-                    aandeel_id,
-                    signalLine as current_signal_line,
-                    ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
-                FROM
-                    MACDValues
-            ),
-            LatestAlert AS (
-                SELECT
-                    aandeel_id,
-                    date as latest_alert_date,
-                    trade_amount as latest_trade_amount,
-                    type_melding,
-                    ROW_NUMBER() OVER(PARTITION BY aandeel_id ORDER BY date DESC) as rn
-                FROM
-                    MACDAlerts
-                WHERE 
-                    (type_melding = 'Koopsignaal' AND signal_line_value < 0)
-                    OR (type_melding = 'Verkoopsignaal')
             )
             SELECT 
                 s.aandeel_id as stock_id,
@@ -773,12 +767,25 @@ exports.getSummaryByDate = async (req, res) => {
                 HighestPreviousWaarde hpw ON lc.id = hpw.calculation_id
             LEFT JOIN
                 PreviousWaarde pw ON lc.id = pw.calculation_id
-            LEFT JOIN
-                LatestDailyData ldd ON s.aandeel_id = ldd.aandeel_id AND ldd.rn = 1
-            LEFT JOIN
-                LatestMACD lm ON s.aandeel_id = lm.aandeel_id AND lm.rn = 1
-            LEFT JOIN
-                LatestAlert la ON s.aandeel_id = la.aandeel_id AND la.rn = 1
+            OUTER APPLY (
+                SELECT TOP 1 closing_price as current_price
+                FROM DailyClosingPrices dcp
+                WHERE dcp.aandeel_id = s.aandeel_id
+                ORDER BY dcp.date DESC
+            ) ldd
+            OUTER APPLY (
+                SELECT TOP 1 signalLine as current_signal_line
+                FROM MACDValues mv
+                WHERE mv.aandeel_id = s.aandeel_id
+                ORDER BY mv.date DESC
+            ) lm
+            OUTER APPLY (
+                SELECT TOP 1 date as latest_alert_date, trade_amount as latest_trade_amount, type_melding
+                FROM MACDAlerts ma
+                WHERE ma.aandeel_id = s.aandeel_id
+                  AND ((ma.type_melding = 'Koopsignaal' AND ma.signal_line_value < 0) OR (ma.type_melding = 'Verkoopsignaal'))
+                ORDER BY ma.date DESC
+            ) la
             ORDER BY 
                 ISNULL(lc.waarde_verdeling, 0) DESC, s.name ASC;
         `;
@@ -786,10 +793,19 @@ exports.getSummaryByDate = async (req, res) => {
             .input('date', sql.Date, date)
             .query(query);
         
-        res.status(200).json(result.recordset);
+        summaryByDateCache.set(cacheKey, { timestamp: Date.now(), data: result.recordset });
+        return result.recordset;
+    })();
+
+    summaryByDateInFlight.set(cacheKey, computePromise);
+    try {
+        const data = await computePromise;
+        return res.status(200).json(data);
     } catch (error) {
         console.error('Error fetching calculations summary by date:', error);
-        res.status(500).send('Error fetching calculations summary by date.');
+        return res.status(500).send('Error fetching calculations summary by date.');
+    } finally {
+        summaryByDateInFlight.delete(cacheKey);
     }
 };
 
@@ -802,6 +818,7 @@ exports.deleteCalculation = async (req, res) => {
             .query('DELETE FROM stock_calculations WHERE id = @id');
         
         if (result.rowsAffected[0] > 0) {
+            clearSummaryCache();
             res.status(200).json({ message: 'Calculation deleted successfully.' });
         } else {
             res.status(404).json({ message: 'Calculation not found.' });

@@ -41,7 +41,7 @@ const Pagination = ({ currentPage, totalPages, onPageChange }) => {
 
 
 const AlertsSummaryTable = forwardRef((props, ref) => {
-    const { isCompact = false } = props;
+    const { isCompact = false, sharedSummaryData, sharedHoldingsData } = props;
     const [allAlerts, setAllAlerts] = useState([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState('');
@@ -111,8 +111,44 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
         }
     }, [debouncedTickerFilter, alertTypeFilter]);
 
+    const applyCalculationContext = useCallback((data, holdings) => {
+        const totalActualValue = holdings.reduce((sum, item) => sum + (item.value || 0), 0);
+        const totalWaardeVerdeling = data
+            .filter(item => item.waarde_verdeling > 0 && item.selectiecriteria === 5)
+            .reduce((sum, item) => sum + item.waarde_verdeling, 0);
+
+        const mapping = {};
+        const score5Ids = new Set();
+
+        data.forEach(item => {
+            const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
+                ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
+                : 0;
+            
+            const ideal_invested = (percentage / 100) * totalActualValue;
+            const holding = holdings.find(h => h.ticker === item.ticker_symbol);
+            const actual_invested = holding ? (holding.value || 0) : 0;
+            const weight_factor = actual_invested === 0 ? 2 : Math.min(2, ideal_invested / actual_invested);
+            mapping[item.stock_id] = { percentage, weight_factor };
+            
+            if (item.selectiecriteria === 5) {
+                score5Ids.add(item.stock_id);
+            }
+        });
+        setCalculationData(mapping);
+        setScore5Stocks(score5Ids);
+        setIsContextLoaded(true);
+    }, []);
+
     // Fetch calculation summary to compute percentages (weighting)
     const fetchCalculationContext = useCallback(async () => {
+        if (Array.isArray(sharedSummaryData) && Array.isArray(sharedHoldingsData)) {
+            applyCalculationContext(sharedSummaryData, sharedHoldingsData);
+            return;
+        }
+        if (sharedSummaryData === null || sharedHoldingsData === null) {
+            return;
+        }
         try {
             const today = new Date().toISOString().split('T')[0];
             const [response, holdingsResponse] = await Promise.all([
@@ -121,44 +157,19 @@ const AlertsSummaryTable = forwardRef((props, ref) => {
                 }),
                 http.get('/portfolio/holdings?userId=1')
             ]);
-            const data = response.data;
-            const holdings = holdingsResponse.data;
-            const totalActualValue = holdings.reduce((sum, item) => sum + (item.value || 0), 0);
-            
-            const totalWaardeVerdeling = data
-                .filter(item => item.waarde_verdeling > 0 && item.selectiecriteria === 5)
-                .reduce((sum, item) => sum + item.waarde_verdeling, 0);
-
-            const mapping = {};
-            const score5Ids = new Set();
-
-            data.forEach(item => {
-                const percentage = totalWaardeVerdeling > 0 && item.waarde_verdeling > 0 && item.selectiecriteria === 5
-                    ? (item.waarde_verdeling / totalWaardeVerdeling) * 100
-                    : 0;
-                
-                const ideal_invested = (percentage / 100) * totalActualValue;
-                const holding = holdings.find(h => h.ticker === item.ticker_symbol);
-                const actual_invested = holding ? (holding.value || 0) : 0;
-                const weight_factor = actual_invested === 0 ? 2 : Math.min(2, ideal_invested / actual_invested);
-                mapping[item.stock_id] = { percentage, weight_factor };
-                
-                if (item.selectiecriteria === 5) {
-                    score5Ids.add(item.stock_id);
-                }
-            });
-            setCalculationData(mapping);
-            setScore5Stocks(score5Ids);
-            setIsContextLoaded(true);
+            applyCalculationContext(response.data || [], holdingsResponse.data || []);
         } catch (err) {
             console.error("Error fetching calculation context for alerts", err);
         }
-    }, []);
+    }, [sharedSummaryData, sharedHoldingsData, applyCalculationContext]);
 
     useEffect(() => {
-        fetchAlerts(); 
+        fetchAlerts();
+    }, [fetchAlerts]);
+
+    useEffect(() => {
         fetchCalculationContext();
-    }, [fetchAlerts, fetchCalculationContext]);
+    }, [fetchCalculationContext]);
 
     useImperativeHandle(ref, () => ({
         refreshData: () => fetchAlerts()
