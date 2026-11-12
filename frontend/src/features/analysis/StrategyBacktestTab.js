@@ -26,6 +26,670 @@ ChartJS.register(
   Filler
 );
 
+// Transactielogboek component met gesplitste weergave (Aankopen & Verkopen), chronologische sortering en gecombineerde weergave
+const BacktestTradeLog = ({
+  trades = [],
+  buyOrders = [],
+  filteredTrades = [],
+  tradeFilter = 'ALL',
+  setTradeFilter,
+  title = 'Transactie Logboek',
+  subtitle = '',
+  targetTicker = '',
+  mode = 'dynamic_score5'
+}) => {
+  const [logViewMode, setLogViewMode] = useState('split'); // 'split' | 'combined' | 'buys' | 'sells'
+  const [logSortOrder, setLogSortOrder] = useState('asc'); // 'asc' (oud -> nieuw) | 'desc' (nieuw -> oud)
+
+  // 1. Gesplitste orders berekenen
+  const { buys, sells } = useMemo(() => {
+    let buyList = [];
+    if (buyOrders && buyOrders.length > 0) {
+      buyList = buyOrders.map((b) => ({
+        tradeNumber: b.id,
+        ticker: b.ticker || targetTicker,
+        name: b.name || b.ticker || targetTicker,
+        date: b.date,
+        price: Number(b.price),
+        shares: Number(b.shares),
+        amount: Number(b.amount),
+        reason: b.reason || 'Koopsignaal (Score 5/5 & MACD)'
+      }));
+    } else if (trades && trades.length > 0) {
+      const buyMap = new Map();
+      trades.forEach((t) => {
+        if (!t.entryDate || !t.entryPrice) return;
+        const key = `${t.ticker || targetTicker}_${t.entryDate}`;
+        const shares = Number(t.shares) || 0;
+        const cost = Number(t.cost) || (shares * Number(t.entryPrice));
+
+        if (!buyMap.has(key)) {
+          buyMap.set(key, {
+            ticker: t.ticker || targetTicker,
+            name: t.name || t.ticker || targetTicker,
+            date: t.entryDate,
+            price: Number(t.entryPrice),
+            shares: shares,
+            amount: cost,
+            reason: t.entryReason || 'Koopsignaal (Score 5/5 & MACD)',
+            tradeNumber: t.tradeNumber
+          });
+        }
+      });
+      buyList = Array.from(buyMap.values());
+    }
+
+    const sellList = [];
+    (trades || []).forEach((t) => {
+      if (t.isOpen && (!t.exitDate || t.exitDate.includes('(Open)'))) return;
+      const sharesSold = t.sharesSold != null ? Number(t.sharesSold) : (Number(t.shares) || 0);
+      sellList.push({
+        tradeNumber: t.tradeNumber,
+        ticker: t.ticker || targetTicker,
+        name: t.name || t.ticker || targetTicker,
+        date: t.exitDate,
+        entryDate: t.entryDate,
+        entryPrice: Number(t.entryPrice),
+        price: Number(t.exitPrice),
+        shares: sharesSold,
+        sharesRemaining: t.sharesRemaining,
+        amount: Number(t.revenue) || (sharesSold * Number(t.exitPrice)),
+        profit: Number(t.profit) || 0,
+        returnPct: Number(t.returnPct) || 0,
+        holdingDays: t.holdingDays || 0,
+        reason: t.exitReason,
+        type: t.type,
+        isRebalance: !!t.isRebalance,
+        isStopLoss: !!t.isStopLoss,
+        isWin: (Number(t.profit) || 0) > 0
+      });
+    });
+
+    const sortMultiplier = logSortOrder === 'desc' ? -1 : 1;
+
+    buyList.sort((a, b) => {
+      const timeDiff = (new Date(a.date).getTime() - new Date(b.date).getTime()) * sortMultiplier;
+      return timeDiff !== 0 ? timeDiff : a.ticker.localeCompare(b.ticker);
+    });
+
+    sellList.sort((a, b) => {
+      const timeDiff = (new Date(a.date).getTime() - new Date(b.date).getTime()) * sortMultiplier;
+      return timeDiff !== 0 ? timeDiff : (a.tradeNumber - b.tradeNumber) * sortMultiplier;
+    });
+
+    return { buys: buyList, sells: sellList };
+  }, [trades, buyOrders, targetTicker, logSortOrder]);
+
+  const totalBuyAmount = useMemo(() => buys.reduce((acc, b) => acc + b.amount, 0), [buys]);
+  const totalSellRevenue = useMemo(() => sells.reduce((acc, s) => acc + s.amount, 0), [sells]);
+  const totalRealizedProfit = useMemo(() => sells.reduce((acc, s) => acc + s.profit, 0), [sells]);
+
+  const exportCsv = () => {
+    if (!trades?.length) return;
+    let headers = [];
+    let rows = [];
+
+    if (logViewMode === 'buys') {
+      headers = ['#', 'Datum', 'Aandeel', 'Stuks', 'Koers (€)', 'Totale Inleg (€)', 'Instapreden'];
+      rows = buys.map((b, idx) => [
+        idx + 1,
+        b.date,
+        b.ticker,
+        b.shares,
+        b.price.toFixed(2),
+        b.amount.toFixed(2),
+        `"${b.reason || ''}"`
+      ]);
+    } else if (logViewMode === 'sells') {
+      headers = ['#', 'Verkoopdatum', 'Aandeel', 'Type', 'Stuks', 'Verkoopkoers (€)', 'Aankoopdatum', 'Dagen', 'Opbrengst (€)', 'Rendement %', 'Winst (€)', 'Exit Reden'];
+      rows = sells.map((s, idx) => [
+        idx + 1,
+        s.date,
+        s.ticker,
+        s.type || '',
+        s.shares,
+        s.price.toFixed(2),
+        s.entryDate,
+        s.holdingDays,
+        s.amount.toFixed(2),
+        s.returnPct.toFixed(2),
+        s.profit.toFixed(2),
+        `"${s.reason || ''}"`
+      ]);
+    } else {
+      headers = ['Aandeel', 'Trade #', 'Type', 'Verkoop %', 'Stuks Verkocht', 'Stuks Restant', 'Koop Datum', 'Koop Koers', 'Koop Reden', 'Verkoop Datum', 'Verkoop Koers', 'Exacte Exit Reden', 'Dagen', 'Rendement %', 'Winst (€)', 'Status'];
+      rows = (filteredTrades.length ? filteredTrades : trades).map(t => [
+        t.ticker || targetTicker || '',
+        t.tradeNumber,
+        t.type || '',
+        t.sellPct ?? 100,
+        t.sharesSold ?? t.shares ?? '',
+        t.sharesRemaining ?? '',
+        t.entryDate,
+        t.entryPrice?.toFixed(2) || '',
+        `"${t.entryReason || ''}"`,
+        t.exitDate,
+        t.exitPrice?.toFixed(2) || '',
+        `"${t.exitReason || ''}"`,
+        t.holdingDays,
+        t.returnPct ? t.returnPct.toFixed(2) : 0,
+        t.profit ? t.profit.toFixed(2) : 0,
+        t.isOpen ? 'Open' : 'Gesloten'
+      ]);
+    }
+
+    const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
+    const encodedUri = encodeURI(csvContent);
+    const link = document.createElement('a');
+    link.setAttribute('href', encodedUri);
+    link.setAttribute('download', `Backtest_Trades_${logViewMode}_${mode}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm space-y-5">
+      {/* Top Header & Weergave Controls */}
+      <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 pb-4 border-b border-gray-100">
+        <div>
+          <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
+            <span>{title}</span>
+            <span className="text-xs bg-gray-100 text-gray-700 px-2 py-0.5 rounded-full font-bold">
+              {trades.length} posities
+            </span>
+          </h3>
+          <p className="text-xs text-gray-500 mt-0.5">
+            {subtitle || `${buys.length} aankopen en ${sells.length} verkopen gesimuleerd`}
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 w-full xl:w-auto">
+          {/* Weergave Modus Knoppen */}
+          <div className="flex items-center bg-gray-100 p-1 rounded-xl">
+            <button
+              onClick={() => setLogViewMode('split')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                logViewMode === 'split' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+              }`}
+              title="Aankopen en verkopen gesplitst naast elkaar"
+            >
+              <i className="ph-bold ph-columns text-sm text-indigo-600"></i>
+              <span>Gesplitst</span>
+            </button>
+
+            <button
+              onClick={() => setLogViewMode('combined')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                logViewMode === 'combined' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+              }`}
+              title="Gecombineerd logboek met koop & verkoop op één regel"
+            >
+              <i className="ph-bold ph-table text-sm text-gray-600"></i>
+              <span>Gecombineerd</span>
+            </button>
+
+            <button
+              onClick={() => setLogViewMode('buys')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                logViewMode === 'buys' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${logViewMode === 'buys' ? 'bg-white' : 'bg-emerald-500'}`}></span>
+              <span>Aankopen ({buys.length})</span>
+            </button>
+
+            <button
+              onClick={() => setLogViewMode('sells')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                logViewMode === 'sells' ? 'bg-rose-600 text-white shadow-sm' : 'text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${logViewMode === 'sells' ? 'bg-white' : 'bg-rose-500'}`}></span>
+              <span>Verkopen ({sells.length})</span>
+            </button>
+          </div>
+
+          {/* Sortering: Oud naar Nieuw (Chronologisch) vs Nieuwste eerst */}
+          <div className="flex items-center bg-gray-100 p-1 rounded-xl">
+            <button
+              onClick={() => setLogSortOrder('asc')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
+                logSortOrder === 'asc' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+              }`}
+              title="Oud naar nieuw (juiste chronologische volgorde)"
+            >
+              <i className="ph-bold ph-sort-ascending text-sm"></i>
+              <span>Oud &rarr; Nieuw</span>
+            </button>
+            <button
+              onClick={() => setLogSortOrder('desc')}
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1 ${
+                logSortOrder === 'desc' ? 'bg-white text-blue-700 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+              }`}
+              title="Nieuwste eerst"
+            >
+              <i className="ph-bold ph-sort-descending text-sm"></i>
+              <span>Nieuw &rarr; Oud</span>
+            </button>
+          </div>
+
+          {/* CSV Download */}
+          <button
+            onClick={exportCsv}
+            className="px-3 py-1.5 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-sm"
+          >
+            <i className="ph-bold ph-download-simple text-sm"></i>
+            <span>CSV</span>
+          </button>
+        </div>
+      </div>
+
+      {/* Categorie Filters voor Gecombineerde weergave */}
+      {logViewMode === 'combined' && setTradeFilter && (
+        <div className="flex items-center bg-gray-50 p-1.5 rounded-xl flex-wrap gap-1 border border-gray-200">
+          {[
+            { id: 'ALL', label: 'Alles' },
+            { id: 'WINS', label: 'Winst' },
+            { id: 'LOSSES', label: 'Verlies' },
+            { id: 'PARTIAL', label: 'Deelverkoop' },
+            { id: 'REBALANCE', label: '✂️ Snoei' },
+            { id: 'STOP_LOSS', label: '🛑 Stop-Loss' },
+            { id: 'VALUATION', label: '💰 Waardering Winst' },
+            { id: 'OPEN', label: 'Lopend' }
+          ].map(filter => (
+            <button
+              key={filter.id}
+              onClick={() => setTradeFilter(filter.id)}
+              className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
+                tradeFilter === filter.id
+                  ? 'bg-white text-gray-900 shadow-sm border border-gray-200'
+                  : 'text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              {filter.label}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* WEERGAVE 1: GESPLITST NAAST ELKAAR (AANKOPEN LINKS, VERKOPEN RECHTS) */}
+      {logViewMode === 'split' && (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+          {/* Linkerkolom: 🟢 Alle Aankopen */}
+          <div className="rounded-2xl border border-emerald-200 bg-white overflow-hidden shadow-xs flex flex-col">
+            <div className="bg-emerald-50/80 p-3.5 border-b border-emerald-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+                <h4 className="text-sm font-extrabold text-emerald-950">
+                  🟢 Aankopen ({buys.length} orders)
+                </h4>
+              </div>
+              <span className="text-xs font-bold text-emerald-800">
+                Totaal: € {totalBuyAmount.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="overflow-x-auto max-h-[650px] overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-gray-50/95 backdrop-blur-xs border-b border-gray-200 text-gray-500 font-bold uppercase text-[10px]">
+                  <tr>
+                    <th className="py-2.5 px-3">#</th>
+                    <th className="py-2.5 px-3">Datum</th>
+                    <th className="py-2.5 px-3">Aandeel</th>
+                    <th className="py-2.5 px-3 text-right">Stuks</th>
+                    <th className="py-2.5 px-3 text-right">Koers</th>
+                    <th className="py-2.5 px-3 text-right">Inleg (€)</th>
+                    <th className="py-2.5 px-3">Instapreden</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {buys.map((b, idx) => (
+                    <tr key={`buy-${b.ticker}-${b.date}-${idx}`} className="hover:bg-emerald-50/30 transition-colors">
+                      <td className="py-2.5 px-3 font-bold text-gray-400 text-[11px]">{idx + 1}</td>
+                      <td className="py-2.5 px-3 font-bold text-gray-900 whitespace-nowrap">{b.date}</td>
+                      <td className="py-2.5 px-3 font-black text-gray-900">
+                        <span className="px-1.5 py-0.5 bg-gray-100 rounded text-gray-800 font-extrabold">{b.ticker}</span>
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-bold text-gray-800">{b.shares}</td>
+                      <td className="py-2.5 px-3 text-right text-gray-700 whitespace-nowrap">€ {b.price?.toFixed(2)}</td>
+                      <td className="py-2.5 px-3 text-right font-extrabold text-gray-900 whitespace-nowrap">
+                        € {b.amount?.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                      <td className="py-2.5 px-3 text-[11px] text-gray-600 max-w-[220px] truncate" title={b.reason}>
+                        <span className="px-1.5 py-0.5 bg-emerald-50 text-emerald-800 rounded font-medium border border-emerald-100">
+                          {b.reason}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Rechterkolom: 🔴 Alle Verkopen & Snoei */}
+          <div className="rounded-2xl border border-rose-200 bg-white overflow-hidden shadow-xs flex flex-col">
+            <div className="bg-rose-50/80 p-3.5 border-b border-rose-200 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+                <h4 className="text-sm font-extrabold text-rose-950">
+                  🔴 Verkopen &amp; Snoei ({sells.length} orders)
+                </h4>
+              </div>
+              <span className={`text-xs font-bold ${totalRealizedProfit >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                Winst: {totalRealizedProfit >= 0 ? '+' : ''}€ {totalRealizedProfit.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+
+            <div className="overflow-x-auto max-h-[650px] overflow-y-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 bg-gray-50/95 backdrop-blur-xs border-b border-gray-200 text-gray-500 font-bold uppercase text-[10px]">
+                  <tr>
+                    <th className="py-2.5 px-3">#</th>
+                    <th className="py-2.5 px-3">Datum</th>
+                    <th className="py-2.5 px-3">Aandeel</th>
+                    <th className="py-2.5 px-3">Type</th>
+                    <th className="py-2.5 px-3 text-right">Stuks</th>
+                    <th className="py-2.5 px-3 text-right">Koers</th>
+                    <th className="py-2.5 px-3 text-right">Rendement</th>
+                    <th className="py-2.5 px-3 text-right">Winst (€)</th>
+                    <th className="py-2.5 px-3">Exit Reden</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {sells.map((s, idx) => (
+                    <tr key={`sell-${s.ticker}-${s.date}-${idx}`} className="hover:bg-rose-50/30 transition-colors">
+                      <td className="py-2.5 px-3 font-bold text-gray-400 text-[11px]">{idx + 1}</td>
+                      <td className="py-2.5 px-3 font-bold text-gray-900 whitespace-nowrap">{s.date}</td>
+                      <td className="py-2.5 px-3 font-black text-gray-900">
+                        <span className="px-1.5 py-0.5 bg-gray-100 rounded text-gray-800 font-extrabold">{s.ticker}</span>
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        {s.isRebalance ? (
+                          <span className="px-1.5 py-0.5 bg-amber-50 text-amber-800 rounded font-bold text-[10px] border border-amber-200">
+                            ✂️ Snoei
+                          </span>
+                        ) : s.type === 'PARTIAL_EXIT' ? (
+                          <span className="px-1.5 py-0.5 bg-purple-50 text-purple-700 rounded font-bold text-[10px] border border-purple-200">
+                            Deelverkoop
+                          </span>
+                        ) : s.type === 'STOP_LOSS' ? (
+                          <span className="px-1.5 py-0.5 bg-rose-50 text-rose-700 rounded font-bold text-[10px] border border-rose-200">
+                            🛑 Stop-Loss
+                          </span>
+                        ) : s.type === 'TAKE_PROFIT_VALUATION' ? (
+                          <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded font-bold text-[10px] border border-indigo-200">
+                            💰 Winstname
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 bg-red-50 text-red-700 rounded font-bold text-[10px] border border-red-200">
+                            100% Verkoop
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-bold text-gray-800">{s.shares}</td>
+                      <td className="py-2.5 px-3 text-right text-gray-700 whitespace-nowrap">€ {s.price?.toFixed(2)}</td>
+                      <td className={`py-2.5 px-3 text-right font-extrabold whitespace-nowrap ${s.returnPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {s.returnPct >= 0 ? '+' : ''}{s.returnPct?.toFixed(1)}%
+                      </td>
+                      <td className={`py-2.5 px-3 text-right font-bold whitespace-nowrap ${s.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                        {s.profit >= 0 ? '+' : ''}€ {s.profit?.toFixed(2)}
+                      </td>
+                      <td className="py-2.5 px-3 text-[11px] text-gray-600 max-w-[220px] truncate" title={s.reason}>
+                        {s.reason}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WEERGAVE 2: ENKEL AANKOPEN (VOLLE BREEDTE) */}
+      {logViewMode === 'buys' && (
+        <div className="rounded-2xl border border-emerald-200 bg-white overflow-hidden shadow-xs">
+          <div className="bg-emerald-50/70 p-4 border-b border-emerald-200 flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-emerald-500"></span>
+              <h4 className="text-sm font-extrabold text-emerald-950">
+                🟢 Alle Aankooporders ({buys.length} orders gesorteerd {logSortOrder === 'asc' ? 'chronologisch van oud naar nieuw' : 'nieuwste eerst'})
+              </h4>
+            </div>
+            <span className="text-xs font-bold text-emerald-900 bg-emerald-100/80 px-3 py-1 rounded-lg">
+              Totaal Aankoopbedrag: € {totalBuyAmount.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </span>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase text-[10px] border-b border-gray-200">
+                <tr>
+                  <th className="py-3 px-3">#</th>
+                  <th className="py-3 px-3">Aankoopdatum</th>
+                  <th className="py-3 px-3">Aandeel</th>
+                  <th className="py-3 px-3">Bedrijfsnaam</th>
+                  <th className="py-3 px-3 text-right">Aantal Stuks</th>
+                  <th className="py-3 px-3 text-right">Aankoopkoers</th>
+                  <th className="py-3 px-3 text-right">Totale Inleg (€)</th>
+                  <th className="py-3 px-3">Instapreden &amp; Filter</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {buys.map((b, idx) => (
+                  <tr key={`buy-full-${b.ticker}-${b.date}-${idx}`} className="hover:bg-emerald-50/30 transition-colors">
+                    <td className="py-3 px-3 font-bold text-gray-400">{idx + 1}</td>
+                    <td className="py-3 px-3 font-bold text-gray-900 whitespace-nowrap">{b.date}</td>
+                    <td className="py-3 px-3 font-black text-gray-900">
+                      <span className="px-2 py-0.5 bg-gray-100 rounded text-gray-900 font-extrabold text-xs">{b.ticker}</span>
+                    </td>
+                    <td className="py-3 px-3 font-medium text-gray-700">{b.name}</td>
+                    <td className="py-3 px-3 text-right font-bold text-gray-900">{b.shares}</td>
+                    <td className="py-3 px-3 text-right text-gray-700 font-semibold whitespace-nowrap">€ {b.price?.toFixed(2)}</td>
+                    <td className="py-3 px-3 text-right font-black text-gray-950 whitespace-nowrap">
+                      € {b.amount?.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="py-3 px-3 text-[11px] text-gray-700">
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-800 rounded font-medium border border-emerald-100">
+                        {b.reason}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* WEERGAVE 3: ENKEL VERKOPEN (VOLLE BREEDTE) */}
+      {logViewMode === 'sells' && (
+        <div className="rounded-2xl border border-rose-200 bg-white overflow-hidden shadow-xs">
+          <div className="bg-rose-50/70 p-4 border-b border-rose-200 flex items-center justify-between flex-wrap gap-2">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-500"></span>
+              <h4 className="text-sm font-extrabold text-rose-950">
+                🔴 Alle Verkoop- en Snoeiorders ({sells.length} orders gesorteerd {logSortOrder === 'asc' ? 'chronologisch van oud naar nieuw' : 'nieuwste eerst'})
+              </h4>
+            </div>
+            <div className="flex items-center gap-2 text-xs font-bold">
+              <span className="bg-gray-100 text-gray-800 px-2.5 py-1 rounded-lg">
+                Opbrengst: € {totalSellRevenue.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+              <span className={`px-2.5 py-1 rounded-lg ${totalRealizedProfit >= 0 ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                Gerealiseerde Winst: {totalRealizedProfit >= 0 ? '+' : ''}€ {totalRealizedProfit.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-gray-50/90 text-gray-500 font-bold uppercase text-[10px] border-b border-gray-200">
+                <tr>
+                  <th className="py-3 px-3">#</th>
+                  <th className="py-3 px-3">Verkoopdatum</th>
+                  <th className="py-3 px-3">Aandeel</th>
+                  <th className="py-3 px-3">Type</th>
+                  <th className="py-3 px-3 text-right">Stuks</th>
+                  <th className="py-3 px-3 text-right">Verkoopkoers</th>
+                  <th className="py-3 px-3 text-right">Gekocht Op</th>
+                  <th className="py-3 px-3 text-right">Dagen</th>
+                  <th className="py-3 px-3 text-right">Opbrengst (€)</th>
+                  <th className="py-3 px-3 text-right">Rendement</th>
+                  <th className="py-3 px-3 text-right">Winst / Verlies</th>
+                  <th className="py-3 px-3">Exacte Exit / Snoei Reden</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100">
+                {sells.map((s, idx) => (
+                  <tr key={`sell-full-${s.ticker}-${s.date}-${idx}`} className="hover:bg-rose-50/30 transition-colors">
+                    <td className="py-3 px-3 font-bold text-gray-400">{idx + 1}</td>
+                    <td className="py-3 px-3 font-bold text-gray-900 whitespace-nowrap">{s.date}</td>
+                    <td className="py-3 px-3 font-black text-gray-900">
+                      <span className="px-2 py-0.5 bg-gray-100 rounded text-gray-900 font-extrabold text-xs">{s.ticker}</span>
+                    </td>
+                    <td className="py-3 px-3 whitespace-nowrap">
+                      {s.isRebalance ? (
+                        <span className="px-2 py-0.5 bg-amber-50 text-amber-800 rounded font-bold text-[10px] border border-amber-200">
+                          ✂️ Snoei
+                        </span>
+                      ) : s.type === 'PARTIAL_EXIT' ? (
+                        <span className="px-2 py-0.5 bg-purple-50 text-purple-700 rounded font-bold text-[10px] border border-purple-200">
+                          Deelverkoop
+                        </span>
+                      ) : s.type === 'STOP_LOSS' ? (
+                        <span className="px-2 py-0.5 bg-rose-50 text-rose-700 rounded font-bold text-[10px] border border-rose-200">
+                          🛑 Stop-Loss
+                        </span>
+                      ) : s.type === 'TAKE_PROFIT_VALUATION' ? (
+                        <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded font-bold text-[10px] border border-indigo-200">
+                          💰 Winstname
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded font-bold text-[10px] border border-red-200">
+                          100% Verkoop
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-3 text-right font-bold text-gray-800">{s.shares}</td>
+                    <td className="py-3 px-3 text-right text-gray-700 whitespace-nowrap">€ {s.price?.toFixed(2)}</td>
+                    <td className="py-3 px-3 text-right text-gray-500 whitespace-nowrap">{s.entryDate}</td>
+                    <td className="py-3 px-3 text-right text-gray-500">{s.holdingDays}d</td>
+                    <td className="py-3 px-3 text-right font-black text-gray-900 whitespace-nowrap">
+                      € {s.amount?.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td className={`py-3 px-3 text-right font-extrabold whitespace-nowrap ${s.returnPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {s.returnPct >= 0 ? '+' : ''}{s.returnPct?.toFixed(1)}%
+                    </td>
+                    <td className={`py-3 px-3 text-right font-bold whitespace-nowrap ${s.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                      {s.profit >= 0 ? '+' : ''}€ {s.profit?.toFixed(2)}
+                    </td>
+                    <td className="py-3 px-3 text-[11px] text-gray-700 max-w-[280px]">
+                      {s.reason}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* WEERGAVE 4: GECOMBINEERD OVERZICHT (ORIGINELE TABEL MET KOOP & VERKOOP PER POSITIE) */}
+      {logViewMode === 'combined' && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="bg-gray-50/80 text-gray-400 font-bold uppercase tracking-wider border-b border-gray-100">
+                <th className="py-3 px-3">#</th>
+                <th className="py-3 px-3">Aandeel</th>
+                <th className="py-3 px-3">Type</th>
+                <th className="py-3 px-3">Koop Datum</th>
+                <th className="py-3 px-3">Koop Koers</th>
+                <th className="py-3 px-3">Verkoop Datum</th>
+                <th className="py-3 px-3">Verkoop Koers</th>
+                <th className="py-3 px-3">Exacte Exit / Snoei Reden</th>
+                <th className="py-3 px-3 text-right">Dagen</th>
+                <th className="py-3 px-3 text-right">Rendement %</th>
+                <th className="py-3 px-3 text-right">Winst / Verlies</th>
+                <th className="py-3 px-3 text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredTrades.map((t) => (
+                <tr key={`${t.ticker}-${t.tradeNumber}`} className={`transition-colors ${t.isRebalance ? 'bg-purple-50/20 hover:bg-purple-50/40' : 'hover:bg-gray-50/60'}`}>
+                  <td className="py-3 px-3 font-bold text-gray-400">{t.tradeNumber}</td>
+                  <td className="py-3 px-3 font-extrabold text-gray-900">{t.ticker}</td>
+                  <td className="py-3 px-3">
+                    {t.type === 'TAKE_PROFIT_VALUATION' ? (
+                      <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full font-bold text-[10px] border border-indigo-200 whitespace-nowrap">
+                        💰 Winstname Overwaardering
+                      </span>
+                    ) : t.type === 'STOP_LOSS' ? (
+                      <span className="px-2 py-0.5 bg-rose-50 text-rose-700 rounded-full font-bold text-[10px] border border-rose-200 whitespace-nowrap">
+                        🛑 Stop-Loss
+                      </span>
+                    ) : t.type === 'REBALANCE_TRIM' ? (
+                      <span className="px-2 py-0.5 bg-amber-50 text-amber-800 rounded-full font-bold text-[10px] border border-amber-200 whitespace-nowrap">
+                        ✂️ Snoei {t.sellPct}%
+                      </span>
+                    ) : t.type === 'PARTIAL_EXIT' ? (
+                      <span className="px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full font-bold text-[10px] border border-purple-200 whitespace-nowrap">
+                        Deelverkoop {t.sellPct}%
+                      </span>
+                    ) : t.type === 'FULL_EXIT' ? (
+                      <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-bold text-[10px] border border-red-200 whitespace-nowrap">
+                        {t.isRebalance ? '✂️ 100% Verkoop' : '100% Verkoop'}
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-bold text-[10px] border border-blue-200 whitespace-nowrap">
+                        Lopend
+                      </span>
+                    )}
+                  </td>
+                  <td className="py-3 px-3 font-semibold text-gray-800">{t.entryDate}</td>
+                  <td className="py-3 px-3 text-gray-700">€ {t.entryPrice?.toFixed(2)}</td>
+                  <td className="py-3 px-3 font-semibold text-gray-800">{t.exitDate}</td>
+                  <td className="py-3 px-3 text-gray-700">€ {t.exitPrice?.toFixed(2)}</td>
+                  <td className="py-3 px-3 font-medium text-gray-600 text-[11px]">
+                    <span className={t.isRebalance ? 'text-purple-900 font-semibold' : t.exitReason?.includes('Score is gezakt') ? 'text-red-700 font-semibold' : t.exitReason?.includes('Deelverkoop') ? 'text-purple-800' : 'text-gray-700'}>
+                      {t.exitReason}
+                    </span>
+                  </td>
+                  <td className="py-3 px-3 text-right text-gray-500">{t.holdingDays}d</td>
+                  <td className={`py-3 px-3 text-right font-extrabold ${t.returnPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(1)}%
+                  </td>
+                  <td className={`py-3 px-3 text-right font-bold ${t.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
+                    {t.profit >= 0 ? '+' : ''}€ {t.profit.toFixed(2)}
+                  </td>
+                  <td className="py-3 px-3 text-center">
+                    {t.isOpen ? (
+                      <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-bold text-[10px]">
+                        Lopend
+                      </span>
+                    ) : t.isWin ? (
+                      <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px]">
+                        Winst
+                      </span>
+                    ) : (
+                      <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-bold text-[10px]">
+                        Verlies
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+};
+
 const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
   const navigate = useNavigate();
   const [mode, setMode] = useState('dynamic_score5'); // 'single' | 'dynamic_score5' | 'portfolio_list'
@@ -44,6 +708,11 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
   const [usePortfolioRelativeWeight, setUsePortfolioRelativeWeight] = useState(true);
   const [enableActiveRebalance, setEnableActiveRebalance] = useState(true);
   const [useTrendFilter200Sma, setUseTrendFilter200Sma] = useState(true);
+  const [allowFractionalShares, setAllowFractionalShares] = useState(true);
+  const [minOrderAmount, setMinOrderAmount] = useState(100);
+  const [minOrderSkipThreshold, setMinOrderSkipThreshold] = useState(50);
+  const [feePerOrder, setFeePerOrder] = useState(1.0); // Transactiekosten per order (€)
+  const [taxRatePct, setTaxRatePct] = useState(0.35); // Transactietaks / TOB (%)
   const [stopLossPct, setStopLossPct] = useState(0); // 0 = off
   const [maxPositions, setMaxPositions] = useState(0); // 0 = onbeperkt
   const [maxPriceToIntrinsicRatio, setMaxPriceToIntrinsicRatio] = useState(1.3); // 0 = off, 1.3 = max 30% overwaardering
@@ -85,6 +754,11 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
     const activeMaxPriceToIntrinsicRatio = overrides.maxPriceToIntrinsicRatio !== undefined ? overrides.maxPriceToIntrinsicRatio : maxPriceToIntrinsicRatio;
     const activeTakeProfitAtIntrinsicRatio = overrides.takeProfitAtIntrinsicRatio !== undefined ? overrides.takeProfitAtIntrinsicRatio : takeProfitAtIntrinsicRatio;
     const activeMaxDebtRatio = overrides.maxDebtRatio !== undefined ? overrides.maxDebtRatio : maxDebtRatio;
+    const activeAllowFractionalShares = overrides.allowFractionalShares !== undefined ? overrides.allowFractionalShares : allowFractionalShares;
+    const activeMinOrderAmount = overrides.minOrderAmount !== undefined ? overrides.minOrderAmount : minOrderAmount;
+    const activeMinOrderSkipThreshold = overrides.minOrderSkipThreshold !== undefined ? overrides.minOrderSkipThreshold : minOrderSkipThreshold;
+    const activeFeePerOrder = overrides.feePerOrder !== undefined ? overrides.feePerOrder : feePerOrder;
+    const activeTaxRatePct = overrides.taxRatePct !== undefined ? overrides.taxRatePct : taxRatePct;
     const activeMode = overrides.mode !== undefined ? overrides.mode : mode;
 
     try {
@@ -106,7 +780,12 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
           requireWaardeverdelingRise: activeRequireWaardeverdelingRise,
           sellOnScoreDrop: activeSellOnScoreDrop,
           useWaardeverdelingSell: activeUseWaardeverdelingSell,
-          useMacdSell: activeUseMacdSell
+          useMacdSell: activeUseMacdSell,
+          allowFractionalShares: activeAllowFractionalShares,
+          minOrderAmount: Number(activeMinOrderAmount),
+          minOrderSkipThreshold: Number(activeMinOrderSkipThreshold),
+          feePerOrder: Number(activeFeePerOrder),
+          taxRatePct: Number(activeTaxRatePct)
         });
 
         setSingleResult(res.data);
@@ -123,7 +802,12 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
           maxPositions: Number(activeMaxPositions),
           maxPriceToIntrinsicRatio: Number(activeMaxPriceToIntrinsicRatio),
           takeProfitAtIntrinsicRatio: Number(activeTakeProfitAtIntrinsicRatio),
-          maxDebtRatio: Number(activeMaxDebtRatio)
+          maxDebtRatio: Number(activeMaxDebtRatio),
+          allowFractionalShares: activeAllowFractionalShares,
+          minOrderAmount: Number(activeMinOrderAmount),
+          minOrderSkipThreshold: Number(activeMinOrderSkipThreshold),
+          feePerOrder: Number(activeFeePerOrder),
+          taxRatePct: Number(activeTaxRatePct)
         });
 
         setDynamicResult(res.data);
@@ -135,7 +819,12 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
           requireWaardeverdelingRise: activeRequireWaardeverdelingRise,
           sellOnScoreDrop: activeSellOnScoreDrop,
           useWaardeverdelingSell: activeUseWaardeverdelingSell,
-          useMacdSell: activeUseMacdSell
+          useMacdSell: activeUseMacdSell,
+          allowFractionalShares: activeAllowFractionalShares,
+          minOrderAmount: Number(activeMinOrderAmount),
+          minOrderSkipThreshold: Number(activeMinOrderSkipThreshold),
+          feePerOrder: Number(activeFeePerOrder),
+          taxRatePct: Number(activeTaxRatePct)
         });
 
         setPortfolioResult(res.data);
@@ -146,7 +835,7 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
     } finally {
       setLoading(false);
     }
-  }, [mode, targetStock, portfolioType, initialCapital, requireScore5, requireWaardeverdelingRise, sellOnScoreDrop, useWaardeverdelingSell, useMacdSell, usePortfolioRelativeWeight, enableActiveRebalance, useTrendFilter200Sma, stopLossPct, maxPositions, maxPriceToIntrinsicRatio, takeProfitAtIntrinsicRatio, maxDebtRatio]);
+  }, [mode, targetStock, portfolioType, initialCapital, requireScore5, requireWaardeverdelingRise, sellOnScoreDrop, useWaardeverdelingSell, useMacdSell, usePortfolioRelativeWeight, enableActiveRebalance, useTrendFilter200Sma, stopLossPct, maxPositions, maxPriceToIntrinsicRatio, takeProfitAtIntrinsicRatio, maxDebtRatio, allowFractionalShares, minOrderAmount, minOrderSkipThreshold, feePerOrder, taxRatePct]);
 
   const applyPreset = (presetType) => {
     setActivePreset(presetType);
@@ -162,6 +851,9 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
       setStopLossPct(0);
       setMaxPositions(0);
       setUseMacdSell(false);
+      setAllowFractionalShares(true);
+      setMinOrderAmount(100);
+      setMinOrderSkipThreshold(50);
       handleRunBacktest({
         usePortfolioRelativeWeight: true,
         enableActiveRebalance: true,
@@ -173,7 +865,10 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
         maxDebtRatio: 0,
         stopLossPct: 0,
         maxPositions: 0,
-        useMacdSell: false
+        useMacdSell: false,
+        allowFractionalShares: true,
+        minOrderAmount: 100,
+        minOrderSkipThreshold: 50
       });
     } else if (presetType === 'super_quality') {
       setUsePortfolioRelativeWeight(true);
@@ -1042,6 +1737,149 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
                 </div>
               </div>
 
+              {/* Deelaandelen / Fractionele Orders */}
+              <div className="sm:col-span-2 p-2.5 bg-blue-50/60 rounded-xl border border-blue-200 space-y-2">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={allowFractionalShares}
+                      onChange={(e) => { setAllowFractionalShares(e.target.checked); setActivePreset('custom'); }}
+                      className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 border-blue-300"
+                    />
+                    <span className="text-xs font-bold text-blue-950">
+                      🧩 Deelaandelen (Fractionele Orders met afronding op 0,1 stuks)
+                    </span>
+                  </label>
+                  <span className="text-[10px] text-blue-700 bg-blue-100 px-2 py-0.5 rounded font-medium">
+                    {allowFractionalShares ? 'Snellere cash allocatie (min. €' + minOrderAmount + ')' : 'Enkel volledige aandelen'}
+                  </span>
+                </div>
+
+                {allowFractionalShares && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-blue-200/60">
+                    <div className="flex items-center justify-between gap-2 p-1.5 bg-white/80 rounded-lg border border-blue-200">
+                      <span className="text-[11px] font-semibold text-blue-900">Minimum Order (€):</span>
+                      <input
+                        type="number"
+                        min="10"
+                        step="10"
+                        value={minOrderAmount}
+                        onChange={(e) => { setMinOrderAmount(Number(e.target.value)); setActivePreset('custom'); }}
+                        className="w-16 px-2 py-0.5 bg-white border border-blue-300 rounded text-xs font-bold text-blue-900 text-center focus:outline-none"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-2 p-1.5 bg-white/80 rounded-lg border border-blue-200">
+                      <span className="text-[11px] font-semibold text-blue-900">Skip-Drempel / Ondergrens (€):</span>
+                      <input
+                        type="number"
+                        min="5"
+                        step="5"
+                        value={minOrderSkipThreshold}
+                        onChange={(e) => { setMinOrderSkipThreshold(Number(e.target.value)); setActivePreset('custom'); }}
+                        className="w-16 px-2 py-0.5 bg-white border border-blue-300 rounded text-xs font-bold text-blue-900 text-center focus:outline-none"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Transactiekosten & Beurstaks (Frictiekosten) */}
+              <div className="sm:col-span-2 p-3 bg-amber-50/70 rounded-xl border border-amber-200 space-y-2.5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1.5 bg-amber-100 text-amber-800 rounded-lg text-xs font-black">💸</span>
+                    <span className="text-xs font-bold text-amber-950">
+                      Transactiekosten & Beurstaks (TOB)
+                    </span>
+                  </div>
+                  <div className="flex items-center flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => { setFeePerOrder(0); setTaxRatePct(0); setActivePreset('custom'); }}
+                      className={`px-2 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+                        feePerOrder === 0 && taxRatePct === 0
+                          ? 'bg-amber-600 text-white border-amber-600'
+                          : 'bg-white text-amber-900 border-amber-300 hover:bg-amber-100'
+                      }`}
+                    >
+                      Geen kosten (€0 / 0%)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setFeePerOrder(1.0); setTaxRatePct(0.35); setActivePreset('custom'); }}
+                      className={`px-2 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+                        feePerOrder === 1 && taxRatePct === 0.35
+                          ? 'bg-amber-600 text-white border-amber-600'
+                          : 'bg-white text-amber-900 border-amber-300 hover:bg-amber-100'
+                      }`}
+                    >
+                      Neo-broker (€1 / 0,35%)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setFeePerOrder(2.5); setTaxRatePct(0.35); setActivePreset('custom'); }}
+                      className={`px-2 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+                        feePerOrder === 2.5 && taxRatePct === 0.35
+                          ? 'bg-amber-600 text-white border-amber-600'
+                          : 'bg-white text-amber-900 border-amber-300 hover:bg-amber-100'
+                      }`}
+                    >
+                      Lage Bank (€2,50 / 0,35%)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setFeePerOrder(7.5); setTaxRatePct(0.35); setActivePreset('custom'); }}
+                      className={`px-2 py-0.5 rounded text-[11px] font-bold border transition-colors ${
+                        feePerOrder === 7.5 && taxRatePct === 0.35
+                          ? 'bg-amber-600 text-white border-amber-600'
+                          : 'bg-white text-amber-900 border-amber-300 hover:bg-amber-100'
+                      }`}
+                    >
+                      Klassiek (€7,50 / 0,35%)
+                    </button>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 border-t border-amber-200/60">
+                  <div className="flex items-center justify-between gap-2 bg-white/80 p-2 rounded-lg border border-amber-200">
+                    <span className="text-xs font-semibold text-amber-900 whitespace-nowrap">
+                      Transactiekost per order:
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs font-bold text-gray-500">€</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="50"
+                        step="0.5"
+                        value={feePerOrder}
+                        onChange={(e) => { setFeePerOrder(Number(e.target.value)); setActivePreset('custom'); }}
+                        className="w-16 px-2 py-1 bg-white border border-amber-300 rounded-lg text-xs font-bold text-amber-950 text-right focus:ring-2 focus:ring-amber-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 bg-white/80 p-2 rounded-lg border border-amber-200">
+                    <span className="text-xs font-semibold text-amber-900 whitespace-nowrap">
+                      Beurstaks / TOB tarief:
+                    </span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        type="number"
+                        min="0"
+                        max="5"
+                        step="0.05"
+                        value={taxRatePct}
+                        onChange={(e) => { setTaxRatePct(Number(e.target.value)); setActivePreset('custom'); }}
+                        className="w-16 px-2 py-1 bg-white border border-amber-300 rounded-lg text-xs font-bold text-amber-950 text-right focus:ring-2 focus:ring-amber-500"
+                      />
+                      <span className="text-xs font-bold text-gray-500">%</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <button
                 onClick={() => handleRunBacktest()}
                 disabled={loading}
@@ -1075,7 +1913,7 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
       {mode === 'dynamic_score5' && dynamicResult && (
         <div className="space-y-6">
           {/* KPI Dashboard Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
             <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm">
               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Portfolio Eindwaarde</span>
               <div className="text-xl font-extrabold text-gray-900 mt-1">
@@ -1134,6 +1972,16 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 {dynamicResult.kpis.activePositionsCount} posities • Cash: € {dynamicResult.kpis.cash.toLocaleString('nl-NL', { maximumFractionDigits: 0 })}
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-amber-200/80 shadow-sm bg-gradient-to-br from-white to-amber-50/40">
+              <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">Kosten & Beurstaks</span>
+              <div className="text-xl font-extrabold text-amber-700 mt-1">
+                € {(dynamicResult.kpis.totalCosts || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-xs text-amber-900 font-medium mt-1">
+                Drag: -{(dynamicResult.kpis.costDragPct || 0).toFixed(1)}% • €{(dynamicResult.kpis.totalFeesPaid || 0).toFixed(0)} fee / €{(dynamicResult.kpis.totalTaxesPaid || 0).toFixed(0)} TOB
               </div>
             </div>
           </div>
@@ -1375,139 +2223,17 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
             </div>
           )}
 
-          {/* Transactie Logboek Tabel */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-              <div>
-                <h3 className="text-base font-bold text-gray-900">Transactie Logboek</h3>
-                <p className="text-xs text-gray-500">
-                  Alle {dynamicResult.trades.length} gesimuleerde koop-, snoei- en verkooptransacties
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="flex items-center bg-gray-100 p-1 rounded-xl flex-wrap gap-1">
-                  {[
-                    { id: 'ALL', label: 'Alles' },
-                    { id: 'WINS', label: 'Winst' },
-                    { id: 'LOSSES', label: 'Verlies' },
-                    { id: 'PARTIAL', label: 'Deelverkoop' },
-                    { id: 'REBALANCE', label: '✂️ Snoei' },
-                    { id: 'STOP_LOSS', label: '🛑 Stop-Loss' },
-                    { id: 'VALUATION', label: '💰 Waardering Winst' },
-                    { id: 'OPEN', label: 'Lopend' }
-                  ].map(filter => (
-                    <button
-                      key={filter.id}
-                      onClick={() => setTradeFilter(filter.id)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                        tradeFilter === filter.id
-                          ? 'bg-white text-gray-900 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-900'
-                      }`}
-                    >
-                      {filter.label}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={exportTradesCsv}
-                  className="px-3.5 py-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm"
-                >
-                  <i className="ph-bold ph-download-simple text-sm"></i>
-                  CSV
-                </button>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead>
-                  <tr className="bg-gray-50/80 text-gray-400 font-bold uppercase tracking-wider border-b border-gray-100">
-                    <th className="py-3 px-3">#</th>
-                    <th className="py-3 px-3">Aandeel</th>
-                    <th className="py-3 px-3">Type</th>
-                    <th className="py-3 px-3">Koop Datum</th>
-                    <th className="py-3 px-3">Koop Koers</th>
-                    <th className="py-3 px-3">Verkoop Datum</th>
-                    <th className="py-3 px-3">Verkoop Koers</th>
-                    <th className="py-3 px-3">Exacte Exit / Snoei Reden</th>
-                    <th className="py-3 px-3 text-right">Dagen</th>
-                    <th className="py-3 px-3 text-right">Rendement %</th>
-                    <th className="py-3 px-3 text-right">Winst / Verlies</th>
-                    <th className="py-3 px-3 text-center">Status</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100">
-                  {filteredTrades.map((t) => (
-                    <tr key={`${t.ticker}-${t.tradeNumber}`} className={`transition-colors ${t.isRebalance ? 'bg-purple-50/20 hover:bg-purple-50/40' : 'hover:bg-gray-50/60'}`}>
-                      <td className="py-3 px-3 font-bold text-gray-400">{t.tradeNumber}</td>
-                      <td className="py-3 px-3 font-extrabold text-gray-900">{t.ticker}</td>
-                      <td className="py-3 px-3">
-                        {t.type === 'TAKE_PROFIT_VALUATION' ? (
-                          <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 rounded-full font-bold text-[10px] border border-indigo-200 whitespace-nowrap">
-                            💰 Winstname Overwaardering
-                          </span>
-                        ) : t.type === 'STOP_LOSS' ? (
-                          <span className="px-2 py-0.5 bg-rose-50 text-rose-700 rounded-full font-bold text-[10px] border border-rose-200 whitespace-nowrap">
-                            🛑 Stop-Loss
-                          </span>
-                        ) : t.type === 'REBALANCE_TRIM' ? (
-                          <span className="px-2 py-0.5 bg-amber-50 text-amber-800 rounded-full font-bold text-[10px] border border-amber-200 whitespace-nowrap">
-                            ✂️ Snoei {t.sellPct}%
-                          </span>
-                        ) : t.type === 'PARTIAL_EXIT' ? (
-                          <span className="px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full font-bold text-[10px] border border-purple-200 whitespace-nowrap">
-                            Deelverkoop {t.sellPct}%
-                          </span>
-                        ) : t.type === 'FULL_EXIT' ? (
-                          <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-bold text-[10px] border border-red-200 whitespace-nowrap">
-                            {t.isRebalance ? '✂️ 100% Verkoop' : '100% Verkoop'}
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-bold text-[10px] border border-blue-200 whitespace-nowrap">
-                            Lopend
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3 px-3 font-semibold text-gray-800">{t.entryDate}</td>
-                      <td className="py-3 px-3 text-gray-700">€ {t.entryPrice?.toFixed(2)}</td>
-                      <td className="py-3 px-3 font-semibold text-gray-800">{t.exitDate}</td>
-                      <td className="py-3 px-3 text-gray-700">€ {t.exitPrice?.toFixed(2)}</td>
-                      <td className="py-3 px-3 font-medium text-gray-600 text-[11px]">
-                        <span className={t.isRebalance ? 'text-purple-900 font-semibold' : t.exitReason?.includes('Score is gezakt') ? 'text-red-700 font-semibold' : t.exitReason?.includes('Deelverkoop') ? 'text-purple-800' : 'text-gray-700'}>
-                          {t.exitReason}
-                        </span>
-                      </td>
-                      <td className="py-3 px-3 text-right text-gray-500">{t.holdingDays}d</td>
-                      <td className={`py-3 px-3 text-right font-extrabold ${t.returnPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                        {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(1)}%
-                      </td>
-                      <td className={`py-3 px-3 text-right font-bold ${t.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                        {t.profit >= 0 ? '+' : ''}€ {t.profit.toFixed(2)}
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        {t.isOpen ? (
-                          <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-bold text-[10px]">
-                            Lopend
-                          </span>
-                        ) : t.isWin ? (
-                          <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px]">
-                            Winst
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-bold text-[10px]">
-                            Verlies
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
+          {/* Transactie Logboek Tabel met gesplitste weergave */}
+          <BacktestTradeLog
+            trades={dynamicResult.trades}
+            buyOrders={dynamicResult.buyOrders}
+            filteredTrades={filteredTrades}
+            tradeFilter={tradeFilter}
+            setTradeFilter={setTradeFilter}
+            title="Transactie Logboek"
+            subtitle={`Alle ${dynamicResult.trades.length} gesimuleerde koop-, snoei- en verkooptransacties`}
+            mode="dynamic_score5"
+          />
         </div>
       )}
 
@@ -1515,7 +2241,7 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
       {mode === 'single' && singleResult && (
         <div className="space-y-6">
           {/* KPI Dashboard Grid */}
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4">
             <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm">
               <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Strategie Waarde</span>
               <div className="text-xl font-extrabold text-gray-900 mt-1">
@@ -1575,6 +2301,16 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
               </div>
               <div className="text-xs text-gray-500 mt-1">
                 Gem. duur: {singleResult.kpis.avgHoldingDays} dgn
+              </div>
+            </div>
+
+            <div className="bg-white p-4 rounded-2xl border border-amber-200/80 shadow-sm bg-gradient-to-br from-white to-amber-50/40">
+              <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">Kosten & Beurstaks</span>
+              <div className="text-xl font-extrabold text-amber-700 mt-1">
+                € {(singleResult.kpis.totalCosts || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-xs text-amber-900 font-medium mt-1">
+                Drag: -{(singleResult.kpis.costDragPct || 0).toFixed(1)}% • €{(singleResult.kpis.totalFeesPaid || 0).toFixed(0)} fee / €{(singleResult.kpis.totalTaxesPaid || 0).toFixed(0)} TOB
               </div>
             </div>
           </div>
@@ -1698,136 +2434,18 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
             </div>
           )}
 
-          {/* Transactielijst Logboek */}
-          <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm">
-            <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
-              <div>
-                <h3 className="text-base font-bold text-gray-900">Transactie Logboek</h3>
-                <p className="text-xs text-gray-500">
-                  Alle {singleResult.trades.length} gesimuleerde transacties voor {singleResult.ticker}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-3">
-                <div className="flex items-center bg-gray-100 p-1 rounded-xl flex-wrap gap-1">
-                  {[
-                    { id: 'ALL', label: 'Alles' },
-                    { id: 'WINS', label: 'Winst' },
-                    { id: 'LOSSES', label: 'Verlies' },
-                    { id: 'PARTIAL', label: 'Deelverkoop' },
-                    { id: 'OPEN', label: 'Lopend' }
-                  ].map(filter => (
-                    <button
-                      key={filter.id}
-                      onClick={() => setTradeFilter(filter.id)}
-                      className={`px-3 py-1 rounded-lg text-xs font-bold transition-all ${
-                        tradeFilter === filter.id
-                          ? 'bg-white text-gray-900 shadow-sm'
-                          : 'text-gray-500 hover:text-gray-900'
-                      }`}
-                    >
-                      {filter.label}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={exportTradesCsv}
-                  className="px-3.5 py-2 bg-gray-50 hover:bg-gray-100 text-gray-700 border border-gray-200 rounded-xl text-xs font-bold flex items-center gap-2 transition-all shadow-sm"
-                >
-                  <i className="ph-bold ph-download-simple text-sm"></i>
-                  CSV
-                </button>
-              </div>
-            </div>
-
-            {filteredTrades.length === 0 ? (
-              <div className="p-8 text-center text-gray-400 text-sm">
-                Geen transacties binnen dit filter.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs">
-                  <thead>
-                    <tr className="bg-gray-50/80 text-gray-400 font-bold uppercase tracking-wider border-b border-gray-100">
-                      <th className="py-3 px-3">#</th>
-                      <th className="py-3 px-3">Type</th>
-                      <th className="py-3 px-3">Stuks</th>
-                      <th className="py-3 px-3">Koop Datum</th>
-                      <th className="py-3 px-3">Koop Koers</th>
-                      <th className="py-3 px-3">Verkoop Datum</th>
-                      <th className="py-3 px-3">Verkoop Koers</th>
-                      <th className="py-3 px-3">Exacte Exit Reden</th>
-                      <th className="py-3 px-3 text-right">Dagen</th>
-                      <th className="py-3 px-3 text-right">Rendement %</th>
-                      <th className="py-3 px-3 text-right">Winst / Verlies</th>
-                      <th className="py-3 px-3 text-center">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {filteredTrades.map((t) => (
-                      <tr key={t.tradeNumber} className="hover:bg-gray-50/60 transition-colors">
-                        <td className="py-3 px-3 font-bold text-gray-500">{t.tradeNumber}</td>
-                        <td className="py-3 px-3">
-                          {t.type === 'PARTIAL_EXIT' ? (
-                            <span className="px-2 py-0.5 bg-purple-50 text-purple-700 rounded-full font-bold text-[10px] border border-purple-200">
-                              Deelverkoop {t.sellPct}%
-                            </span>
-                          ) : t.type === 'FULL_EXIT' ? (
-                            <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-bold text-[10px] border border-red-200">
-                              100% Verkoop
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-bold text-[10px] border border-blue-200">
-                              Lopend
-                            </span>
-                          )}
-                        </td>
-                        <td className="py-3 px-3 font-medium text-gray-700">
-                          {t.sharesSold != null && t.sharesRemaining != null ? (
-                            <span>{t.sharesSold} <span className="text-gray-400">({t.sharesRemaining} over)</span></span>
-                          ) : (
-                            t.shares
-                          )}
-                        </td>
-                        <td className="py-3 px-3 font-semibold text-gray-900">{t.entryDate}</td>
-                        <td className="py-3 px-3 text-gray-700 font-medium">€ {t.entryPrice?.toFixed(2)}</td>
-                        <td className="py-3 px-3 font-semibold text-gray-900">{t.exitDate}</td>
-                        <td className="py-3 px-3 text-gray-700 font-medium">€ {t.exitPrice?.toFixed(2)}</td>
-                        <td className="py-3 px-3 font-medium text-gray-600 text-[11px]">
-                          <span className={t.exitReason?.includes('Score gedaald') ? 'text-red-700 font-semibold' : t.exitReason?.includes('Deelverkoop') ? 'text-purple-800' : 'text-gray-700'}>
-                            {t.exitReason}
-                          </span>
-                        </td>
-                        <td className="py-3 px-3 text-right text-gray-500">{t.holdingDays}d</td>
-                        <td className={`py-3 px-3 text-right font-extrabold ${t.returnPct >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {t.returnPct >= 0 ? '+' : ''}{t.returnPct.toFixed(1)}%
-                        </td>
-                        <td className={`py-3 px-3 text-right font-bold ${t.profit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
-                          {t.profit >= 0 ? '+' : ''}€ {t.profit.toFixed(2)}
-                        </td>
-                        <td className="py-3 px-3 text-center">
-                          {t.isOpen ? (
-                            <span className="px-2 py-0.5 bg-blue-50 text-blue-700 rounded-full font-bold text-[10px]">
-                              Lopend
-                            </span>
-                          ) : t.isWin ? (
-                            <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 rounded-full font-bold text-[10px]">
-                              Winst
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 bg-red-50 text-red-700 rounded-full font-bold text-[10px]">
-                              Verlies
-                            </span>
-                          )}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          {/* Transactielijst Logboek met gesplitste weergave */}
+          <BacktestTradeLog
+            trades={singleResult.trades}
+            buyOrders={singleResult.buyOrders}
+            filteredTrades={filteredTrades}
+            tradeFilter={tradeFilter}
+            setTradeFilter={setTradeFilter}
+            title={`Transactie Logboek — ${singleResult.ticker}`}
+            subtitle={`Alle ${singleResult.trades.length} gesimuleerde transacties voor ${singleResult.ticker}`}
+            targetTicker={singleResult.ticker}
+            mode="single"
+          />
         </div>
       )}
 

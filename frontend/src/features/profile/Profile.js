@@ -13,6 +13,11 @@ const Profile = () => {
   const [preferredMethod, setPreferredMethod] = useState('password');
   const [strategyMode, setStrategyMode] = useState(localStorage.getItem('strategy_mode') || 'arne_advies');
   const [role, setRole] = useState(localStorage.getItem('role') || 'user');
+  const [allowFractionalShares, setAllowFractionalShares] = useState(true);
+  const [minOrderAmount, setMinOrderAmount] = useState(100);
+  const [minOrderSkipThreshold, setMinOrderSkipThreshold] = useState(50);
+  const [transactionFee, setTransactionFee] = useState(1.0);
+  const [taxRatePct, setTaxRatePct] = useState(0.35);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
   const userId = localStorage.getItem('userID') || 1; // Haal de ingelogde userID op
@@ -26,6 +31,21 @@ const Profile = () => {
       setExchangeRate(res.data.manual_exchange_rate || 1.0);
       setPreferredMethod(res.data.preferred_login_method || 'password');
       setLinkedProviders(res.data.linkedProviders || []);
+      if (res.data.allow_fractional_shares !== undefined) {
+        setAllowFractionalShares(res.data.allow_fractional_shares !== false);
+      }
+      if (res.data.min_order_amount !== undefined && res.data.min_order_amount !== null) {
+        setMinOrderAmount(res.data.min_order_amount);
+      }
+      if (res.data.min_order_skip_threshold !== undefined && res.data.min_order_skip_threshold !== null) {
+        setMinOrderSkipThreshold(res.data.min_order_skip_threshold);
+      }
+      if (res.data.transaction_fee !== undefined && res.data.transaction_fee !== null) {
+        setTransactionFee(res.data.transaction_fee);
+      }
+      if (res.data.tax_rate_pct !== undefined && res.data.tax_rate_pct !== null) {
+        setTaxRatePct(res.data.tax_rate_pct);
+      }
       if (res.data.strategy_mode) {
         setStrategyMode(res.data.strategy_mode);
         localStorage.setItem('strategy_mode', res.data.strategy_mode);
@@ -201,10 +221,15 @@ const Profile = () => {
       await http.put(`/auth/profile/${userId}`, {
         username,
         default_currency: currency,
-        manual_exchange_rate: exchangeRate
+        manual_exchange_rate: exchangeRate,
+        allow_fractional_shares: allowFractionalShares,
+        min_order_amount: Number(minOrderAmount),
+        min_order_skip_threshold: Number(minOrderSkipThreshold),
+        transaction_fee: Number(transactionFee),
+        tax_rate_pct: Number(taxRatePct)
       });
       localStorage.setItem('username', username); // Update lokale opslag zodat de header klopt
-      toast.success('Algemene instellingen succesvol opgeslagen!');
+      toast.success('Algemene & broker instellingen succesvol opgeslagen!');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Fout bij opslaan profiel.');
     }
@@ -348,6 +373,111 @@ const Profile = () => {
               />
               <p className="text-xs text-gray-500 mt-1">Vul in hoeveel de ene munt waard is in de andere (bijv. 1 USD = 0.86 EUR &rarr; vul 0.86 in).</p>
             </div>
+
+            {/* Broker & Order Instellingen (Fractionele Aandelen) */}
+            <div className="pt-4 border-t border-gray-200/80 space-y-4">
+              <div>
+                <h3 className="text-base font-bold text-gray-800 flex items-center gap-2">
+                  <span>🏦 Broker &amp; Order Instellingen</span>
+                  <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-bold">Nieuw</span>
+                </h3>
+                <p className="text-xs text-gray-500 mt-0.5">
+                  Stel in hoe de Strategie Assistent orders voor jou berekent. Dit verschilt per broker (bijv. Trade Republic/eToro bieden deelaandelen, Degiro/Bolero vaak enkel hele aandelen).
+                </p>
+              </div>
+
+              {/* Checkbox Deelaandelen */}
+              <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200">
+                <label className="flex items-start gap-3 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={allowFractionalShares}
+                    onChange={(e) => setAllowFractionalShares(e.target.checked)}
+                    className="w-4 h-4 mt-0.5 text-blue-600 rounded focus:ring-blue-500 border-gray-300"
+                  />
+                  <div>
+                    <span className="text-sm font-bold text-gray-800 block">
+                      Deelaandelen (Fractionele Orders) Toestaan
+                    </span>
+                    <span className="text-xs text-gray-500 leading-relaxed block mt-0.5">
+                      Wanneer ingeschakeld, worden aankoop- en verkooporders automatisch <strong>afgerond op 0,1 stuks</strong> (geen gekke kommagetallen). Zo blijft cash minder lang onbenut en kun je ook met kleinere bedragen instappen in dure aandelen.
+                    </span>
+                  </div>
+                </label>
+              </div>
+
+              {/* Order Drempels */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Minimum Orderbedrag (€)
+                  </label>
+                  <input
+                    type="number"
+                    min="10"
+                    step="10"
+                    value={minOrderAmount}
+                    onChange={(e) => setMinOrderAmount(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Standaard <strong>€ 100</strong>. Bedragen net boven de ondergrens worden afgerond naar dit bedrag om effectieve transacties te behouden.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Ondergrens / Niet Kopen onder (€)
+                  </label>
+                  <input
+                    type="number"
+                    min="5"
+                    step="5"
+                    value={minOrderSkipThreshold}
+                    onChange={(e) => setMinOrderSkipThreshold(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Standaard <strong>€ 50</strong>. Orders onder deze drempel worden overgeslagen zodat transactiekosten niet te zwaar doorwegen.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Transactiekost per Order (€)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.5"
+                    value={transactionFee}
+                    onChange={(e) => setTransactionFee(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Vast tarief van je broker (bv. <strong>€ 1.00</strong> bij Trade Republic, <strong>€ 2.50</strong> bij Degiro, <strong>€ 7.50</strong> bij Bolero).
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Beurstaks / TOB Tarief (%)
+                  </label>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.05"
+                    value={taxRatePct}
+                    onChange={(e) => setTaxRatePct(e.target.value)}
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Standaard <strong>0,35%</strong> (Belgische taks op beursverrichtingen voor aandelen, 0% voor NL beleggers).
+                  </p>
+                </div>
+              </div>
+            </div>
+
             <button type="submit" className="bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors shadow-sm font-medium">
               Wijzigingen Opslaan
             </button>

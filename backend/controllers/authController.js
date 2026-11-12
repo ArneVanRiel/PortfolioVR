@@ -335,7 +335,12 @@ const getProfile = async (req, res) => {
                    permissions,
                    ISNULL(default_currency, 'EUR') as default_currency,
                    ISNULL(manual_exchange_rate, 1.0) as manual_exchange_rate,
-                   ISNULL(preferred_login_method, 'password') as preferred_login_method
+                   ISNULL(preferred_login_method, 'password') as preferred_login_method,
+                   ISNULL(allow_fractional_shares, 1) as allow_fractional_shares,
+                   ISNULL(min_order_amount, 100.0) as min_order_amount,
+                   ISNULL(min_order_skip_threshold, 50.0) as min_order_skip_threshold,
+                   ISNULL(transaction_fee, 1.0) as transaction_fee,
+                   ISNULL(tax_rate_pct, 0.35) as tax_rate_pct
             FROM PF_Users WHERE id = @id
         `);
         
@@ -372,7 +377,16 @@ const updateProfile = async (req, res) => {
         return res.status(403).json({ message: 'Je kunt alleen je eigen profiel wijzigen.' });
     }
     const id = isAdminUser(req) ? requestedId : callerId;
-    const { username, default_currency, manual_exchange_rate } = req.body;
+    const { 
+        username, 
+        default_currency, 
+        manual_exchange_rate,
+        allow_fractional_shares,
+        min_order_amount,
+        min_order_skip_threshold,
+        transaction_fee,
+        tax_rate_pct
+    } = req.body;
     
     try {
         const request = new sql.Request();
@@ -380,11 +394,27 @@ const updateProfile = async (req, res) => {
         request.input('username', sql.NVarChar, username);
         request.input('default_currency', sql.NVarChar, default_currency);
         request.input('manual_exchange_rate', sql.Decimal(18, 4), manual_exchange_rate);
+        request.input('allow_fractional_shares', sql.Bit, allow_fractional_shares !== undefined ? (allow_fractional_shares ? 1 : 0) : 1);
+        request.input('min_order_amount', sql.Decimal(18, 2), min_order_amount !== undefined ? Number(min_order_amount) : 100.0);
+        request.input('min_order_skip_threshold', sql.Decimal(18, 2), min_order_skip_threshold !== undefined ? Number(min_order_skip_threshold) : 50.0);
+        request.input('transaction_fee', sql.Decimal(10, 2), transaction_fee !== undefined ? Number(transaction_fee) : 1.0);
+        request.input('tax_rate_pct', sql.Decimal(5, 2), tax_rate_pct !== undefined ? Number(tax_rate_pct) : 0.35);
         
         const checkUser = await request.query('SELECT id FROM PF_Users WHERE username = @username AND id != @id');
         if (checkUser.recordset.length > 0) return res.status(409).json({ message: 'Deze gebruikersnaam is al in gebruik.' });
 
-        await request.query('UPDATE PF_Users SET username = @username, default_currency = @default_currency, manual_exchange_rate = @manual_exchange_rate WHERE id = @id');
+        await request.query(`
+            UPDATE PF_Users 
+            SET username = @username, 
+                default_currency = @default_currency, 
+                manual_exchange_rate = @manual_exchange_rate,
+                allow_fractional_shares = @allow_fractional_shares,
+                min_order_amount = @min_order_amount,
+                min_order_skip_threshold = @min_order_skip_threshold,
+                transaction_fee = @transaction_fee,
+                tax_rate_pct = @tax_rate_pct
+            WHERE id = @id
+        `);
         res.json({ message: 'Profiel succesvol bijgewerkt.' });
     } catch (error) {
         console.error('Fout bij updaten profiel:', error);

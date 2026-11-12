@@ -122,7 +122,12 @@ const runBacktest = async (req, res) => {
     requireWaardeverdelingRise = true,
     useMacdSell = false,
     useWaardeverdelingSell = true,
-    sellOnScoreDrop = true
+    sellOnScoreDrop = true,
+    allowFractionalShares = true,
+    minOrderAmount = 100,
+    minOrderSkipThreshold = 50,
+    feePerOrder = 0,
+    taxRatePct = 0
   } = req.body;
 
   try {
@@ -235,8 +240,11 @@ const runBacktest = async (req, res) => {
     let shares = 0;
     let position = null;
     const trades = [];
+    const buyOrders = [];
     const equityCurve = [];
     const timelineEvents = [];
+    let totalFeesPaid = 0;
+    let totalTaxesPaid = 0;
 
     const firstPrice = parseFloat(priceList[0].closing_price);
     let peakValue = initialCapital;
@@ -250,7 +258,7 @@ const runBacktest = async (req, res) => {
       if (!price || price <= 0) continue;
 
       const { curr, prev } = getCalcOnDate(dStr);
-      const scoreOnDay = curr ? (curr.selectiecriteria ?? 5) : 5;
+      const scoreOnDay = curr ? (curr.selectiecriteria ?? 0) : 0;
       const wvOnDay = curr ? curr.waarde_verdeling : 0;
       const prevWv = prev ? prev.waarde_verdeling : null;
       const isWvRising = prevWv == null || (wvOnDay != null && prevWv != null && wvOnDay >= prevWv);
@@ -266,15 +274,20 @@ const runBacktest = async (req, res) => {
       // 1. Check VERKOOP
       if (shares > 0 && position && position.entryDate !== dStr) {
         if (sellOnScoreDrop && scoreOnDay < 5) {
-          const revenue = shares * price;
+          const grossRevenue = shares * price;
+          const fee = Number(feePerOrder) || 0;
+          const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+          const revenue = Math.max(0, grossRevenue - fee - tax);
           const profit = revenue - position.cost;
-          const returnPct = ((price - position.entryPrice) / position.entryPrice) * 100;
+          const returnPct = ((revenue - position.cost) / position.cost) * 100;
           const entryDateObj = new Date(position.entryDate);
           const exitDateObj = new Date(dStr);
           const holdingDays = Math.max(1, Math.round((exitDateObj - entryDateObj) / (1000 * 60 * 60 * 24)));
           const sellReason = `Score gedaald naar ${scoreOnDay}/5 (Geen 5 meer) -> 100% Volledig Verkocht`;
 
           cash += revenue;
+          totalFeesPaid += fee;
+          totalTaxesPaid += tax;
           trades.push({
             tradeNumber: trades.length + 1,
             type: 'FULL_EXIT',
@@ -286,6 +299,9 @@ const runBacktest = async (req, res) => {
             exitDate: dStr,
             exitPrice: price,
             revenue,
+            grossRevenue,
+            fee,
+            tax,
             profit,
             returnPct,
             holdingDays,
@@ -310,30 +326,58 @@ const runBacktest = async (req, res) => {
         } else if (useWaardeverdelingSell && scoreOnDay === 5 && prevWv != null && wvOnDay != null && wvOnDay < prevWv && position.lastEvaluatedQuarterDate !== currQuarterDate) {
           const dropFraction = Math.min(1, Math.max(0, (prevWv - wvOnDay) / prevWv));
           const dropPct = dropFraction * 100;
-          const sharesToSell = Math.min(shares, Math.max(1, Math.round(shares * dropFraction)));
+          const rawSellAmount = shares * price * dropFraction;
+
+          let sharesToSell = 0;
+          let isRoundedToMin = false;
+
+          if (allowFractionalShares) {
+            if (rawSellAmount < Number(minOrderSkipThreshold)) {
+              sharesToSell = 0;
+            } else {
+              let effectiveAmount = rawSellAmount;
+              if (rawSellAmount < Number(minOrderAmount)) {
+                effectiveAmount = Math.min(shares * price, Number(minOrderAmount));
+                isRoundedToMin = true;
+              }
+              sharesToSell = Math.min(shares, Math.round((effectiveAmount / price) * 10) / 10);
+            }
+          } else {
+            if (rawSellAmount >= Number(minOrderSkipThreshold)) {
+              sharesToSell = Math.min(shares, Math.max(1, Math.round(shares * dropFraction)));
+            }
+          }
 
           if (sharesToSell > 0) {
             const costOfSoldShares = position.cost * (sharesToSell / shares);
-            const revenue = sharesToSell * price;
+            const grossRevenue = sharesToSell * price;
+            const fee = Number(feePerOrder) || 0;
+            const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+            const revenue = Math.max(0, grossRevenue - fee - tax);
             const profit = revenue - costOfSoldShares;
-            const returnPct = ((price - position.entryPrice) / position.entryPrice) * 100;
+            const returnPct = ((revenue - costOfSoldShares) / costOfSoldShares) * 100;
             const entryDateObj = new Date(position.entryDate);
             const exitDateObj = new Date(dStr);
             const holdingDays = Math.max(1, Math.round((exitDateObj - entryDateObj) / (1000 * 60 * 60 * 24)));
-            const sellReason = `Deelverkoop ${dropPct.toFixed(1)}% (Waardeverdeling daling ${dropPct.toFixed(1)}%: ${prevWv.toFixed(1)} -> ${wvOnDay.toFixed(1)})`;
+            const sellReason = `Deelverkoop ${sharesToSell} stuks (${isRoundedToMin ? 'afgerond naar min. €' + minOrderAmount : dropPct.toFixed(1) + '%'}) (WV daling ${dropPct.toFixed(1)}%: ${prevWv.toFixed(1)} -> ${wvOnDay.toFixed(1)})`;
 
             cash += revenue;
+            totalFeesPaid += fee;
+            totalTaxesPaid += tax;
             trades.push({
               tradeNumber: trades.length + 1,
               type: 'PARTIAL_EXIT',
               sellPct: parseFloat(dropPct.toFixed(1)),
               sharesSold: sharesToSell,
-              sharesRemaining: shares - sharesToSell,
+              sharesRemaining: Math.round((shares - sharesToSell) * 10) / 10,
               entryDate: position.entryDate,
               entryPrice: position.entryPrice,
               exitDate: dStr,
               exitPrice: price,
               revenue,
+              grossRevenue,
+              fee,
+              tax,
               profit,
               returnPct,
               holdingDays,
@@ -353,8 +397,9 @@ const runBacktest = async (req, res) => {
             };
             timelineEvents.push(partialSellEventToday);
 
-            shares -= sharesToSell;
-            if (shares === 0) {
+            shares = Math.round((shares - sharesToSell) * 10) / 10;
+            if (shares <= 0.0001) {
+              shares = 0;
               position = null;
             } else {
               position.shares = shares;
@@ -366,18 +411,59 @@ const runBacktest = async (req, res) => {
       }
 
       // 2. Check KOOP
-      if (buySig && cash > price) {
+      const fee = Number(feePerOrder) || 0;
+      const taxRate = Number(taxRatePct) || 0;
+      const canAttemptBuy = allowFractionalShares ? cash >= (Number(minOrderSkipThreshold) + fee) : cash >= (price + fee);
+      if (buySig && canAttemptBuy) {
         const scorePass = !requireScore5 || scoreOnDay === 5;
         const wvPass = !requireWaardeverdelingRise || isWvRising;
 
         if (scorePass && wvPass && wvOnDay > 0) {
-          const sharesToBuy = Math.floor(cash / price);
-          if (sharesToBuy > 0) {
-            const cost = sharesToBuy * price;
-            cash -= cost;
-            shares += sharesToBuy;
+          let sharesToBuy = 0;
+          const availCash = Math.max(0, cash - fee) / (1 + (taxRate / 100));
+
+          if (allowFractionalShares) {
+            let rawShares = availCash / price;
+            let rounded = Math.round(rawShares * 10) / 10;
+            let gross = rounded * price;
+            let t = Math.min(gross * (taxRate / 100), 1600);
+            if (gross + t + fee > cash) {
+              rounded = Math.floor(rawShares * 10) / 10;
+              gross = rounded * price;
+            }
+            if (rounded > 0 && gross >= Number(minOrderSkipThreshold)) {
+              sharesToBuy = rounded;
+            }
+          } else {
+            sharesToBuy = Math.floor(availCash / price);
+          }
+
+          const grossCost = parseFloat((sharesToBuy * price).toFixed(2));
+          const cost = grossCost;
+          const tax = Math.min(grossCost * (taxRate / 100), 1600);
+          const totalCost = grossCost + tax + fee;
+
+          if (sharesToBuy > 0 && totalCost <= cash) {
+            cash -= totalCost;
+            totalFeesPaid += fee;
+            totalTaxesPaid += tax;
+            shares = Math.round((shares + sharesToBuy) * 10) / 10;
             const fullEntryReason = `MACD Koop + Score ${scoreOnDay}/5 + WV ${isWvRising ? 'Stijgend' : 'Gelijk'} (${prevWv != null ? prevWv.toFixed(1) : '-'} -> ${wvOnDay != null ? wvOnDay.toFixed(1) : '-'})`;
             
+            buyOrders.push({
+              id: buyOrders.length + 1,
+              ticker: tickerSymbol,
+              name: stockName,
+              date: dStr,
+              shares: sharesToBuy,
+              price: price,
+              amount: grossCost,
+              fee,
+              tax,
+              totalCost,
+              reason: fullEntryReason
+            });
+
             if (!position) {
               position = {
                 entryDate: dStr,
@@ -504,13 +590,19 @@ const runBacktest = async (req, res) => {
         requireWaardeverdelingRise,
         useMacdSell,
         useWaardeverdelingSell,
-        sellOnScoreDrop
+        sellOnScoreDrop,
+        feePerOrder: Number(feePerOrder) || 0,
+        taxRatePct: Number(taxRatePct) || 0
       },
       kpis: {
         initialCapital,
         finalStrategyValue: Math.round(finalStrategyValue * 100) / 100,
         strategyTotalProfit: Math.round(strategyTotalProfit * 100) / 100,
         strategyTotalReturnPct: Math.round(strategyTotalReturnPct * 100) / 100,
+        totalFeesPaid: Math.round(totalFeesPaid * 100) / 100,
+        totalTaxesPaid: Math.round(totalTaxesPaid * 100) / 100,
+        totalCosts: Math.round((totalFeesPaid + totalTaxesPaid) * 100) / 100,
+        costDragPct: Math.round(((totalFeesPaid + totalTaxesPaid) / Number(initialCapital)) * 1000) / 10,
 
         finalBuyAndHoldValue: Math.round(finalBuyAndHoldValue * 100) / 100,
         buyAndHoldTotalProfit: Math.round(buyAndHoldTotalProfit * 100) / 100,
@@ -526,6 +618,7 @@ const runBacktest = async (req, res) => {
         avgHoldingDays,
         avgTradeReturnPct: Math.round(avgTradeReturnPct * 10) / 10
       },
+      buyOrders: buyOrders.reverse(),
       trades: trades.reverse(),
       timelineEvents: timelineEvents.reverse(),
       equityCurve
@@ -552,7 +645,12 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
     minWaardeverdeling = 0,
     maxPriceToIntrinsicRatio = 0, // 0 = off, e.g. 1.2 = max 20% overwaardering
     takeProfitAtIntrinsicRatio = 0, // 0 = off, e.g. 2.5 = winstname bij 2.5x intrinsieke waarde
-    maxDebtRatio = 0 // 0 = off, e.g. 0.60
+    maxDebtRatio = 0, // 0 = off, e.g. 0.60
+    allowFractionalShares = true,
+    minOrderAmount = 100,
+    minOrderSkipThreshold = 50,
+    feePerOrder = 0,
+    taxRatePct = 0
   } = req.body;
 
   try {
@@ -677,7 +775,10 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
     let cash = parseFloat(initialCapital);
     const positions = new Map(); // aandeel_id -> { shares, cost, entryPrice, entryDate, entryWv, entryScore, lastEvaluatedQuarterDate }
     const trades = [];
+    const buyOrders = [];
     const equityCurve = [];
+    let totalFeesPaid = 0;
+    let totalTaxesPaid = 0;
     let peakValue = initialCapital;
     let maxDrawdown = 0;
 
@@ -710,7 +811,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         const price = sInfo.priceMap.get(dStr);
 
         const { curr, prev } = getCalc(sInfo.cList, dStr);
-        const score = curr ? (curr.selectiecriteria ?? 5) : 5;
+        const score = curr ? (curr.selectiecriteria ?? 0) : 0;
         const wv = curr ? curr.waarde_verdeling : 0;
         const prevWv = prev ? prev.waarde_verdeling : null;
         const currQuarterDate = curr ? (curr.period_end_date instanceof Date ? curr.period_end_date.toISOString().split('T')[0] : curr.period_end_date) : null;
@@ -720,12 +821,18 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
 
         // REGEL -1: Winstname bij Extreme Overwaardering (Koers >= X * Intrinsieke Waarde)
         if (takeProfitAtIntrinsicRatio > 0 && intrinsicVal > 0 && price >= intrinsicVal * Number(takeProfitAtIntrinsicRatio) && pos.entryDate !== dStr) {
-          const revenue = pos.shares * price;
+          const grossRevenue = pos.shares * price;
+          const fee = Number(feePerOrder) || 0;
+          const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+          const revenue = Math.max(0, grossRevenue - fee - tax);
           const profit = revenue - pos.cost;
+          const returnPct = ((revenue - pos.cost) / pos.cost) * 100;
           const holdingDays = Math.max(1, Math.round((new Date(dStr) - new Date(pos.entryDate)) / (1000 * 60 * 60 * 24)));
           const sellReason = `💰 Winstname Extreme Overwaardering (Koers €${price.toFixed(2)} >= ${takeProfitAtIntrinsicRatio}x Intrinsieke Waarde €${intrinsicVal.toFixed(2)})`;
 
           cash += revenue;
+          totalFeesPaid += fee;
+          totalTaxesPaid += tax;
           trades.push({
             ticker: sInfo.ticker_symbol,
             name: sInfo.name,
@@ -742,6 +849,9 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             exitDate: dStr,
             exitPrice: price,
             revenue,
+            grossRevenue,
+            fee,
+            tax,
             profit,
             returnPct,
             holdingDays,
@@ -752,12 +862,18 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         }
         // REGEL 0: Harde Stop-Loss (Verliesbescherming)
         else if (stopLossPct > 0 && returnPct <= -Number(stopLossPct) && pos.entryDate !== dStr) {
-          const revenue = pos.shares * price;
+          const grossRevenue = pos.shares * price;
+          const fee = Number(feePerOrder) || 0;
+          const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+          const revenue = Math.max(0, grossRevenue - fee - tax);
           const profit = revenue - pos.cost;
+          const stopLossReturnPct = ((revenue - pos.cost) / pos.cost) * 100;
           const holdingDays = Math.max(1, Math.round((new Date(dStr) - new Date(pos.entryDate)) / (1000 * 60 * 60 * 24)));
-          const sellReason = `🛑 Stop-Loss (${returnPct.toFixed(1)}% <= -${stopLossPct}%) -> Verkocht om kapitaal te beschermen`;
+          const sellReason = `🛑 Stop-Loss (${stopLossReturnPct.toFixed(1)}% <= -${stopLossPct}%) -> Verkocht om kapitaal te beschermen`;
 
           cash += revenue;
+          totalFeesPaid += fee;
+          totalTaxesPaid += tax;
           trades.push({
             ticker: sInfo.ticker_symbol,
             name: sInfo.name,
@@ -774,8 +890,11 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             exitDate: dStr,
             exitPrice: price,
             revenue,
+            grossRevenue,
+            fee,
+            tax,
             profit,
-            returnPct,
+            returnPct: stopLossReturnPct,
             holdingDays,
             exitReason: sellReason,
             isStopLoss: true,
@@ -785,13 +904,18 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         }
         // REGEL 1: Score < 5 -> 100% Volledige verkoop
         else if (sellOnScoreDrop && score < 5 && pos.entryDate !== dStr) {
-          const revenue = pos.shares * price;
+          const grossRevenue = pos.shares * price;
+          const fee = Number(feePerOrder) || 0;
+          const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+          const revenue = Math.max(0, grossRevenue - fee - tax);
           const profit = revenue - pos.cost;
-          const returnPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+          const exitReturnPct = ((revenue - pos.cost) / pos.cost) * 100;
           const holdingDays = Math.max(1, Math.round((new Date(dStr) - new Date(pos.entryDate)) / (1000 * 60 * 60 * 24)));
           const sellReason = `Score is gezakt naar ${score}/5 (Geen 5 meer) -> 100% Verkocht`;
 
           cash += revenue;
+          totalFeesPaid += fee;
+          totalTaxesPaid += tax;
           trades.push({
             ticker: sInfo.ticker_symbol,
             name: sInfo.name,
@@ -808,8 +932,11 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             exitDate: dStr,
             exitPrice: price,
             revenue,
+            grossRevenue,
+            fee,
+            tax,
             profit,
-            returnPct,
+            returnPct: exitReturnPct,
             holdingDays,
             exitReason: sellReason,
             isWin: profit > 0
@@ -820,17 +947,44 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         else if (useWaardeverdelingSell && score === 5 && prevWv != null && wv != null && wv < prevWv && pos.lastEvaluatedQuarterDate !== currQuarterDate && pos.entryDate !== dStr) {
           const dropFraction = Math.min(1, Math.max(0, (prevWv - wv) / prevWv));
           const dropPct = dropFraction * 100;
-          const sharesToSell = Math.min(pos.shares, Math.max(1, Math.round(pos.shares * dropFraction)));
+          const rawSellAmount = pos.shares * price * dropFraction;
+
+          let sharesToSell = 0;
+          let isRoundedToMin = false;
+
+          if (allowFractionalShares) {
+            if (rawSellAmount < Number(minOrderSkipThreshold)) {
+              // Onder €50: NIET verkopen (overgeslagen wegens onevenredige transactiekosten)
+              sharesToSell = 0;
+            } else {
+              let effectiveAmount = rawSellAmount;
+              if (rawSellAmount < Number(minOrderAmount)) {
+                // Tussen €50 en €100: afronden naar €100 (of totale positie)
+                effectiveAmount = Math.min(pos.shares * price, Number(minOrderAmount));
+                isRoundedToMin = true;
+              }
+              sharesToSell = Math.min(pos.shares, Math.round((effectiveAmount / price) * 10) / 10);
+            }
+          } else {
+            if (rawSellAmount >= Number(minOrderSkipThreshold)) {
+              sharesToSell = Math.min(pos.shares, Math.max(1, Math.round(pos.shares * dropFraction)));
+            }
+          }
 
           if (sharesToSell > 0) {
             const costOfSoldShares = pos.cost * (sharesToSell / pos.shares);
-            const revenue = sharesToSell * price;
+            const grossRevenue = sharesToSell * price;
+            const fee = Number(feePerOrder) || 0;
+            const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+            const revenue = Math.max(0, grossRevenue - fee - tax);
             const profit = revenue - costOfSoldShares;
-            const returnPct = ((price - pos.entryPrice) / pos.entryPrice) * 100;
+            const partReturnPct = ((revenue - costOfSoldShares) / costOfSoldShares) * 100;
             const holdingDays = Math.max(1, Math.round((new Date(dStr) - new Date(pos.entryDate)) / (1000 * 60 * 60 * 24)));
-            const sellReason = `Deelverkoop ${dropPct.toFixed(1)}% (Waardeverdeling daling ${dropPct.toFixed(1)}%: ${prevWv.toFixed(1)} -> ${wv.toFixed(1)})`;
+            const sellReason = `Deelverkoop ${sharesToSell} stuks (${isRoundedToMin ? 'afgerond naar min. €' + minOrderAmount : dropPct.toFixed(1) + '%'}) (WV daling ${dropPct.toFixed(1)}%: ${prevWv.toFixed(1)} -> ${wv.toFixed(1)})`;
 
             cash += revenue;
+            totalFeesPaid += fee;
+            totalTaxesPaid += tax;
             trades.push({
               ticker: sInfo.ticker_symbol,
               name: sInfo.name,
@@ -838,7 +992,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
               type: 'PARTIAL_EXIT',
               sellPct: parseFloat(dropPct.toFixed(1)),
               sharesSold: sharesToSell,
-              sharesRemaining: pos.shares - sharesToSell,
+              sharesRemaining: Math.round((pos.shares - sharesToSell) * 10) / 10,
               entryDate: pos.entryDate,
               entryPrice: pos.entryPrice,
               shares: sharesToSell,
@@ -847,15 +1001,18 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
               exitDate: dStr,
               exitPrice: price,
               revenue,
+              grossRevenue,
+              fee,
+              tax,
               profit,
-              returnPct,
+              returnPct: partReturnPct,
               holdingDays,
               exitReason: sellReason,
               isWin: profit > 0
             });
 
-            pos.shares -= sharesToSell;
-            if (pos.shares <= 0) {
+            pos.shares = Math.round((pos.shares - sharesToSell) * 10) / 10;
+            if (pos.shares <= 0.0001) {
               positions.delete(stockId);
             } else {
               pos.cost -= costOfSoldShares;
@@ -870,7 +1027,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       if (usePortfolioRelativeWeight) {
         for (const [sId, sInfo] of stockData.entries()) {
           const { curr } = getCalc(sInfo.cList, dStr);
-          if (curr && (curr.selectiecriteria ?? 5) === 5 && curr.waarde_verdeling > 0) {
+          if (curr && curr.selectiecriteria === 5 && curr.waarde_verdeling > 0) {
             totalScore5WvToday += curr.waarde_verdeling;
           }
         }
@@ -885,11 +1042,16 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         if (!price || price <= 0) continue;
 
         const { curr, prev } = getCalc(sInfo.cList, dStr);
-        const score = curr ? (curr.selectiecriteria ?? 5) : 5;
-        const wv = curr ? curr.waarde_verdeling : 0;
+        // Strikt vereist: Aandeel MOET geldige berekeningsdata hebben, Score 5/5 zijn, en Waardeverdeling > 0 hebben
+        if (!curr || curr.selectiecriteria !== 5 || !curr.waarde_verdeling || curr.waarde_verdeling <= 0) {
+          continue;
+        }
+
+        const score = curr.selectiecriteria;
+        const wv = curr.waarde_verdeling;
         const prevWv = prev ? prev.waarde_verdeling : null;
         const isWvRising = prevWv == null || (wv != null && prevWv != null && wv >= prevWv);
-        const currQuarterDate = curr ? (curr.period_end_date instanceof Date ? curr.period_end_date.toISOString().split('T')[0] : curr.period_end_date) : null;
+        const currQuarterDate = curr.period_end_date instanceof Date ? curr.period_end_date.toISOString().split('T')[0] : curr.period_end_date;
 
         if (score === 5 && isWvRising && wv >= Number(minWaardeverdeling)) {
           // Trendfilter: Koop enkel als koers boven 200 SMA staat
@@ -986,10 +1148,11 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         const currentHoldingCost = positions.get(stockId)?.cost || 0;
         const neededAlloc = Math.max(0, targetAlloc - currentHoldingCost);
 
-        if (neededAlloc < price * 0.5 && cash < price) continue;
+        const minBuyThreshold = allowFractionalShares ? Number(minOrderSkipThreshold) : price;
+        if (neededAlloc < minBuyThreshold && cash < minBuyThreshold) continue;
 
         // OPTIE 1: ACTIEVE HERBALANCERING / SNOEIEN WANNEER CASH ONVOLDOENDE IS VOOR STREEFALLOCATIE
-        if (enableActiveRebalance && cash < Math.max(price, neededAlloc)) {
+        if (enableActiveRebalance && cash < Math.max(minBuyThreshold, neededAlloc)) {
           const prunablePositions = [];
           for (const [pStockId, pPos] of positions.entries()) {
             if (pStockId === stockId) continue;
@@ -998,7 +1161,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             if (!pPrice || pPrice <= 0) continue;
 
             const { curr: pCurr } = getCalc(pInfo.cList, dStr);
-            const pScore = pCurr ? (pCurr.selectiecriteria ?? 5) : 5;
+            const pScore = pCurr ? (pCurr.selectiecriteria ?? 0) : 0;
             const pWv = pCurr ? pCurr.waarde_verdeling : 0;
             const pHoldingVal = pPos.shares * pPrice;
             const pRelPct = totalScore5WvToday > 0 ? (pWv / totalScore5WvToday) : (pWv / 100);
@@ -1028,33 +1191,59 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
           });
 
           for (const pruneItem of prunablePositions) {
-            if (cash >= neededAlloc && cash >= price) break;
+            if (cash >= neededAlloc && cash >= minBuyThreshold) break;
 
             const { pStockId, pPos, pInfo, pPrice, pScore, pWv, pHoldingVal, pIdealVal, excessValue, isOverweight } = pruneItem;
             if (!positions.has(pStockId) || pPos.shares <= 0) continue;
 
-            const cashShortage = Math.max(price, neededAlloc) - cash;
+            const cashShortage = Math.max(minBuyThreshold, neededAlloc) - cash;
             let sharesToPrune = 0;
 
             if (pScore < 5) {
               sharesToPrune = pPos.shares;
             } else if (excessValue > 0) {
-              sharesToPrune = Math.min(pPos.shares, Math.ceil(Math.min(cashShortage, excessValue) / pPrice));
+              if (allowFractionalShares) {
+                let targetPruneEur = Math.min(cashShortage, excessValue);
+                if (targetPruneEur < Number(minOrderSkipThreshold)) {
+                  sharesToPrune = 0;
+                } else {
+                  if (targetPruneEur < Number(minOrderAmount)) targetPruneEur = Number(minOrderAmount);
+                  sharesToPrune = Math.min(pPos.shares, Math.round((targetPruneEur / pPrice) * 10) / 10);
+                }
+              } else {
+                sharesToPrune = Math.min(pPos.shares, Math.ceil(Math.min(cashShortage, excessValue) / pPrice));
+              }
             } else if (pWv < wv) {
-              const maxSnoeiShares = Math.max(1, Math.floor(pPos.shares * 0.35));
-              sharesToPrune = Math.min(maxSnoeiShares, Math.ceil(cashShortage / pPrice));
+              if (allowFractionalShares) {
+                const maxSnoeiShares = Math.max(0.1, Math.round(pPos.shares * 0.35 * 10) / 10);
+                let targetPruneEur = cashShortage;
+                if (targetPruneEur < Number(minOrderSkipThreshold)) {
+                  sharesToPrune = 0;
+                } else {
+                  if (targetPruneEur < Number(minOrderAmount)) targetPruneEur = Number(minOrderAmount);
+                  sharesToPrune = Math.min(maxSnoeiShares, Math.round((targetPruneEur / pPrice) * 10) / 10);
+                }
+              } else {
+                const maxSnoeiShares = Math.max(1, Math.floor(pPos.shares * 0.35));
+                sharesToPrune = Math.min(maxSnoeiShares, Math.ceil(cashShortage / pPrice));
+              }
             }
 
             if (sharesToPrune > 0) {
               const costOfSold = pPos.cost * (sharesToPrune / pPos.shares);
-              const revenue = sharesToPrune * pPrice;
+              const grossRevenue = sharesToPrune * pPrice;
+              const fee = Number(feePerOrder) || 0;
+              const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+              const revenue = Math.max(0, grossRevenue - fee - tax);
               const profit = revenue - costOfSold;
-              const returnPct = ((pPrice - pPos.entryPrice) / pPos.entryPrice) * 100;
+              const rebalanceReturnPct = ((revenue - costOfSold) / costOfSold) * 100;
               const holdingDays = Math.max(1, Math.round((new Date(dStr) - new Date(pPos.entryDate)) / (1000 * 60 * 60 * 24)));
               const isFullExit = sharesToPrune >= pPos.shares;
               const sellReason = `✂️ Herbalancering: Ruimte gemaakt voor ${sInfo.ticker_symbol} (WV: ${wv.toFixed(1)}% vs ${pInfo.ticker_symbol} WV: ${pWv.toFixed(1)}%)`;
 
               cash += revenue;
+              totalFeesPaid += fee;
+              totalTaxesPaid += tax;
               trades.push({
                 ticker: pInfo.ticker_symbol,
                 name: pInfo.name,
@@ -1062,7 +1251,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
                 type: isFullExit ? 'FULL_EXIT' : 'REBALANCE_TRIM',
                 sellPct: parseFloat(((sharesToPrune / pPos.shares) * 100).toFixed(1)),
                 sharesSold: sharesToPrune,
-                sharesRemaining: pPos.shares - sharesToPrune,
+                sharesRemaining: Math.round((pPos.shares - sharesToPrune) * 10) / 10,
                 entryDate: pPos.entryDate,
                 entryPrice: pPos.entryPrice,
                 shares: sharesToPrune,
@@ -1071,8 +1260,11 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
                 exitDate: dStr,
                 exitPrice: pPrice,
                 revenue,
+                grossRevenue,
+                fee,
+                tax,
                 profit,
-                returnPct,
+                returnPct: rebalanceReturnPct,
                 holdingDays,
                 exitReason: sellReason,
                 isRebalance: true,
@@ -1080,8 +1272,8 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
                 isWin: profit > 0
               });
 
-              pPos.shares -= sharesToPrune;
-              if (pPos.shares <= 0) {
+              pPos.shares = Math.round((pPos.shares - sharesToPrune) * 10) / 10;
+              if (pPos.shares <= 0.001) {
                 positions.delete(pStockId);
               } else {
                 pPos.cost -= costOfSold;
@@ -1090,14 +1282,61 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
           }
         }
 
-        // Koop uitvoeren als er cash beschikbaar is
-        if (cash >= price) {
-          const cashToUse = Math.min(cash, Math.max(price, neededAlloc));
-          const sharesToBuy = Math.max(1, Math.floor(cashToUse / price));
+        const fee = Number(feePerOrder) || 0;
+        const taxRate = Number(taxRatePct) || 0;
 
-          if (sharesToBuy > 0 && sharesToBuy * price <= cash) {
-            const cost = sharesToBuy * price;
-            cash -= cost;
+        // Koop uitvoeren als er cash beschikbaar is
+        if (cash >= (minBuyThreshold + fee)) {
+          let sharesToBuy = 0;
+          if (allowFractionalShares) {
+            let cashToUse = Math.min(cash, neededAlloc > 0 ? neededAlloc : Number(minOrderAmount));
+            if (cashToUse < Number(minOrderSkipThreshold)) {
+              sharesToBuy = 0;
+            } else {
+              if (cashToUse < Number(minOrderAmount) && cash >= Number(minOrderAmount)) {
+                cashToUse = Number(minOrderAmount);
+              }
+              const availCash = Math.max(0, cashToUse - fee) / (1 + (taxRate / 100));
+              sharesToBuy = Math.round((availCash / price) * 10) / 10;
+              let gross = sharesToBuy * price;
+              let t = Math.min(gross * (taxRate / 100), 1600);
+              if (gross + t + fee > cash) {
+                sharesToBuy = Math.floor((availCash / price) * 10) / 10;
+                gross = sharesToBuy * price;
+              }
+              if (gross < Number(minOrderSkipThreshold)) {
+                sharesToBuy = 0;
+              }
+            }
+          } else {
+            const availCash = Math.max(0, cash - fee) / (1 + (taxRate / 100));
+            const cashToUse = Math.min(availCash, Math.max(price, neededAlloc));
+            sharesToBuy = Math.max(1, Math.floor(cashToUse / price));
+          }
+
+          const grossCost = sharesToBuy * price;
+          const cost = grossCost;
+          const tax = Math.min(grossCost * (taxRate / 100), 1600);
+          const totalCost = grossCost + tax + fee;
+
+          if (sharesToBuy > 0 && totalCost <= cash) {
+            cash -= totalCost;
+            totalFeesPaid += fee;
+            totalTaxesPaid += tax;
+
+            buyOrders.push({
+              id: buyOrders.length + 1,
+              ticker: sInfo.ticker_symbol,
+              name: sInfo.name,
+              date: dStr,
+              shares: sharesToBuy,
+              price: price,
+              amount: grossCost,
+              fee,
+              tax,
+              totalCost,
+              reason: `MACD Koop + Score 5/5 + WV Gestegen (${prevWv != null ? prevWv.toFixed(1) : '-'} -> ${wv.toFixed(1)})`
+            });
 
             const existingPos = positions.get(stockId);
             if (!existingPos) {
@@ -1112,7 +1351,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
                 entryReason: `MACD Koop + Score 5/5 + WV Gestegen (${prevWv != null ? prevWv.toFixed(1) : '-'} -> ${wv.toFixed(1)})`
               });
             } else {
-              existingPos.shares += sharesToBuy;
+              existingPos.shares = Math.round((existingPos.shares + sharesToBuy) * 10) / 10;
               existingPos.cost += cost;
               existingPos.entryPrice = existingPos.cost / existingPos.shares;
               existingPos.lastEvaluatedQuarterDate = currQuarterDate;
@@ -1292,6 +1531,13 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
 
     res.json({
       portfolioType: 'dynamic_score5',
+      parameters: {
+        allowFractionalShares,
+        minOrderAmount: Number(minOrderAmount),
+        minOrderSkipThreshold: Number(minOrderSkipThreshold),
+        feePerOrder: Number(feePerOrder) || 0,
+        taxRatePct: Number(taxRatePct) || 0
+      },
       timeframe: {
         startDate: allDates[0],
         endDate: allDates[allDates.length - 1],
@@ -1302,6 +1548,10 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         finalPortfolioValue,
         totalProfit: Math.round(totalProfit * 100) / 100,
         totalReturnPct: Math.round(totalReturnPct * 100) / 100,
+        totalFeesPaid: Math.round(totalFeesPaid * 100) / 100,
+        totalTaxesPaid: Math.round(totalTaxesPaid * 100) / 100,
+        totalCosts: Math.round((totalFeesPaid + totalTaxesPaid) * 100) / 100,
+        costDragPct: Math.round(((totalFeesPaid + totalTaxesPaid) / Number(initialCapital)) * 1000) / 10,
 
         // Benchmark vergelijkingen
         sp500TotalReturnPct: Math.round(sp500TotalReturnPct * 100) / 100,
@@ -1326,6 +1576,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       },
       annualPerformance,
       openPositions: openPositionsList.sort((a, b) => b.revenue - a.revenue),
+      buyOrders: buyOrders.reverse(),
       trades: trades.reverse(),
       equityCurve
     });
@@ -1345,7 +1596,12 @@ const runPortfolioBacktest = async (req, res) => {
     requireWaardeverdelingRise = true,
     useMacdSell = false,
     useWaardeverdelingSell = true,
-    sellOnScoreDrop = true
+    sellOnScoreDrop = true,
+    allowFractionalShares = true,
+    minOrderAmount = 100,
+    minOrderSkipThreshold = 50,
+    feePerOrder = 0,
+    taxRatePct = 0
   } = req.body;
 
   try {

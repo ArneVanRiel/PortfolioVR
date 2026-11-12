@@ -2584,7 +2584,18 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         return s ? new Date(`${s}T00:00:00.000Z`) : null;
     };
 
-    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}`;
+    const pool = await sql.connect(config);
+
+    // Haal gebruikersinstellingen op voor ordergroottes en deelaandelen
+    const userSettingsRes = await pool.request()
+        .input('userId', sql.Int, userId)
+        .query(`SELECT allow_fractional_shares, min_order_amount, min_order_skip_threshold FROM PF_Users WHERE id = @userId`);
+    const userSettings = (userSettingsRes.recordset && userSettingsRes.recordset[0]) || {};
+    const allowFractionalShares = userSettings.allow_fractional_shares !== false && userSettings.allow_fractional_shares !== 0;
+    const minOrderAmount = parseFloat(userSettings.min_order_amount || 100);
+    const minOrderSkipThreshold = parseFloat(userSettings.min_order_skip_threshold || 50);
+
+    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}`;
     if (!forceRefresh) {
         const cached = advisorDataCache.get(cacheKey);
         if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
@@ -2596,8 +2607,6 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             return diskCached;
         }
     }
-
-        const pool = await sql.connect(config);
 
         // 1. holdingsQuery: strikt gefilterd op losse aandelen (GEEN ETF's, asset_type_id != 2)
         const holdingsQuery = `
@@ -2958,21 +2967,21 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 const rawSellAmountEur = holdingValue * rawSellRatio;
                 const absWvDiff = (waardeVerdeling - prevWaardeVerdeling);
 
-                // STRATEGIE REGEL VOOR DEELVERKOPEN:
-                // - < €50: NIET VERKOPEN (onevenredige transactiekosten)
-                // - €50 - €100: Afronden naar €100
-                // - >= €100: Normaal voorgesteld bedrag
-                if (rawSellAmountEur < 50) {
+                // STRATEGIE REGEL VOOR DEELVERKOPEN (Dynamisch volgens gebruikersinstellingen):
+                // - < minOrderSkipThreshold (€50): NIET VERKOPEN (onevenredige transactiekosten)
+                // - minOrderSkipThreshold tot minOrderAmount: Afronden naar minOrderAmount (€100)
+                // - >= minOrderAmount: Normaal voorgesteld bedrag (afgerond op 0,1 stuks bij fractioneel)
+                if (rawSellAmountEur < minOrderSkipThreshold) {
                     actionType = 'MANDATORY_PARTIAL_SELL_WV_TOO_SMALL';
-                    actionLabel = '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)';
+                    actionLabel = `🟡 Deelverkoop Te Klein (< €${minOrderSkipThreshold.toFixed(0)}: Niet Verkopen)`;
                     actionSeverity = 'neutral';
-                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Het berekende verkoopbedrag is echter slechts € ${rawSellAmountEur.toFixed(2)} (< € 50 minimum drempel). Conform de strategie wordt dit NIET verkocht om onevenredige transactiekosten te vermijden.`;
+                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Het berekende verkoopbedrag is echter slechts € ${rawSellAmountEur.toFixed(2)} (< € ${minOrderSkipThreshold.toFixed(0)} minimum drempel). Conform de strategie wordt dit NIET verkocht om onevenredige transactiekosten te vermijden.`;
                     isAligned = true;
-                } else if (rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
+                } else if (rawSellAmountEur >= minOrderSkipThreshold && rawSellAmountEur < minOrderAmount) {
                     actionType = 'MANDATORY_PARTIAL_SELL_WV';
-                    actionLabel = '🔴 Verplichte Deelverkoop (Afgerond naar €100)';
+                    actionLabel = `🔴 Verplichte Deelverkoop (Afgerond naar €${minOrderAmount.toFixed(0)})`;
                     actionSeverity = 'danger';
-                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100.`;
+                    actionReason = `Waardeverdeling is gedaald van ${prevWaardeVerdeling.toFixed(2)}% naar ${waardeVerdeling.toFixed(2)}% (${absWvDiff.toFixed(2)}% verschil, -${wvDropPct.toFixed(1)}%). Voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € ${minOrderAmount.toFixed(0)}.`;
                     isAligned = false;
                 } else {
                     actionType = 'MANDATORY_PARTIAL_SELL_WV';
@@ -3178,37 +3187,50 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         // Exact Actieplan
         const exactActions = [];
 
-        // Actie 1: VERPLICHTE VERKOOPORDERS (Score < 5 of Daling Waardeverdeling >= €50)
+        // Actie 1: VERPLICHTE VERKOOPORDERS (Score < 5 of Daling Waardeverdeling >= minOrderSkipThreshold)
         // BELANGRIJK: Verkooporder kan pas ten vroegste worden ingelegd op de RAPPORTAGEDATUM!
         const mandatorySellHoldings = evaluatedHoldings.filter(h => h.actionType === 'MANDATORY_SELL_SCORE' || h.actionType === 'MANDATORY_PARTIAL_SELL_WV');
         mandatorySellHoldings.forEach(h => {
             const isFullSell = h.actionType === 'MANDATORY_SELL_SCORE';
             const rawSellRatio = isFullSell ? 1.0 : Math.max(0.01, Math.min(1.0, h.wvDropFraction || 0.1));
             const rawSellAmountEur = h.holdingValue * rawSellRatio;
-            const rawSellShares = h.quantity * rawSellRatio;
             const effectiveSellDate = h.reportDate || h.periodEndDate || new Date().toISOString().split('T')[0];
 
             let sellAmountEur = rawSellAmountEur;
-            let sellShares = rawSellShares;
-            let isRoundedTo100 = false;
+            let sellShares = h.quantity * rawSellRatio;
+            let isRoundedToThreshold = false;
 
-            if (!isFullSell && rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
-                sellAmountEur = Math.min(h.holdingValue, 100);
-                sellShares = Math.min(h.quantity, Math.round((sellAmountEur / h.currentPrice) * 100) / 100);
-                isRoundedTo100 = true;
+            if (!isFullSell) {
+                if (rawSellAmountEur < minOrderSkipThreshold) {
+                    return; // Onder skip-drempel (€50): overslaan wegens transactiekosten
+                } else if (rawSellAmountEur < minOrderAmount) {
+                    sellAmountEur = Math.min(h.holdingValue, minOrderAmount);
+                    isRoundedToThreshold = true;
+                }
             }
+
+            if (isFullSell) {
+                sellShares = h.quantity;
+            } else if (allowFractionalShares) {
+                sellShares = Math.min(h.quantity, Math.round((sellAmountEur / h.currentPrice) * 10) / 10);
+            } else {
+                sellShares = Math.min(h.quantity, Math.ceil(sellAmountEur / h.currentPrice));
+            }
+            sellAmountEur = sellShares * h.currentPrice;
+
+            if (sellShares <= 0) return;
 
             exactActions.push({
                 type: isFullSell ? 'MANDATORY_SELL' : 'MANDATORY_PARTIAL_SELL',
                 isMandatory: true,
                 badge: isFullSell 
                     ? '🔴 Verplichte Verkoop (Score < 5)' 
-                    : (isRoundedTo100 ? '🔴 Verplichte Deelverkoop (Afgerond naar €100)' : `🔴 Verplichte Deelverkoop (-${h.wvDropPct.toFixed(1)}%)`),
+                    : (isRoundedToThreshold ? `🔴 Verplichte Deelverkoop (Afgerond naar €${minOrderAmount.toFixed(0)})` : `🔴 Verplichte Deelverkoop (-${h.wvDropPct.toFixed(1)}%)`),
                 ticker: h.ticker,
                 name: h.name,
                 actionVerb: isFullSell 
                     ? 'Volledig Verkopen (100%)' 
-                    : (isRoundedTo100 ? `Deelverkoop (€ 100)` : `Deelverkoop (${h.wvDropPct.toFixed(1)}%)`),
+                    : (isRoundedToThreshold ? `Deelverkoop (€ ${minOrderAmount.toFixed(0)})` : `Deelverkoop (${h.wvDropPct.toFixed(1)}%)`),
                 amountEur: parseFloat(sellAmountEur.toFixed(2)),
                 shares: parseFloat(sellShares.toFixed(2)),
                 currentPrice: h.currentPrice,
@@ -3217,13 +3239,13 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 periodEndDate: h.periodEndDate,
                 timingTrigger: isFullSell 
                     ? `Rapportagedatum (${effectiveSellDate}): Score is gezakt naar ${h.score}/5. Verkooporder direct inleggen vanaf deze publicatiedatum.`
-                    : (isRoundedTo100
-                        ? `Rapportagedatum (${effectiveSellDate}): Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar € 100 (${parseFloat(sellShares.toFixed(2))} stuks) vanaf deze datum.`
+                    : (isRoundedToThreshold
+                        ? `Rapportagedatum (${effectiveSellDate}): Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar € ${minOrderAmount.toFixed(0)} (${parseFloat(sellShares.toFixed(2))} stuks) vanaf deze datum.`
                         : `Rapportagedatum (${effectiveSellDate}): Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Verkoop ${parseFloat(sellShares.toFixed(2))} stuks vanaf deze datum.`),
                 rationale: isFullSell
                     ? `Sluit de positie van ${formatEur(h.holdingValue)} ten vroegste op de rapportagedatum (${effectiveSellDate}) om kapitaal te beschermen tegen fundamentele verzwakking.`
-                    : (isRoundedTo100
-                        ? `Verkoop ${parseFloat(sellShares.toFixed(2))} stuks (${formatEur(sellAmountEur)}) ten vroegste vanaf de rapportagedatum (${effectiveSellDate}). Voorstel van ${formatEur(rawSellAmountEur)} is verhoogd naar de minimum effectieve orderdrempel van € 100.`
+                    : (isRoundedToThreshold
+                        ? `Verkoop ${parseFloat(sellShares.toFixed(2))} stuks (${formatEur(sellAmountEur)}) ten vroegste vanaf de rapportagedatum (${effectiveSellDate}). Voorstel van ${formatEur(rawSellAmountEur)} is verhoogd naar de minimum effectieve orderdrempel van € ${minOrderAmount.toFixed(0)}.`
                         : `Verkoop ${parseFloat(sellShares.toFixed(2))} stuks (${formatEur(sellAmountEur)}) ten vroegste vanaf de rapportagedatum (${effectiveSellDate}) om de positie terug te brengen naar de lagere waardeverdeling.`)
             });
         });
@@ -3635,35 +3657,55 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                                 : 1.0;
 
                             actionAmountEur = baseNeededEur > 0 ? (baseNeededEur * valuationFactor) : (targetEur * 0.5 * valuationFactor);
-                            if (actionAmountEur < 50 && alert.trade_amount > 0) {
+                            if (actionAmountEur < minOrderAmount && alert.trade_amount > 0) {
                                 actionAmountEur = toDisplayCurrency(alert.trade_amount, alert.ticker_symbol, stockDetails?.asset_type) * valuationFactor;
                             }
                             if (currentOwnedEur + actionAmountEur > targetEur * 1.3) {
                                 actionAmountEur = Math.max(0, targetEur * 1.3 - currentOwnedEur);
                             }
 
-                            actionShares = alertPriceConverted > 0 ? (actionAmountEur / alertPriceConverted) : 0;
-                            if (actionAmountEur <= 10) {
+                            if (actionAmountEur < minOrderSkipThreshold) {
                                 actionAmountEur = 0;
                                 actionShares = 0;
                                 isTargetReached = true;
                                 fundingSource = {
                                     status: 'TARGET_REACHED',
                                     badge: '🎯 Streefdoel Reeds Bereikt (Geen Extra Aankoop Nodig)',
-                                    message: `Je bezit momenteel al €${currentOwnedEur.toFixed(2)} (${sharesOwned.toFixed(2)} stuks) aan ${alert.ticker_symbol}. Het gewenste streefdoel is €${targetEur.toFixed(2)}. Conform het allocatiemodel is momenteel geen extra aankoop vereist.`
-                                };
-                            } else if (stocksAvailableCash >= actionAmountEur) {
-                                fundingSource = {
-                                    status: 'DIRECT_CASH',
-                                    badge: '🟢 Vrije Cash Beschikbaar',
-                                    message: `Voldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar na ETF reservering) om direct uit te voeren.`
+                                    message: `Je bezit momenteel al €${currentOwnedEur.toFixed(2)} (${sharesOwned.toFixed(2)} stuks) aan ${alert.ticker_symbol}. Het gewenste streefdoel is €${targetEur.toFixed(2)}. Het berekende aankoopbedrag is kleiner dan de minimum orderdrempel van €${minOrderSkipThreshold.toFixed(0)}.`
                                 };
                             } else {
-                                fundingSource = {
-                                    status: 'ROTATION_REQUIRED',
-                                    badge: '🔄 Rotatie / Verkoop Vereist',
-                                    message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar voor order van €${actionAmountEur.toFixed(2)}).`
-                                };
+                                if (actionAmountEur < minOrderAmount) {
+                                    actionAmountEur = minOrderAmount;
+                                }
+                                if (allowFractionalShares) {
+                                    actionShares = alertPriceConverted > 0 ? (Math.round((actionAmountEur / alertPriceConverted) * 10) / 10) : 0;
+                                } else {
+                                    actionShares = alertPriceConverted > 0 ? Math.floor(actionAmountEur / alertPriceConverted) : 0;
+                                }
+                                actionAmountEur = actionShares * alertPriceConverted;
+
+                                if (actionShares <= 0 || actionAmountEur < minOrderSkipThreshold) {
+                                    actionAmountEur = 0;
+                                    actionShares = 0;
+                                    isTargetReached = true;
+                                    fundingSource = {
+                                        status: 'TARGET_REACHED',
+                                        badge: '🎯 Streefdoel Reeds Bereikt (Geen Extra Aankoop Nodig)',
+                                        message: `Je bezit momenteel al €${currentOwnedEur.toFixed(2)} (${sharesOwned.toFixed(2)} stuks) aan ${alert.ticker_symbol}. Het gewenste streefdoel is €${targetEur.toFixed(2)}.`
+                                    };
+                                } else if (stocksAvailableCash >= actionAmountEur) {
+                                    fundingSource = {
+                                        status: 'DIRECT_CASH',
+                                        badge: '🟢 Vrije Cash Beschikbaar',
+                                        message: `Voldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar na ETF reservering) om direct uit te voeren.`
+                                    };
+                                } else {
+                                    fundingSource = {
+                                        status: 'ROTATION_REQUIRED',
+                                        badge: '🔄 Rotatie / Verkoop Vereist',
+                                        message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar voor order van €${actionAmountEur.toFixed(2)}).`
+                                    };
+                                }
                             }
                         }
 
@@ -3714,12 +3756,26 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
             let sellAmountEur = rawSellAmountEur;
             let sellShares = rawSellShares;
-            let isRoundedTo100 = false;
-            if (!isFullSell && rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
-                sellAmountEur = Math.min(h.holdingValue, 100);
-                sellShares = Math.min(h.quantity, Math.round((sellAmountEur / h.currentPrice) * 100) / 100);
-                isRoundedTo100 = true;
+            let isRoundedToThreshold = false;
+            if (!isFullSell) {
+                if (rawSellAmountEur < minOrderSkipThreshold) {
+                    return;
+                } else if (rawSellAmountEur < minOrderAmount) {
+                    sellAmountEur = Math.min(h.holdingValue, minOrderAmount);
+                    isRoundedToThreshold = true;
+                }
             }
+
+            if (isFullSell) {
+                sellShares = h.quantity;
+            } else if (allowFractionalShares) {
+                sellShares = Math.min(h.quantity, Math.round((sellAmountEur / h.currentPrice) * 10) / 10);
+            } else {
+                sellShares = Math.min(h.quantity, Math.ceil(sellAmountEur / h.currentPrice));
+            }
+            sellAmountEur = sellShares * h.currentPrice;
+
+            if (sellShares <= 0) return;
 
             // Zoek een werkelijke SELL transactie voor dit aandeel op of na de rapportagedatum
             const stockTxs = txsByStock.get(h.stockId) || [];
@@ -3766,7 +3822,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     status: 'OPEN_SELL_ORDER',
                     statusBadge: isFullSell 
                         ? '🔴 Verplicht Verkoopsignaal (Score < 5)' 
-                        : (isRoundedTo100 ? '🔴 Deel-Verkoopsignaal (Afgerond naar €100)' : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`),
+                        : (isRoundedToThreshold ? `🔴 Deel-Verkoopsignaal (Afgerond naar €${minOrderAmount.toFixed(0)})` : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`),
                     ticker: h.ticker,
                     name: h.name,
                     stockId: h.stockId,
@@ -3774,23 +3830,23 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     currentPrice: parseFloat(h.currentPrice.toFixed(2)),
                     totalAmount: parseFloat(sellAmountEur.toFixed(2)),
                     rawAmount: parseFloat(rawSellAmountEur.toFixed(2)),
-                    isRoundedTo100,
+                    isRoundedToThreshold,
                     note: isFullSell 
                         ? `Score gezakt naar ${h.score}/5. Verkooporder openstaand vanaf rapportagedatum ${effectiveSellDateStr}` 
-                        : (isRoundedTo100
-                            ? `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel € ${rawSellAmountEur.toFixed(2)}, afgerond naar € 100.`
+                        : (isRoundedToThreshold
+                            ? `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel € ${rawSellAmountEur.toFixed(2)}, afgerond naar € ${minOrderAmount.toFixed(0)}.`
                             : `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%).`),
                     reportDate: h.reportDate
                 });
             }
         });
 
-        // 5b. Overgeslagen deelverkopen (< €50) toevoegen aan de tijdlijn met duidelijke uitleg
+        // 5b. Overgeslagen deelverkopen (< minOrderSkipThreshold) toevoegen aan de tijdlijn met duidelijke uitleg
         const smallSellHoldings = evaluatedHoldings.filter(h => h.actionType === 'MANDATORY_PARTIAL_SELL_WV_TOO_SMALL');
         smallSellHoldings.forEach(h => {
             const rawSellRatio = Math.max(0.01, Math.min(1.0, h.wvDropFraction || 0.1));
             const rawSellAmountEur = h.holdingValue * rawSellRatio;
-            const rawSellShares = h.quantity * rawSellRatio;
+            const rawSellShares = allowFractionalShares ? Math.round(h.quantity * rawSellRatio * 10) / 10 : Math.floor(h.quantity * rawSellRatio);
             const effectiveSellDateStr = toIsoDateOnly(h.reportDate || h.periodEndDate || todayStr);
             const effectiveSellDate = toUtcMidnight(effectiveSellDateStr);
 
@@ -3801,7 +3857,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 source: 'ALGORITHM',
                 type: 'MANDATORY_SELL_SIGNAL_SKIPPED',
                 status: 'SKIPPED_SMALL_SELL',
-                statusBadge: '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)',
+                statusBadge: `🟡 Deelverkoop Te Klein (< €${minOrderSkipThreshold.toFixed(0)}: Niet Verkopen)`,
                 ticker: h.ticker,
                 name: h.name,
                 stockId: h.stockId,
@@ -3810,8 +3866,8 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 totalAmount: parseFloat(rawSellAmountEur.toFixed(2)),
                 rawAmount: parseFloat(rawSellAmountEur.toFixed(2)),
                 isSkippedSmallSell: true,
-                skipReason: `Voorstel van ${parseFloat(rawSellShares.toFixed(2))} stuks (€ ${rawSellAmountEur.toFixed(2)}) is lager dan de minimum drempel van € 50. Niet verkopen wegens transactiekosten.`,
-                note: `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%), maar bedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< € 50). Geen verkooporder ingelegd.`,
+                skipReason: `Voorstel van ${parseFloat(rawSellShares.toFixed(2))} stuks (€ ${rawSellAmountEur.toFixed(2)}) is lager dan de minimum drempel van € ${minOrderSkipThreshold.toFixed(0)}. Niet verkopen wegens transactiekosten.`,
+                note: `Waardeverdeling gedaald van ${h.prevWaardeVerdeling?.toFixed(2)}% naar ${h.waardeVerdeling?.toFixed(2)}% (${(h.waardeVerdeling - h.prevWaardeVerdeling)?.toFixed(2)}% verschil, -${h.wvDropPct.toFixed(1)}%), maar bedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< € ${minOrderSkipThreshold.toFixed(0)}). Geen verkooporder ingelegd.`,
                 reportDate: h.reportDate
             });
         });
@@ -3960,59 +4016,78 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                         : 1.0;
 
                     actionAmountEur = baseNeededEur > 0 ? (baseNeededEur * valuationFactor) : (targetEur * 0.5 * valuationFactor);
-                    if (actionAmountEur < 50 && rawAlert.trade_amount > 0) {
+                    if (actionAmountEur < minOrderAmount && rawAlert.trade_amount > 0) {
                         actionAmountEur = toDisplayCurrency(rawAlert.trade_amount, ticker, stockDetails?.asset_type) * valuationFactor;
                     }
                     if (currentOwnedEurAtAlertDate + actionAmountEur > targetEur * 1.3) {
                         actionAmountEur = Math.max(0, targetEur * 1.3 - currentOwnedEurAtAlertDate);
                     }
 
-                    actionShares = alertPrice > 0 ? (actionAmountEur / alertPrice) : 0;
-                    if (actionAmountEur <= 10) {
+                    if (actionAmountEur < minOrderSkipThreshold) {
                         actionAmountEur = 0;
                         actionShares = 0;
                         fundingSource = {
                             status: 'TARGET_REACHED',
                             badge: '🎯 Streefdoel Reeds Bereikt (Geen Extra Aankoop Nodig)',
-                            message: `Je bezit momenteel al €${currentOwnedEurAtAlertDate.toFixed(2)} (${sharesOwnedAtAlertDate.toFixed(2)} stuks) aan ${ticker}. Het gewenste streefdoel is €${targetEur.toFixed(2)}. Conform het allocatiemodel is momenteel geen extra aankoop vereist.`
-                        };
-                    } else if (stocksAvailableCash >= actionAmountEur) {
-                        // Financieringscheck gekoppeld aan stocksAvailableCash (na aftrek ETF reservering!)
-                        fundingSource = {
-                            status: 'DIRECT_CASH',
-                            badge: '🟢 Vrije Cash Beschikbaar (Na ETF-Reservering)',
-                            message: `Voldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar na €${etfReservedCash.toFixed(2)} ETF reservering) om direct uit te voeren.`
+                            message: `Je bezit momenteel al €${currentOwnedEurAtAlertDate.toFixed(2)} (${sharesOwnedAtAlertDate.toFixed(2)} stuks) aan ${ticker}. Het gewenste streefdoel is €${targetEur.toFixed(2)}. Het berekende aankoopbedrag is kleiner dan de minimum orderdrempel van €${minOrderSkipThreshold.toFixed(0)}.`
                         };
                     } else {
-                        const shortfallEur = actionAmountEur - stocksAvailableCash;
-                        let coveredEur = 0;
-                        const potentialSellCandidates = [
-                            ...takeProfitHoldings.filter(h => h.ticker !== ticker),
-                            ...mandatorySellHoldings.filter(h => h.ticker !== ticker)
-                        ];
-
-                        for (const cand of potentialSellCandidates) {
-                            if (coveredEur >= shortfallEur) break;
-                            const neededFromCand = Math.min(cand.holdingValue, shortfallEur - coveredEur);
-                            const candShares = cand.currentPrice > 0 ? (neededFromCand / cand.currentPrice) : 0;
-                            
-                            linkedSales.push({
-                                ticker: cand.ticker,
-                                name: cand.name,
-                                reason: cand.actionType === 'TAKE_PROFIT' ? 'Winst Verzilveren (Overgewaardeerd)' : 'Verplichte Verkoop (Score < 5 of Daling Waardeverdeling)',
-                                sharesToSell: parseFloat(candShares.toFixed(2)),
-                                amountToSellEur: parseFloat(neededFromCand.toFixed(2)),
-                                currentPrice: cand.currentPrice
-                            });
-                            coveredEur += neededFromCand;
+                        if (actionAmountEur < minOrderAmount) {
+                            actionAmountEur = minOrderAmount;
                         }
+                        if (allowFractionalShares) {
+                            actionShares = alertPrice > 0 ? (Math.round((actionAmountEur / alertPrice) * 10) / 10) : 0;
+                        } else {
+                            actionShares = alertPrice > 0 ? Math.floor(actionAmountEur / alertPrice) : 0;
+                        }
+                        actionAmountEur = actionShares * alertPrice;
 
-                        fundingSource = {
-                            status: 'ROTATION_REQUIRED',
-                            badge: '⚠️ Cash Vrijmaken via Verkoop',
-                            shortfallEur: parseFloat(shortfallEur.toFixed(2)),
-                            message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(0)} beschikbaar na ETF-reservering). Voer onderstaande verkoop uit om €${actionAmountEur.toFixed(0)} vrij te maken:`
-                        };
+                        if (actionShares <= 0 || actionAmountEur < minOrderSkipThreshold) {
+                            actionAmountEur = 0;
+                            actionShares = 0;
+                            fundingSource = {
+                                status: 'TARGET_REACHED',
+                                badge: '🎯 Streefdoel Reeds Bereikt (Geen Extra Aankoop Nodig)',
+                                message: `Je bezit momenteel al €${currentOwnedEurAtAlertDate.toFixed(2)} (${sharesOwnedAtAlertDate.toFixed(2)} stuks) aan ${ticker}. Het gewenste streefdoel is €${targetEur.toFixed(2)}.`
+                            };
+                        } else if (stocksAvailableCash >= actionAmountEur) {
+                            // Financieringscheck gekoppeld aan stocksAvailableCash (na aftrek ETF reservering!)
+                            fundingSource = {
+                                status: 'DIRECT_CASH',
+                                badge: '🟢 Vrije Cash Beschikbaar (Na ETF-Reservering)',
+                                message: `Voldoende vrije cash (€${stocksAvailableCash.toFixed(2)} beschikbaar na €${etfReservedCash.toFixed(2)} ETF reservering) om direct uit te voeren.`
+                            };
+                        } else {
+                            const shortfallEur = actionAmountEur - stocksAvailableCash;
+                            let coveredEur = 0;
+                            const potentialSellCandidates = [
+                                ...takeProfitHoldings.filter(h => h.ticker !== ticker),
+                                ...mandatorySellHoldings.filter(h => h.ticker !== ticker)
+                            ];
+
+                            for (const cand of potentialSellCandidates) {
+                                if (coveredEur >= shortfallEur) break;
+                                const neededFromCand = Math.min(cand.holdingValue, shortfallEur - coveredEur);
+                                const candShares = cand.currentPrice > 0 ? (allowFractionalShares ? Math.round((neededFromCand / cand.currentPrice) * 10) / 10 : Math.floor(neededFromCand / cand.currentPrice)) : 0;
+                                
+                                linkedSales.push({
+                                    ticker: cand.ticker,
+                                    name: cand.name,
+                                    reason: cand.actionType === 'TAKE_PROFIT' ? 'Winst Verzilveren (Overgewaardeerd)' : 'Verplichte Verkoop (Score < 5 of Daling Waardeverdeling)',
+                                    sharesToSell: parseFloat(candShares.toFixed(2)),
+                                    amountToSellEur: parseFloat((candShares * cand.currentPrice).toFixed(2)),
+                                    currentPrice: cand.currentPrice
+                                });
+                                coveredEur += candShares * cand.currentPrice;
+                            }
+
+                            fundingSource = {
+                                status: 'ROTATION_REQUIRED',
+                                badge: '⚠️ Cash Vrijmaken via Verkoop',
+                                shortfallEur: parseFloat(shortfallEur.toFixed(2)),
+                                message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(0)} beschikbaar na ETF-reservering). Voer onderstaande verkoop uit om €${actionAmountEur.toFixed(0)} vrij te maken:`
+                            };
+                        }
                     }
                 }
 
@@ -4079,17 +4154,27 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
                 let sellAmountEur = rawSellAmountEur;
                 let sellShares = rawSellShares;
-                let isRoundedTo100 = false;
+                let isRoundedToThreshold = false;
 
                 if (!isFullSell) {
-                    if (isTooSmall) {
+                    if (isTooSmall || rawSellAmountEur < minOrderSkipThreshold) {
                         sellAmountEur = 0;
                         sellShares = 0;
-                    } else if (rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
-                        sellAmountEur = Math.min(h.holdingValue, 100);
-                        sellShares = Math.min(h.quantity, Math.round((sellAmountEur / h.currentPrice) * 100) / 100);
-                        isRoundedTo100 = true;
+                    } else if (rawSellAmountEur < minOrderAmount) {
+                        sellAmountEur = Math.min(h.holdingValue, minOrderAmount);
+                        isRoundedToThreshold = true;
                     }
+                }
+
+                if (sellAmountEur > 0) {
+                    if (isFullSell) {
+                        sellShares = h.quantity;
+                    } else if (allowFractionalShares) {
+                        sellShares = Math.min(h.quantity, Math.round((sellAmountEur / h.currentPrice) * 10) / 10);
+                    } else {
+                        sellShares = Math.min(h.quantity, Math.ceil(sellAmountEur / h.currentPrice));
+                    }
+                    sellAmountEur = sellShares * h.currentPrice;
                 }
 
                 dataDrivenAlerts.push({
@@ -4099,14 +4184,14 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     periodEndDate: h.periodEndDate,
                     ticker: h.ticker,
                     name: h.name,
-                    signalType: isTooSmall ? 'Deelverkoop Overgeslagen' : 'Verkoopsignaal',
-                    isMandatorySell: !isTooSmall,
+                    signalType: (isTooSmall || sellShares <= 0) ? 'Deelverkoop Overgeslagen' : 'Verkoopsignaal',
+                    isMandatorySell: !isTooSmall && sellShares > 0,
                     badge: isFullSell 
                         ? '🔴 Verkoopsignaal (Score < 5)' 
-                        : (isTooSmall 
-                            ? '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)' 
-                            : (isRoundedTo100 ? '🔴 Deel-Verkoopsignaal (Afgerond naar €100)' : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`)),
-                    severity: isTooSmall ? 'neutral' : 'danger',
+                        : ((isTooSmall || sellShares <= 0)
+                            ? `🟡 Deelverkoop Te Klein (< €${minOrderSkipThreshold.toFixed(0)}: Niet Verkopen)` 
+                            : (isRoundedToThreshold ? `🔴 Deel-Verkoopsignaal (Afgerond naar €${minOrderAmount.toFixed(0)})` : `🔴 Deel-Verkoopsignaal (-${h.wvDropPct.toFixed(1)}%)`)),
+                    severity: (isTooSmall || sellShares <= 0) ? 'neutral' : 'danger',
                     priceAtAlert: h.currentPrice,
                     currentPrice: h.currentPrice,
                     amountEur: parseFloat(sellAmountEur.toFixed(2)),
@@ -4115,7 +4200,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     rawShares: parseFloat(rawSellShares.toFixed(2)),
                     totalOwnedShares: parseFloat(h.quantity.toFixed(2)),
                     totalHoldingValueEur: parseFloat(h.holdingValue.toFixed(2)),
-                    targetWeightPct: isFullSell ? 0 : parseFloat(((h.weightPct || 0) * (1 - (isTooSmall ? 0 : (sellAmountEur / (h.holdingValue || 1))))).toFixed(1)),
+                    targetWeightPct: isFullSell ? 0 : parseFloat(((h.weightPct || 0) * (1 - ((isTooSmall || sellShares <= 0) ? 0 : (sellAmountEur / (h.holdingValue || 1))))).toFixed(1)),
                     fundamentalScore: h.score,
                     waardeVerdeling: h.waardeVerdeling,
                     prevWaardeVerdeling: h.prevWaardeVerdeling,
@@ -4125,18 +4210,18 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     latestQuarterDate: h.periodEndDate,
                     latestReportDate: h.reportDate,
                     fundingSource: {
-                        status: isTooSmall ? 'KEEP_POSITION' : 'PROTECT_CAPITAL',
+                        status: (isTooSmall || sellShares <= 0) ? 'KEEP_POSITION' : 'PROTECT_CAPITAL',
                         badge: isFullSell 
                             ? '🛑 100% Verkoop' 
-                            : (isTooSmall 
-                                ? '🟡 Niet Verkopen (< €50)' 
-                                : (isRoundedTo100 ? '🛑 Deelverkoop (€ 100)' : `🛑 Deelverkoop (-${h.wvDropPct.toFixed(1)}%)`)),
+                            : ((isTooSmall || sellShares <= 0)
+                                ? `🟡 Niet Verkopen (< €${minOrderSkipThreshold.toFixed(0)})` 
+                                : (isRoundedToThreshold ? `🛑 Deelverkoop (€ ${minOrderAmount.toFixed(0)})` : `🛑 Deelverkoop (-${h.wvDropPct.toFixed(1)}%)`)),
                         message: isFullSell 
                             ? `Bedrijf voldoet niet meer aan de Super-Kwaliteit criteria (Score ${h.score}/5 bekendgemaakt op rapportagedatum ${effectiveSellDate}). Sluit positie (100%) ten vroegste op deze datum om kapitaal te beschermen.`
-                            : (isTooSmall
-                                ? `Waardeverdeling is gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%), maar berekend bedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< minimum drempel van € 50). Niet verkopen wegens onevenredige transactiekosten.`
-                                : (isRoundedTo100
-                                    ? `Waardeverdeling is gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar € 100 verplicht conform strategie.`
+                            : ((isTooSmall || sellShares <= 0)
+                                ? `Waardeverdeling is gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%), maar berekend bedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< minimum drempel van € ${minOrderSkipThreshold.toFixed(0)}). Niet verkopen wegens onevenredige transactiekosten.`
+                                : (isRoundedToThreshold
+                                    ? `Waardeverdeling is gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar € ${minOrderAmount.toFixed(0)} verplicht conform strategie.`
                                     : `Waardeverdeling is gedaald van ${h.prevWaardeVerdeling?.toFixed(1)}% naar ${h.waardeVerdeling?.toFixed(1)}% (-${h.wvDropPct.toFixed(1)}%) conform rapportagedatum ${effectiveSellDate}. Verkoop ${parseFloat(sellShares.toFixed(2))} stuks (${formatEur(sellAmountEur)}) verplicht conform strategie.`))
                     },
                     linkedSales: []
@@ -4206,6 +4291,23 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             return d > max ? d : max;
         }, '1970-01-01');
 
+        const activeStrategyConfig = {
+            name: 'Huidige Live Strategie',
+            backtestAlpha: '+212%',
+            universe: 'Score 5/5 Universum',
+            sellOnScoreDrop: true,
+            useWaardeverdelingSell: true,
+            usePortfolioRelativeWeight: true,
+            enableActiveRebalance: true,
+            maxPriceToIntrinsicRatio: maxPriceToIntrinsic,
+            useTrendFilter200Sma: false,
+            allowFractionalShares,
+            minOrderAmount,
+            minOrderSkipThreshold,
+            fractionalDecimals: 0.1,
+            description: 'Kwartalen met Score 5/5, 100% verkoop bij Score < 5, deelverkoop bij daling waardeverdeling, actieve herbalancering en relatieve kwaliteitsweging.'
+        };
+
         const responseData = {
             currency,
             totalPortfolioValue,
@@ -4223,6 +4325,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             topBuyCandidates,
             timeline: stockTimeline,
             timelineSummary,
+            activeStrategyConfig,
             dataFreshness: {
                 lastUpdatedDate,
                 isUpdatedToday: lastUpdatedDate >= todayStr,
