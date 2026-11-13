@@ -2586,16 +2586,38 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
     const pool = await sql.connect(config);
 
-    // Haal gebruikersinstellingen op voor ordergroottes en deelaandelen
+    // Haal gebruikersinstellingen op voor ordergroottes, deelaandelen en actieve strategie
     const userSettingsRes = await pool.request()
         .input('userId', sql.Int, userId)
-        .query(`SELECT allow_fractional_shares, min_order_amount, min_order_skip_threshold FROM PF_Users WHERE id = @userId`);
+        .query(`SELECT allow_fractional_shares, min_order_amount, min_order_skip_threshold, active_strategy_id FROM PF_Users WHERE id = @userId`);
     const userSettings = (userSettingsRes.recordset && userSettingsRes.recordset[0]) || {};
     const allowFractionalShares = userSettings.allow_fractional_shares !== false && userSettings.allow_fractional_shares !== 0;
     const minOrderAmount = parseFloat(userSettings.min_order_amount || 100);
     const minOrderSkipThreshold = parseFloat(userSettings.min_order_skip_threshold || 50);
 
-    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}`;
+    // Ophalen van gekoppelde actieve strategie
+    let activeStrategyRecord = null;
+    try {
+        if (userSettings.active_strategy_id) {
+            const stratRes = await pool.request()
+                .input('stratId', sql.Int, userSettings.active_strategy_id)
+                .query(`SELECT strategy_id, name, description, parameters_json, performance_summary_json FROM PF_Strategies WHERE strategy_id = @stratId`);
+            if (stratRes.recordset && stratRes.recordset.length > 0) {
+                activeStrategyRecord = stratRes.recordset[0];
+            }
+        }
+        if (!activeStrategyRecord) {
+            const defStratRes = await pool.request()
+                .query(`SELECT TOP 1 strategy_id, name, description, parameters_json, performance_summary_json FROM PF_Strategies WHERE is_system_default = 1`);
+            if (defStratRes.recordset && defStratRes.recordset.length > 0) {
+                activeStrategyRecord = defStratRes.recordset[0];
+            }
+        }
+    } catch (err) {
+        console.warn('Kon PF_Strategies niet uitlezen voor portfolioController:', err.message);
+    }
+
+    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}`;
     if (!forceRefresh) {
         const cached = advisorDataCache.get(cacheKey);
         if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
@@ -4291,21 +4313,31 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             return d > max ? d : max;
         }, '1970-01-01');
 
+        let stratPerf = null;
+        let stratParams = null;
+        try {
+            stratPerf = activeStrategyRecord?.performance_summary_json ? JSON.parse(activeStrategyRecord.performance_summary_json) : null;
+        } catch (e) {}
+        try {
+            stratParams = activeStrategyRecord?.parameters_json ? JSON.parse(activeStrategyRecord.parameters_json) : null;
+        } catch (e) {}
+
         const activeStrategyConfig = {
-            name: 'Huidige Live Strategie',
-            backtestAlpha: '+212%',
+            id: activeStrategyRecord?.strategy_id || 1,
+            name: activeStrategyRecord?.name || 'Huidige Live Strategie',
+            backtestAlpha: stratPerf?.totalReturn !== undefined ? `${stratPerf.totalReturn > 0 ? '+' : ''}${stratPerf.totalReturn}%` : '+212%',
             universe: 'Score 5/5 Universum',
-            sellOnScoreDrop: true,
-            useWaardeverdelingSell: true,
-            usePortfolioRelativeWeight: true,
-            enableActiveRebalance: true,
-            maxPriceToIntrinsicRatio: maxPriceToIntrinsic,
-            useTrendFilter200Sma: false,
+            sellOnScoreDrop: stratParams?.sellOnScoreDrop !== undefined ? stratParams.sellOnScoreDrop : true,
+            useWaardeverdelingSell: stratParams?.useWaardeverdelingSell !== undefined ? stratParams.useWaardeverdelingSell : true,
+            usePortfolioRelativeWeight: stratParams?.usePortfolioRelativeWeight !== undefined ? stratParams.usePortfolioRelativeWeight : true,
+            enableActiveRebalance: stratParams?.enableActiveRebalance !== undefined ? stratParams.enableActiveRebalance : true,
+            maxPriceToIntrinsicRatio: stratParams?.maxPriceToIntrinsicRatio !== undefined ? stratParams.maxPriceToIntrinsicRatio : maxPriceToIntrinsic,
+            useTrendFilter200Sma: stratParams?.useTrendFilter200Sma !== undefined ? stratParams.useTrendFilter200Sma : false,
             allowFractionalShares,
             minOrderAmount,
             minOrderSkipThreshold,
             fractionalDecimals: 0.1,
-            description: 'Kwartalen met Score 5/5, 100% verkoop bij Score < 5, deelverkoop bij daling waardeverdeling, actieve herbalancering en relatieve kwaliteitsweging.'
+            description: activeStrategyRecord?.description || 'Kwartalen met Score 5/5, 100% verkoop bij Score < 5, deelverkoop bij daling waardeverdeling, actieve herbalancering en relatieve kwaliteitsweging.'
         };
 
         const responseData = {

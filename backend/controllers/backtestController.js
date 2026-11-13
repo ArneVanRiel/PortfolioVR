@@ -127,7 +127,12 @@ const runBacktest = async (req, res) => {
     minOrderAmount = 100,
     minOrderSkipThreshold = 50,
     feePerOrder = 0,
-    taxRatePct = 0
+    taxRatePct = 0,
+    enableCapitalGainsTax = false,
+    capitalGainsTaxRate = 10,
+    capitalGainsExemption = 10000,
+    capitalGainsScope = 'from_2026',
+    enableTaxHarvesting = false
   } = req.body;
 
   try {
@@ -245,6 +250,20 @@ const runBacktest = async (req, res) => {
     const timelineEvents = [];
     let totalFeesPaid = 0;
     let totalTaxesPaid = 0;
+    let totalCapitalGainsTaxPaid = 0;
+    let cumulativeCarryOver = 0;
+    const yearlyRealized = {};
+    const yearTaxMap = new Map();
+    const recordRealizedTrade = (yr, tradeProfit) => {
+      if (!yearlyRealized[yr]) yearlyRealized[yr] = { gains: 0, losses: 0, net: 0, count: 0 };
+      if (tradeProfit > 0) {
+        yearlyRealized[yr].gains += tradeProfit;
+      } else {
+        yearlyRealized[yr].losses += Math.abs(tradeProfit);
+      }
+      yearlyRealized[yr].net = yearlyRealized[yr].gains - yearlyRealized[yr].losses;
+      yearlyRealized[yr].count++;
+    };
 
     const firstPrice = parseFloat(priceList[0].closing_price);
     let peakValue = initialCapital;
@@ -288,6 +307,7 @@ const runBacktest = async (req, res) => {
           cash += revenue;
           totalFeesPaid += fee;
           totalTaxesPaid += tax;
+          recordRealizedTrade(dStr.split('-')[0], profit);
           trades.push({
             tradeNumber: trades.length + 1,
             type: 'FULL_EXIT',
@@ -494,6 +514,31 @@ const runBacktest = async (req, res) => {
         }
       }
 
+      // Jaarafsluiting: Meerwaardebelasting
+      const currentYear = dStr.split('-')[0];
+      const nextDateStr = i < priceList.length - 1 ? (priceList[i + 1].date instanceof Date ? priceList[i + 1].date.toISOString().split('T')[0] : priceList[i + 1].date) : null;
+      const isLastDayOfYear = !nextDateStr || nextDateStr.split('-')[0] !== currentYear;
+
+      if (isLastDayOfYear) {
+        const isTaxApplicableThisYear = enableCapitalGainsTax && (capitalGainsScope === 'all_years' || parseInt(currentYear) >= 2026);
+        if (isTaxApplicableThisYear) {
+          const yrStats = yearlyRealized[currentYear] || { gains: 0, losses: 0, net: 0 };
+          const netGain = yrStats.gains - yrStats.losses;
+          const positiveNetGain = Math.max(0, netGain);
+          const availableExemption = Math.min(15000, Number(capitalGainsExemption) + cumulativeCarryOver);
+          const taxableBase = Math.max(0, positiveNetGain - availableExemption);
+          const taxDue = taxableBase * (Number(capitalGainsTaxRate) / 100);
+          const remainingExemption = Math.max(0, availableExemption - positiveNetGain);
+          const yearCarryOver = Math.min(1000, remainingExemption);
+          cumulativeCarryOver = Math.min(5000, cumulativeCarryOver + yearCarryOver);
+
+          if (taxDue > 0) {
+            cash -= taxDue;
+            totalCapitalGainsTaxPaid += taxDue;
+          }
+        }
+      }
+
       const portfolioVal = cash + (shares * price);
       const buyAndHoldVal = (initialCapital / firstPrice) * price;
 
@@ -592,7 +637,11 @@ const runBacktest = async (req, res) => {
         useWaardeverdelingSell,
         sellOnScoreDrop,
         feePerOrder: Number(feePerOrder) || 0,
-        taxRatePct: Number(taxRatePct) || 0
+        taxRatePct: Number(taxRatePct) || 0,
+        enableCapitalGainsTax,
+        capitalGainsTaxRate: Number(capitalGainsTaxRate) || 10,
+        capitalGainsExemption: Number(capitalGainsExemption) || 10000,
+        capitalGainsScope
       },
       kpis: {
         initialCapital,
@@ -600,9 +649,11 @@ const runBacktest = async (req, res) => {
         strategyTotalProfit: Math.round(strategyTotalProfit * 100) / 100,
         strategyTotalReturnPct: Math.round(strategyTotalReturnPct * 100) / 100,
         totalFeesPaid: Math.round(totalFeesPaid * 100) / 100,
-        totalTaxesPaid: Math.round(totalTaxesPaid * 100) / 100,
-        totalCosts: Math.round((totalFeesPaid + totalTaxesPaid) * 100) / 100,
-        costDragPct: Math.round(((totalFeesPaid + totalTaxesPaid) / Number(initialCapital)) * 1000) / 10,
+        totalTobPaid: Math.round(totalTaxesPaid * 100) / 100,
+        totalCapitalGainsTaxPaid: Math.round(totalCapitalGainsTaxPaid * 100) / 100,
+        totalTaxesPaid: Math.round((totalTaxesPaid + totalCapitalGainsTaxPaid) * 100) / 100,
+        totalCosts: Math.round((totalFeesPaid + totalTaxesPaid + totalCapitalGainsTaxPaid) * 100) / 100,
+        costDragPct: Math.round(((totalFeesPaid + totalTaxesPaid + totalCapitalGainsTaxPaid) / Number(initialCapital)) * 1000) / 10,
 
         finalBuyAndHoldValue: Math.round(finalBuyAndHoldValue * 100) / 100,
         buyAndHoldTotalProfit: Math.round(buyAndHoldTotalProfit * 100) / 100,
@@ -650,7 +701,12 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
     minOrderAmount = 100,
     minOrderSkipThreshold = 50,
     feePerOrder = 0,
-    taxRatePct = 0
+    taxRatePct = 0,
+    enableCapitalGainsTax = false,
+    capitalGainsTaxRate = 10,
+    capitalGainsExemption = 10000,
+    capitalGainsScope = 'from_2026',
+    enableTaxHarvesting = false
   } = req.body;
 
   try {
@@ -779,6 +835,20 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
     const equityCurve = [];
     let totalFeesPaid = 0;
     let totalTaxesPaid = 0;
+    let totalCapitalGainsTaxPaid = 0;
+    let cumulativeCarryOver = 0;
+    const yearlyRealized = {};
+    const yearTaxMap = new Map();
+    const recordRealizedTrade = (yr, tradeProfit) => {
+      if (!yearlyRealized[yr]) yearlyRealized[yr] = { gains: 0, losses: 0, net: 0, count: 0 };
+      if (tradeProfit > 0) {
+        yearlyRealized[yr].gains += tradeProfit;
+      } else {
+        yearlyRealized[yr].losses += Math.abs(tradeProfit);
+      }
+      yearlyRealized[yr].net = yearlyRealized[yr].gains - yearlyRealized[yr].losses;
+      yearlyRealized[yr].count++;
+    };
     let peakValue = initialCapital;
     let maxDrawdown = 0;
 
@@ -833,6 +903,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
           cash += revenue;
           totalFeesPaid += fee;
           totalTaxesPaid += tax;
+          recordRealizedTrade(dStr.split('-')[0], profit);
           trades.push({
             ticker: sInfo.ticker_symbol,
             name: sInfo.name,
@@ -874,6 +945,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
           cash += revenue;
           totalFeesPaid += fee;
           totalTaxesPaid += tax;
+          recordRealizedTrade(dStr.split('-')[0], profit);
           trades.push({
             ticker: sInfo.ticker_symbol,
             name: sInfo.name,
@@ -916,6 +988,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
           cash += revenue;
           totalFeesPaid += fee;
           totalTaxesPaid += tax;
+          recordRealizedTrade(dStr.split('-')[0], profit);
           trades.push({
             ticker: sInfo.ticker_symbol,
             name: sInfo.name,
@@ -985,6 +1058,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             cash += revenue;
             totalFeesPaid += fee;
             totalTaxesPaid += tax;
+            recordRealizedTrade(dStr.split('-')[0], profit);
             trades.push({
               ticker: sInfo.ticker_symbol,
               name: sInfo.name,
@@ -1099,13 +1173,19 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             const pInfo = stockData.get(lowestStockId);
             const pPos = positions.get(lowestStockId);
             const pPrice = pInfo.priceMap.get(dStr) || pInfo.lastKnownPrice;
-            const revenue = pPos.shares * pPrice;
+            const grossRevenue = pPos.shares * pPrice;
+            const fee = Number(feePerOrder) || 0;
+            const tax = Math.min(grossRevenue * (Number(taxRatePct) / 100), 1600);
+            const revenue = Math.max(0, grossRevenue - fee - tax);
             const profit = revenue - pPos.cost;
-            const returnPct = ((pPrice - pPos.entryPrice) / pPos.entryPrice) * 100;
+            const returnPct = ((revenue - pPos.cost) / pPos.cost) * 100;
             const holdingDays = Math.max(1, Math.round((new Date(dStr) - new Date(pPos.entryDate)) / (1000 * 60 * 60 * 24)));
             const sellReason = `🎯 Top ${maxPositions} Focus: Ruimte gemaakt voor ${sInfo.ticker_symbol} (WV: ${wv.toFixed(1)}% vs ${pInfo.ticker_symbol} WV: ${lowestWvInPos.toFixed(1)}%)`;
 
             cash += revenue;
+            totalFeesPaid += fee;
+            totalTaxesPaid += tax;
+            recordRealizedTrade(dStr.split('-')[0], profit);
             trades.push({
               ticker: pInfo.ticker_symbol,
               name: pInfo.name,
@@ -1122,6 +1202,9 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
               exitDate: dStr,
               exitPrice: pPrice,
               revenue,
+              grossRevenue,
+              fee,
+              tax,
               profit,
               returnPct,
               holdingDays,
@@ -1244,6 +1327,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
               cash += revenue;
               totalFeesPaid += fee;
               totalTaxesPaid += tax;
+              recordRealizedTrade(dStr.split('-')[0], profit);
               trades.push({
                 ticker: pInfo.ticker_symbol,
                 name: pInfo.name,
@@ -1357,6 +1441,173 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
               existingPos.lastEvaluatedQuarterDate = currQuarterDate;
             }
           }
+        }
+      }
+
+      // 4. Jaarafsluiting: Meerwaardebelasting & Optionele Fiscale Optimalisatie (Tax Harvesting)
+      const currentYear = dStr.split('-')[0];
+      const nextDateStr = i < allDates.length - 1 ? allDates[i + 1] : null;
+      const isLastDayOfYear = !nextDateStr || nextDateStr.split('-')[0] !== currentYear;
+
+      if (isLastDayOfYear) {
+        const isTaxApplicableThisYear = enableCapitalGainsTax && (capitalGainsScope === 'all_years' || parseInt(currentYear) >= 2026);
+
+        if (isTaxApplicableThisYear && enableTaxHarvesting) {
+          const yrStats = yearlyRealized[currentYear] || { gains: 0, losses: 0, net: 0 };
+          const currentNetGain = yrStats.gains - yrStats.losses;
+          const availableEx = Math.min(15000, Number(capitalGainsExemption) + cumulativeCarryOver);
+
+          // Strategie A: Tax-Gain Harvesting (Benut onbenutte vrijstelling)
+          if (currentNetGain < availableEx) {
+            let unusedExemption = availableEx - Math.max(0, currentNetGain);
+
+            for (const [pStockId, pPos] of positions.entries()) {
+              if (unusedExemption <= 50) break;
+              const pInfo = stockData.get(pStockId);
+              const curPrice = pInfo.priceMap.get(dStr) || pInfo.lastKnownPrice;
+              if (!curPrice || curPrice <= pPos.entryPrice) continue;
+
+              const unrealizedProfit = (pPos.shares * curPrice) - pPos.cost;
+              if (unrealizedProfit <= 50) continue;
+
+              const profitToHarvest = Math.min(unusedExemption, unrealizedProfit);
+              const fee = Number(feePerOrder) || 0;
+              const tobTax = Math.min(profitToHarvest * (Number(taxRatePct) / 100), 1600);
+              const harvestCost = fee + tobTax;
+              const taxSaved = profitToHarvest * (Number(capitalGainsTaxRate) / 100);
+
+              if (taxSaved > harvestCost) {
+                const oldEntryPrice = pPos.entryPrice;
+                pPos.cost += profitToHarvest;
+                pPos.entryPrice = pPos.cost / pPos.shares;
+
+                cash -= harvestCost;
+                totalFeesPaid += fee;
+                totalTaxesPaid += tobTax;
+
+                recordRealizedTrade(currentYear, profitToHarvest);
+                unusedExemption -= profitToHarvest;
+
+                trades.push({
+                  ticker: pInfo.ticker_symbol,
+                  name: pInfo.name,
+                  tradeNumber: trades.length + 1,
+                  type: 'TAX_GAIN_HARVEST',
+                  sellPct: 0,
+                  sharesSold: 0,
+                  sharesRemaining: pPos.shares,
+                  entryDate: pPos.entryDate,
+                  entryPrice: oldEntryPrice,
+                  shares: pPos.shares,
+                  cost: pPos.cost,
+                  revenue: profitToHarvest,
+                  grossRevenue: profitToHarvest,
+                  fee,
+                  tax: tobTax,
+                  profit: profitToHarvest,
+                  returnPct: ((curPrice - oldEntryPrice) / oldEntryPrice) * 100,
+                  holdingDays: Math.max(1, Math.round((new Date(dStr) - new Date(pPos.entryDate)) / (1000 * 60 * 60 * 24))),
+                  exitDate: dStr,
+                  exitPrice: curPrice,
+                  exitReason: `🎯 Fiscale Optimalisatie: €${profitToHarvest.toFixed(2)} winst belastingvrij vastgeklikt (Cost basis gereset naar €${pPos.entryPrice.toFixed(2)} - bespaart later 10% belasting)`,
+                  isTaxHarvest: true,
+                  isWin: true
+                });
+              }
+            }
+          }
+          // Strategie B: Tax-Loss Harvesting (Verliezen verzilveren om winsten boven vrijstelling te drukken)
+          else if (currentNetGain > availableEx) {
+            let lossTarget = currentNetGain - availableEx;
+
+            for (const [pStockId, pPos] of positions.entries()) {
+              if (lossTarget <= 50) break;
+              const pInfo = stockData.get(pStockId);
+              const curPrice = pInfo.priceMap.get(dStr) || pInfo.lastKnownPrice;
+              if (!curPrice || curPrice >= pPos.entryPrice) continue;
+
+              const unrealizedLoss = pPos.cost - (pPos.shares * curPrice);
+              if (unrealizedLoss <= 50) continue;
+
+              const lossToHarvest = Math.min(lossTarget, unrealizedLoss);
+              const fee = Number(feePerOrder) || 0;
+              const tobTax = Math.min((pPos.shares * curPrice) * (Number(taxRatePct) / 100), 1600);
+              const harvestCost = fee + tobTax;
+              const taxSaved = lossToHarvest * (Number(capitalGainsTaxRate) / 100);
+
+              if (taxSaved > harvestCost) {
+                const oldEntryPrice = pPos.entryPrice;
+                pPos.cost -= lossToHarvest;
+                pPos.entryPrice = pPos.cost / pPos.shares;
+
+                cash -= harvestCost;
+                totalFeesPaid += fee;
+                totalTaxesPaid += tobTax;
+
+                recordRealizedTrade(currentYear, -lossToHarvest);
+                lossTarget -= lossToHarvest;
+
+                trades.push({
+                  ticker: pInfo.ticker_symbol,
+                  name: pInfo.name,
+                  tradeNumber: trades.length + 1,
+                  type: 'TAX_LOSS_HARVEST',
+                  sellPct: 0,
+                  sharesSold: 0,
+                  sharesRemaining: pPos.shares,
+                  entryDate: pPos.entryDate,
+                  entryPrice: oldEntryPrice,
+                  shares: pPos.shares,
+                  cost: pPos.cost,
+                  revenue: -lossToHarvest,
+                  grossRevenue: -lossToHarvest,
+                  fee,
+                  tax: tobTax,
+                  profit: -lossToHarvest,
+                  returnPct: ((curPrice - oldEntryPrice) / oldEntryPrice) * 100,
+                  holdingDays: Math.max(1, Math.round((new Date(dStr) - new Date(pPos.entryDate)) / (1000 * 60 * 60 * 24))),
+                  exitDate: dStr,
+                  exitPrice: curPrice,
+                  exitReason: `🛡️ Tax-Loss Harvesting: €${lossToHarvest.toFixed(2)} verlies gerealiseerd om 10% belasting over winst te neutraliseren`,
+                  isTaxHarvest: true,
+                  isWin: false
+                });
+              }
+            }
+          }
+        }
+
+        if (isTaxApplicableThisYear) {
+          const yrStats = yearlyRealized[currentYear] || { gains: 0, losses: 0, net: 0 };
+          const netGain = yrStats.gains - yrStats.losses;
+          const positiveNetGain = Math.max(0, netGain);
+          const availableExemption = Math.min(15000, Number(capitalGainsExemption) + cumulativeCarryOver);
+          const taxableBase = Math.max(0, positiveNetGain - availableExemption);
+          const taxDue = taxableBase * (Number(capitalGainsTaxRate) / 100);
+          const usedExemption = Math.min(positiveNetGain, availableExemption);
+          const remainingExemption = Math.max(0, availableExemption - positiveNetGain);
+          const yearCarryOver = Math.min(1000, remainingExemption);
+
+          cumulativeCarryOver = Math.min(5000, cumulativeCarryOver + yearCarryOver);
+
+          if (taxDue > 0) {
+            cash -= taxDue;
+            totalCapitalGainsTaxPaid += taxDue;
+          }
+
+          yearTaxMap.set(currentYear, {
+            year: currentYear,
+            gains: yrStats.gains,
+            losses: yrStats.losses,
+            netGain,
+            availableExemption,
+            usedExemption,
+            taxableBase,
+            taxDue,
+            remainingExemption,
+            yearCarryOver,
+            cumulativeCarryOver
+          });
         }
       }
 
@@ -1512,12 +1763,21 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       prevSpyEnd = spyEnd;
       prevWorldEnd = worldEnd;
 
+      const taxInfo = yearTaxMap.get(yr) || null;
       return {
         year: yr,
         strategyStartValue: Math.round(stratStart * 100) / 100,
         strategyEndValue: Math.round(stratEnd * 100) / 100,
         strategyProfit: Math.round(strategyProfit * 100) / 100,
         strategyReturnPct: Math.round(strategyReturnPct * 100) / 100,
+        capitalGainsTax: taxInfo ? Math.round(taxInfo.taxDue * 100) / 100 : 0,
+        realizedGains: taxInfo ? Math.round(taxInfo.gains * 100) / 100 : Math.round((yearlyRealized[yr]?.gains || 0) * 100) / 100,
+        realizedLosses: taxInfo ? Math.round(taxInfo.losses * 100) / 100 : Math.round((yearlyRealized[yr]?.losses || 0) * 100) / 100,
+        netRealizedGain: taxInfo ? Math.round(taxInfo.netGain * 100) / 100 : Math.round((yearlyRealized[yr]?.net || 0) * 100) / 100,
+        availableExemption: taxInfo ? Math.round(taxInfo.availableExemption * 100) / 100 : (Number(capitalGainsExemption) || 10000),
+        usedExemption: taxInfo ? Math.round(taxInfo.usedExemption * 100) / 100 : 0,
+        remainingExemption: taxInfo ? Math.round(taxInfo.remainingExemption * 100) / 100 : (Number(capitalGainsExemption) || 10000),
+        cumulativeCarryOver: taxInfo ? Math.round(taxInfo.cumulativeCarryOver * 100) / 100 : 0,
 
         spyReturnPct: Math.round(spyReturnPct * 100) / 100,
         spyProfit: Math.round(spyProfit * 100) / 100,
@@ -1536,7 +1796,12 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         minOrderAmount: Number(minOrderAmount),
         minOrderSkipThreshold: Number(minOrderSkipThreshold),
         feePerOrder: Number(feePerOrder) || 0,
-        taxRatePct: Number(taxRatePct) || 0
+        taxRatePct: Number(taxRatePct) || 0,
+        enableCapitalGainsTax,
+        capitalGainsTaxRate: Number(capitalGainsTaxRate) || 10,
+        capitalGainsExemption: Number(capitalGainsExemption) || 10000,
+        capitalGainsScope,
+        enableTaxHarvesting
       },
       timeframe: {
         startDate: allDates[0],
@@ -1549,9 +1814,11 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         totalProfit: Math.round(totalProfit * 100) / 100,
         totalReturnPct: Math.round(totalReturnPct * 100) / 100,
         totalFeesPaid: Math.round(totalFeesPaid * 100) / 100,
-        totalTaxesPaid: Math.round(totalTaxesPaid * 100) / 100,
-        totalCosts: Math.round((totalFeesPaid + totalTaxesPaid) * 100) / 100,
-        costDragPct: Math.round(((totalFeesPaid + totalTaxesPaid) / Number(initialCapital)) * 1000) / 10,
+        totalTobPaid: Math.round(totalTaxesPaid * 100) / 100,
+        totalCapitalGainsTaxPaid: Math.round(totalCapitalGainsTaxPaid * 100) / 100,
+        totalTaxesPaid: Math.round((totalTaxesPaid + totalCapitalGainsTaxPaid) * 100) / 100,
+        totalCosts: Math.round((totalFeesPaid + totalTaxesPaid + totalCapitalGainsTaxPaid) * 100) / 100,
+        costDragPct: Math.round(((totalFeesPaid + totalTaxesPaid + totalCapitalGainsTaxPaid) / Number(initialCapital)) * 1000) / 10,
 
         // Benchmark vergelijkingen
         sp500TotalReturnPct: Math.round(sp500TotalReturnPct * 100) / 100,
@@ -1601,7 +1868,12 @@ const runPortfolioBacktest = async (req, res) => {
     minOrderAmount = 100,
     minOrderSkipThreshold = 50,
     feePerOrder = 0,
-    taxRatePct = 0
+    taxRatePct = 0,
+    enableCapitalGainsTax = false,
+    capitalGainsTaxRate = 10,
+    capitalGainsExemption = 10000,
+    capitalGainsScope = 'from_2026',
+    enableTaxHarvesting = false
   } = req.body;
 
   try {
@@ -1627,7 +1899,17 @@ const runPortfolioBacktest = async (req, res) => {
           requireWaardeverdelingRise,
           useMacdSell,
           useWaardeverdelingSell,
-          sellOnScoreDrop
+          sellOnScoreDrop,
+          allowFractionalShares,
+          minOrderAmount,
+          minOrderSkipThreshold,
+          feePerOrder,
+          taxRatePct,
+          enableCapitalGainsTax,
+          capitalGainsTaxRate,
+          capitalGainsExemption,
+          capitalGainsScope,
+          enableTaxHarvesting
         }
       };
 

@@ -770,10 +770,10 @@ const StrategyAdvisorTab = () => {
             <div className="space-y-2">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-gradient-to-r from-amber-400 to-amber-300 text-slate-950 shadow-sm">
-                  ⭐️ Gekoppelde Strategie: Huidige Live Strategie (+212%)
+                  ⭐️ Gekoppelde Strategie: {data?.activeStrategyConfig?.name || 'Huidige Live Strategie'} ({data?.activeStrategyConfig?.backtestAlpha || '+212%'})
                 </span>
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-200 border border-blue-400/30">
-                  📊 Score 5/5 Universum
+                  📊 {data?.activeStrategyConfig?.universe || 'Score 5/5 Universum'}
                 </span>
                 <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">
                   {data?.activeStrategyConfig?.allowFractionalShares !== false 
@@ -782,17 +782,26 @@ const StrategyAdvisorTab = () => {
                 </span>
               </div>
               <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
-                Deze assistent stuurt <strong>uitsluitend meldingen en transacties conform de Live Strategie</strong>: automatische aankoop bij Score 5/5 en MACD Golden Cross herstel, 100% verkoop bij Score &lt; 5, deelverkoop bij kwartaaldaling van waardeverdeling (ondergrens €{data?.activeStrategyConfig?.minOrderSkipThreshold || 50}), en actieve herbalancering bij nieuwe koopkansen.
+                Deze assistent stuurt <strong>uitsluitend meldingen en transacties conform de gekozen strategie</strong> ({data?.activeStrategyConfig?.name || 'Huidige Live Strategie'}): automatische aankoop bij Score 5/5 en MACD Golden Cross herstel, {data?.activeStrategyConfig?.sellOnScoreDrop ? '100% verkoop bij Score < 5' : 'Score < 5 behouden'}, {data?.activeStrategyConfig?.useWaardeverdelingSell ? `deelverkoop bij kwartaaldaling waardeverdeling (ondergrens €${data?.activeStrategyConfig?.minOrderSkipThreshold || 50})` : 'geen deelverkoop op waardeverdeling'}, en actieve herbalancering bij nieuwe koopkansen.
               </p>
             </div>
 
-            <Link
-              to="/analysis?tab=backtest"
-              className="self-start md:self-center inline-flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold text-xs rounded-xl border border-indigo-400/40 transition-all whitespace-nowrap shadow-md shadow-indigo-900/30"
-            >
-              <span>Bekijk Backtest Prestaties (+212%)</span>
-              <i className="ph-bold ph-arrow-right text-sm"></i>
-            </Link>
+            <div className="flex items-center gap-2 flex-wrap self-start md:self-center">
+              <Link
+                to="/analysis?tab=strategies"
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-800/90 hover:bg-slate-700 active:scale-95 text-slate-200 font-bold text-xs rounded-xl border border-slate-700 transition-all whitespace-nowrap shadow-sm"
+              >
+                <i className="ph-bold ph-compass text-amber-400 text-sm"></i>
+                <span>Wissel Strategie</span>
+              </Link>
+              <Link
+                to="/analysis?tab=backtest"
+                className="inline-flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 active:scale-95 text-white font-bold text-xs rounded-xl border border-indigo-400/40 transition-all whitespace-nowrap shadow-md shadow-indigo-900/30"
+              >
+                <span>Bekijk Backtest ({data?.activeStrategyConfig?.backtestAlpha || '+212%'})</span>
+                <i className="ph-bold ph-arrow-right text-sm"></i>
+              </Link>
+            </div>
           </div>
 
           {/* 1. HERO BANNER: Alignment Score & Actie Overzicht (Verborgen op mobiel voor maximale compactheid) */}

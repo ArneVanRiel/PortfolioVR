@@ -12,17 +12,27 @@ import AnalysisPortfolioTab from './AnalysisPortfolioTab';
 import SearchSecFields from './searchSecFields';
 import StockScreenerTab from './StockScreenerTab';
 import StrategyBacktestTab from './StrategyBacktestTab';
+import StrategyExplorerTab from './StrategyExplorerTab';
+import StrategyBuilderTab from './StrategyBuilderTab';
 
 const Analysis = () => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const tickerParam = searchParams.get('ticker');
+  const tabParam = searchParams.get('tab');
   
   const [stocks, setStocks] = useState([]);
   const [selectedStock, setSelectedStock] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
-  const [activeTab, setActiveTab] = useState('Analyse'); // Standaard tab
+  const [activeTab, setActiveTab] = useState(tabParam || 'Analyse'); // Standaard tab
+  const [strategyForBuilder, setStrategyForBuilder] = useState(null);
+
+  useEffect(() => {
+    if (tabParam && tabParam !== activeTab) {
+      setActiveTab(tabParam);
+    }
+  }, [tabParam]);
 
   // Gedeelde data voor de 'Analyse' tab zodat subcomponenten geen dubbele API-calls doen
   const [sharedStockData, setSharedStockData] = useState({
@@ -141,6 +151,10 @@ const Analysis = () => {
       { id: 'screener', label: 'Aandelen Screener', icon: 'ph-funnel' },
       { id: 'backtest', label: 'Strategie Backtest', icon: 'ph-trend-up' },
     ] : []),
+    { id: 'strategies', label: 'Strategieën Zoeken', icon: 'ph-compass' },
+    ...((isAdmin || userPermissions.canViewScreener) ? [
+      { id: 'builder', label: 'Strategie Builder', icon: 'ph-wrench' },
+    ] : []),
     { id: 'portfolio', label: 'Portfolio', icon: 'ph-briefcase' },
     // Voeg Data Beheer, Berekeningen en SEC velden zoeken enkel toe voor Admin / systeemdata beheerders
     ...((!isDemo && (isAdmin || userPermissions.canEditSystemData)) ? [
@@ -226,6 +240,20 @@ const Analysis = () => {
           <StockScreenerTab />
         ) : activeTab === 'backtest' ? (
           <StrategyBacktestTab selectedStock={selectedStock} stocks={stocks} />
+        ) : activeTab === 'strategies' ? (
+          <StrategyExplorerTab
+            onSelectStrategyForBuilder={(strat) => {
+              setStrategyForBuilder(strat);
+              setActiveTab('builder');
+            }}
+          />
+        ) : activeTab === 'builder' ? (
+          <StrategyBuilderTab
+            initialStrategyToEdit={strategyForBuilder}
+            onStrategySaved={() => {
+              setStrategyForBuilder(null);
+            }}
+          />
         ) : selectedStock ? (
           <div className="animate-fade-in">
             {activeTab === 'data' && (

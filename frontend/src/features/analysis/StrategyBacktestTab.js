@@ -101,6 +101,7 @@ const BacktestTradeLog = ({
         type: t.type,
         isRebalance: !!t.isRebalance,
         isStopLoss: !!t.isStopLoss,
+        isTaxHarvest: !!t.isTaxHarvest,
         isWin: (Number(t.profit) || 0) > 0
       });
     });
@@ -422,6 +423,10 @@ const BacktestTradeLog = ({
                           <span className="px-1.5 py-0.5 bg-indigo-50 text-indigo-700 rounded font-bold text-[10px] border border-indigo-200">
                             💰 Winstname
                           </span>
+                        ) : s.isTaxHarvest ? (
+                          <span className="px-1.5 py-0.5 bg-teal-50 text-teal-800 rounded font-bold text-[10px] border border-teal-200">
+                            🧠 Fiscaal
+                          </span>
                         ) : (
                           <span className="px-1.5 py-0.5 bg-red-50 text-red-700 rounded font-bold text-[10px] border border-red-200">
                             100% Verkoop
@@ -690,35 +695,128 @@ const BacktestTradeLog = ({
   );
 };
 
+// Standaardconfiguratie: Huidige Live Strategie (met Meerwaardebelasting geactiveerd zoals gewenst)
+const defaultStrategySettings = {
+  mode: 'dynamic_score5',
+  initialCapital: 10000,
+  requireScore5: true,
+  requireWaardeverdelingRise: true,
+  sellOnScoreDrop: true,
+  useWaardeverdelingSell: true,
+  useMacdSell: false,
+  usePortfolioRelativeWeight: true,
+  enableActiveRebalance: true,
+  useTrendFilter200Sma: false, // In live strategie staat 200 SMA uit (bodemvissen bij Golden Cross)
+  allowFractionalShares: true,
+  minOrderAmount: 100,
+  minOrderSkipThreshold: 50,
+  feePerOrder: 1.0,
+  taxRatePct: 0.35,
+  enableCapitalGainsTax: true, // AAN
+  capitalGainsTaxRate: 10,
+  capitalGainsExemption: 10000,
+  capitalGainsScope: 'from_2026',
+  enableTaxHarvesting: false, // UIT
+  stopLossPct: 0,
+  maxPositions: 0,
+  maxPriceToIntrinsicRatio: 1.3,
+  takeProfitAtIntrinsicRatio: 0,
+  maxDebtRatio: 0,
+  activePreset: 'current_strategy'
+};
+
+const getSavedBacktestSettings = () => {
+  try {
+    const saved = localStorage.getItem('portfolio_backtest_settings');
+    if (saved) {
+      return { ...defaultStrategySettings, ...JSON.parse(saved) };
+    }
+  } catch (e) {
+    console.error('Fout bij uitlezen opgeslagen backtest instellingen:', e);
+  }
+  return defaultStrategySettings;
+};
+
 const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
   const navigate = useNavigate();
-  const [mode, setMode] = useState('dynamic_score5'); // 'single' | 'dynamic_score5' | 'portfolio_list'
+  const initialSettings = useMemo(() => getSavedBacktestSettings(), []);
+
+  const [mode, setMode] = useState(initialSettings.mode || 'dynamic_score5'); // 'single' | 'dynamic_score5' | 'portfolio_list'
   const [targetStock, setTargetStock] = useState(selectedStock);
   const [portfolioType, setPortfolioType] = useState('ideal'); // 'ideal' | 'watchlist'
   const [singleChartView, setSingleChartView] = useState('price'); // 'price' | 'equity'
   const [dynamicChartView, setDynamicChartView] = useState('profit'); // 'profit' | 'return' | 'value'
   
-  // Strategie Parameters
-  const [initialCapital, setInitialCapital] = useState(10000);
-  const [requireScore5, setRequireScore5] = useState(true);
-  const [requireWaardeverdelingRise, setRequireWaardeverdelingRise] = useState(true);
-  const [sellOnScoreDrop, setSellOnScoreDrop] = useState(true);
-  const [useWaardeverdelingSell, setUseWaardeverdelingSell] = useState(true);
-  const [useMacdSell, setUseMacdSell] = useState(false);
-  const [usePortfolioRelativeWeight, setUsePortfolioRelativeWeight] = useState(true);
-  const [enableActiveRebalance, setEnableActiveRebalance] = useState(true);
-  const [useTrendFilter200Sma, setUseTrendFilter200Sma] = useState(true);
-  const [allowFractionalShares, setAllowFractionalShares] = useState(true);
-  const [minOrderAmount, setMinOrderAmount] = useState(100);
-  const [minOrderSkipThreshold, setMinOrderSkipThreshold] = useState(50);
-  const [feePerOrder, setFeePerOrder] = useState(1.0); // Transactiekosten per order (€)
-  const [taxRatePct, setTaxRatePct] = useState(0.35); // Transactietaks / TOB (%)
-  const [stopLossPct, setStopLossPct] = useState(0); // 0 = off
-  const [maxPositions, setMaxPositions] = useState(0); // 0 = onbeperkt
-  const [maxPriceToIntrinsicRatio, setMaxPriceToIntrinsicRatio] = useState(1.3); // 0 = off, 1.3 = max 30% overwaardering
-  const [takeProfitAtIntrinsicRatio, setTakeProfitAtIntrinsicRatio] = useState(0); // 0 = off, 2.5 = 2.5x
-  const [maxDebtRatio, setMaxDebtRatio] = useState(0); // 0 = off, 0.60
-  const [activePreset, setActivePreset] = useState('super_quality'); // 'super_quality' | 'value_discount' | 'optimal' | 'top10' | 'trend_protected' | 'custom'
+  // Strategie Parameters (geïnitialiseerd vanuit opgeslagen of live-default configuratie)
+  const [initialCapital, setInitialCapital] = useState(initialSettings.initialCapital);
+  const [requireScore5, setRequireScore5] = useState(initialSettings.requireScore5);
+  const [requireWaardeverdelingRise, setRequireWaardeverdelingRise] = useState(initialSettings.requireWaardeverdelingRise);
+  const [sellOnScoreDrop, setSellOnScoreDrop] = useState(initialSettings.sellOnScoreDrop);
+  const [useWaardeverdelingSell, setUseWaardeverdelingSell] = useState(initialSettings.useWaardeverdelingSell);
+  const [useMacdSell, setUseMacdSell] = useState(initialSettings.useMacdSell);
+  const [usePortfolioRelativeWeight, setUsePortfolioRelativeWeight] = useState(initialSettings.usePortfolioRelativeWeight);
+  const [enableActiveRebalance, setEnableActiveRebalance] = useState(initialSettings.enableActiveRebalance);
+  const [useTrendFilter200Sma, setUseTrendFilter200Sma] = useState(initialSettings.useTrendFilter200Sma);
+  const [allowFractionalShares, setAllowFractionalShares] = useState(initialSettings.allowFractionalShares);
+  const [minOrderAmount, setMinOrderAmount] = useState(initialSettings.minOrderAmount);
+  const [minOrderSkipThreshold, setMinOrderSkipThreshold] = useState(initialSettings.minOrderSkipThreshold);
+  const [feePerOrder, setFeePerOrder] = useState(initialSettings.feePerOrder); // Transactiekosten per order (€)
+  const [taxRatePct, setTaxRatePct] = useState(initialSettings.taxRatePct); // Transactietaks / TOB (%)
+  const [enableCapitalGainsTax, setEnableCapitalGainsTax] = useState(initialSettings.enableCapitalGainsTax); // Meerwaardebelasting toggle
+  const [capitalGainsTaxRate, setCapitalGainsTaxRate] = useState(initialSettings.capitalGainsTaxRate); // 10%
+  const [capitalGainsExemption, setCapitalGainsExemption] = useState(initialSettings.capitalGainsExemption); // € 10.000 voetvrijstelling
+  const [capitalGainsScope, setCapitalGainsScope] = useState(initialSettings.capitalGainsScope); // 'from_2026' | 'all_years'
+  const [enableTaxHarvesting, setEnableTaxHarvesting] = useState(initialSettings.enableTaxHarvesting); // Tax-Gain / Tax-Loss harvesting optimalisatie
+  const [stopLossPct, setStopLossPct] = useState(initialSettings.stopLossPct); // 0 = off
+  const [maxPositions, setMaxPositions] = useState(initialSettings.maxPositions); // 0 = onbeperkt
+  const [maxPriceToIntrinsicRatio, setMaxPriceToIntrinsicRatio] = useState(initialSettings.maxPriceToIntrinsicRatio); // 0 = off, 1.3 = max 30% overwaardering
+  const [takeProfitAtIntrinsicRatio, setTakeProfitAtIntrinsicRatio] = useState(initialSettings.takeProfitAtIntrinsicRatio); // 0 = off, 2.5 = 2.5x
+  const [maxDebtRatio, setMaxDebtRatio] = useState(initialSettings.maxDebtRatio); // 0 = off, 0.60
+  const [activePreset, setActivePreset] = useState(initialSettings.activePreset); // Standaard 'current_strategy'
+
+  // Bewaar instellingen automatisch in localStorage bij elke aanpassing zodat ze niet resetten bij tabwissel
+  useEffect(() => {
+    const currentSettings = {
+      mode,
+      initialCapital,
+      requireScore5,
+      requireWaardeverdelingRise,
+      sellOnScoreDrop,
+      useWaardeverdelingSell,
+      useMacdSell,
+      usePortfolioRelativeWeight,
+      enableActiveRebalance,
+      useTrendFilter200Sma,
+      allowFractionalShares,
+      minOrderAmount,
+      minOrderSkipThreshold,
+      feePerOrder,
+      taxRatePct,
+      enableCapitalGainsTax,
+      capitalGainsTaxRate,
+      capitalGainsExemption,
+      capitalGainsScope,
+      enableTaxHarvesting,
+      stopLossPct,
+      maxPositions,
+      maxPriceToIntrinsicRatio,
+      takeProfitAtIntrinsicRatio,
+      maxDebtRatio,
+      activePreset
+    };
+    try {
+      localStorage.setItem('portfolio_backtest_settings', JSON.stringify(currentSettings));
+    } catch (e) {
+      // ignore
+    }
+  }, [
+    mode, initialCapital, requireScore5, requireWaardeverdelingRise, sellOnScoreDrop,
+    useWaardeverdelingSell, useMacdSell, usePortfolioRelativeWeight, enableActiveRebalance,
+    useTrendFilter200Sma, allowFractionalShares, minOrderAmount, minOrderSkipThreshold,
+    feePerOrder, taxRatePct, enableCapitalGainsTax, capitalGainsTaxRate,
+    capitalGainsExemption, capitalGainsScope, enableTaxHarvesting, stopLossPct,
+    maxPositions, maxPriceToIntrinsicRatio, takeProfitAtIntrinsicRatio, maxDebtRatio, activePreset
+  ]);
 
   // State
   const [loading, setLoading] = useState(false);
@@ -759,6 +857,11 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
     const activeMinOrderSkipThreshold = overrides.minOrderSkipThreshold !== undefined ? overrides.minOrderSkipThreshold : minOrderSkipThreshold;
     const activeFeePerOrder = overrides.feePerOrder !== undefined ? overrides.feePerOrder : feePerOrder;
     const activeTaxRatePct = overrides.taxRatePct !== undefined ? overrides.taxRatePct : taxRatePct;
+    const activeEnableCapitalGainsTax = overrides.enableCapitalGainsTax !== undefined ? overrides.enableCapitalGainsTax : enableCapitalGainsTax;
+    const activeCapitalGainsTaxRate = overrides.capitalGainsTaxRate !== undefined ? overrides.capitalGainsTaxRate : capitalGainsTaxRate;
+    const activeCapitalGainsExemption = overrides.capitalGainsExemption !== undefined ? overrides.capitalGainsExemption : capitalGainsExemption;
+    const activeCapitalGainsScope = overrides.capitalGainsScope !== undefined ? overrides.capitalGainsScope : capitalGainsScope;
+    const activeEnableTaxHarvesting = overrides.enableTaxHarvesting !== undefined ? overrides.enableTaxHarvesting : enableTaxHarvesting;
     const activeMode = overrides.mode !== undefined ? overrides.mode : mode;
 
     try {
@@ -785,7 +888,12 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
           minOrderAmount: Number(activeMinOrderAmount),
           minOrderSkipThreshold: Number(activeMinOrderSkipThreshold),
           feePerOrder: Number(activeFeePerOrder),
-          taxRatePct: Number(activeTaxRatePct)
+          taxRatePct: Number(activeTaxRatePct),
+          enableCapitalGainsTax: activeEnableCapitalGainsTax,
+          capitalGainsTaxRate: Number(activeCapitalGainsTaxRate),
+          capitalGainsExemption: Number(activeCapitalGainsExemption),
+          capitalGainsScope: activeCapitalGainsScope,
+          enableTaxHarvesting: activeEnableTaxHarvesting
         });
 
         setSingleResult(res.data);
@@ -807,7 +915,12 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
           minOrderAmount: Number(activeMinOrderAmount),
           minOrderSkipThreshold: Number(activeMinOrderSkipThreshold),
           feePerOrder: Number(activeFeePerOrder),
-          taxRatePct: Number(activeTaxRatePct)
+          taxRatePct: Number(activeTaxRatePct),
+          enableCapitalGainsTax: activeEnableCapitalGainsTax,
+          capitalGainsTaxRate: Number(activeCapitalGainsTaxRate),
+          capitalGainsExemption: Number(activeCapitalGainsExemption),
+          capitalGainsScope: activeCapitalGainsScope,
+          enableTaxHarvesting: activeEnableTaxHarvesting
         });
 
         setDynamicResult(res.data);
@@ -824,7 +937,12 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
           minOrderAmount: Number(activeMinOrderAmount),
           minOrderSkipThreshold: Number(activeMinOrderSkipThreshold),
           feePerOrder: Number(activeFeePerOrder),
-          taxRatePct: Number(activeTaxRatePct)
+          taxRatePct: Number(activeTaxRatePct),
+          enableCapitalGainsTax: activeEnableCapitalGainsTax,
+          capitalGainsTaxRate: Number(activeCapitalGainsTaxRate),
+          capitalGainsExemption: Number(activeCapitalGainsExemption),
+          capitalGainsScope: activeCapitalGainsScope,
+          enableTaxHarvesting: activeEnableTaxHarvesting
         });
 
         setPortfolioResult(res.data);
@@ -835,7 +953,7 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
     } finally {
       setLoading(false);
     }
-  }, [mode, targetStock, portfolioType, initialCapital, requireScore5, requireWaardeverdelingRise, sellOnScoreDrop, useWaardeverdelingSell, useMacdSell, usePortfolioRelativeWeight, enableActiveRebalance, useTrendFilter200Sma, stopLossPct, maxPositions, maxPriceToIntrinsicRatio, takeProfitAtIntrinsicRatio, maxDebtRatio, allowFractionalShares, minOrderAmount, minOrderSkipThreshold, feePerOrder, taxRatePct]);
+  }, [mode, targetStock, portfolioType, initialCapital, requireScore5, requireWaardeverdelingRise, sellOnScoreDrop, useWaardeverdelingSell, useMacdSell, usePortfolioRelativeWeight, enableActiveRebalance, useTrendFilter200Sma, stopLossPct, maxPositions, maxPriceToIntrinsicRatio, takeProfitAtIntrinsicRatio, maxDebtRatio, allowFractionalShares, minOrderAmount, minOrderSkipThreshold, feePerOrder, taxRatePct, enableCapitalGainsTax, capitalGainsTaxRate, capitalGainsExemption, capitalGainsScope, enableTaxHarvesting]);
 
   const applyPreset = (presetType) => {
     setActivePreset(presetType);
@@ -1880,6 +1998,100 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
                 </div>
               </div>
 
+              {/* Belgische Meerwaardebelasting (Wetgeving 2026 FOD Financiën) */}
+              <div className="sm:col-span-2 p-3 bg-emerald-50/70 rounded-xl border border-emerald-200 space-y-2.5">
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <label className="flex items-center gap-2 cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={enableCapitalGainsTax}
+                      onChange={(e) => { setEnableCapitalGainsTax(e.target.checked); setActivePreset('custom'); }}
+                      className="w-4 h-4 text-emerald-600 rounded focus:ring-emerald-500 border-emerald-300"
+                    />
+                    <div className="flex items-center gap-1.5">
+                      <span className="p-1 bg-emerald-100 text-emerald-800 rounded text-xs font-black">🏛️</span>
+                      <span className="text-xs font-bold text-emerald-950">
+                        Belgische Meerwaardebelasting (10% met €10.000 Vrijstelling)
+                      </span>
+                    </div>
+                  </label>
+                  <span className="text-[10px] text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded font-semibold border border-emerald-200">
+                    FOD Financiën 2026 Wet
+                  </span>
+                </div>
+
+                {enableCapitalGainsTax && (
+                  <div className="space-y-2.5 pt-2 border-t border-emerald-200/70 animate-fade-in">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <div className="flex items-center justify-between gap-2 bg-white/90 p-2 rounded-lg border border-emerald-200">
+                        <span className="text-xs font-semibold text-emerald-950">Belastingtarief:</span>
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            min="0"
+                            max="50"
+                            step="1"
+                            value={capitalGainsTaxRate}
+                            onChange={(e) => { setCapitalGainsTaxRate(Number(e.target.value)); setActivePreset('custom'); }}
+                            className="w-14 px-2 py-0.5 bg-white border border-emerald-300 rounded text-xs font-bold text-emerald-950 text-right focus:outline-none"
+                          />
+                          <span className="text-xs font-bold text-gray-500">%</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 bg-white/90 p-2 rounded-lg border border-emerald-200">
+                        <span className="text-xs font-semibold text-emerald-950">Voetvrijstelling / jr:</span>
+                        <div className="flex items-center gap-1">
+                          <span className="text-xs font-bold text-gray-500">€</span>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100000"
+                            step="1000"
+                            value={capitalGainsExemption}
+                            onChange={(e) => { setCapitalGainsExemption(Number(e.target.value)); setActivePreset('custom'); }}
+                            className="w-16 px-2 py-0.5 bg-white border border-emerald-300 rounded text-xs font-bold text-emerald-950 text-right focus:outline-none"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 bg-white/90 p-2 rounded-lg border border-emerald-200">
+                        <span className="text-xs font-semibold text-emerald-950">Toepassingsperiode:</span>
+                        <select
+                          value={capitalGainsScope}
+                          onChange={(e) => { setCapitalGainsScope(e.target.value); setActivePreset('custom'); }}
+                          className="px-2 py-1 bg-white border border-emerald-300 rounded text-[11px] font-bold text-emerald-950 focus:outline-none"
+                        >
+                          <option value="from_2026">Vanaf 2026 (Wet)</option>
+                          <option value="all_years">Alle Jaren (Stresstest)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Fiscale Optimalisatie Toggle (Tax Harvesting) */}
+                    <div className="p-2.5 bg-gradient-to-r from-teal-50 to-emerald-50 rounded-lg border border-teal-200 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={enableTaxHarvesting}
+                          onChange={(e) => { setEnableTaxHarvesting(e.target.checked); setActivePreset('custom'); }}
+                          className="w-4 h-4 text-teal-600 rounded focus:ring-teal-500 border-teal-300"
+                        />
+                        <div>
+                          <div className="text-xs font-extrabold text-teal-950 flex items-center gap-1.5">
+                            <span>🧠 Fiscale Optimalisatie (Tax-Gain &amp; Loss Harvesting)</span>
+                            <span className="bg-teal-200/80 text-teal-900 text-[9px] uppercase px-1.5 py-0.5 rounded font-black">Aanbevolen</span>
+                          </div>
+                          <div className="text-[11px] text-teal-800">
+                            Verzilvert in december automatisch onbenutte vrijstelling (€10.000) om fiscale aankoopwaarde te verhogen én compenseert verliezen.
+                          </div>
+                        </div>
+                      </label>
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <button
                 onClick={() => handleRunBacktest()}
                 disabled={loading}
@@ -1976,12 +2188,17 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
             </div>
 
             <div className="bg-white p-4 rounded-2xl border border-amber-200/80 shadow-sm bg-gradient-to-br from-white to-amber-50/40">
-              <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">Kosten & Beurstaks</span>
+              <span className="text-xs font-bold text-amber-900 uppercase tracking-wider">
+                {dynamicResult.kpis.totalCapitalGainsTaxPaid > 0 ? 'Kosten & Belastingen' : 'Kosten & Beurstaks'}
+              </span>
               <div className="text-xl font-extrabold text-amber-700 mt-1">
                 € {(dynamicResult.kpis.totalCosts || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               </div>
               <div className="text-xs text-amber-900 font-medium mt-1">
-                Drag: -{(dynamicResult.kpis.costDragPct || 0).toFixed(1)}% • €{(dynamicResult.kpis.totalFeesPaid || 0).toFixed(0)} fee / €{(dynamicResult.kpis.totalTaxesPaid || 0).toFixed(0)} TOB
+                Drag: -{(dynamicResult.kpis.costDragPct || 0).toFixed(1)}% • €{(dynamicResult.kpis.totalFeesPaid || 0).toFixed(0)} fee / €{(dynamicResult.kpis.totalTobPaid ?? dynamicResult.kpis.totalTaxesPaid ?? 0).toFixed(0)} TOB
+                {dynamicResult.kpis.totalCapitalGainsTaxPaid > 0 && (
+                  <span className="font-bold text-rose-700"> / €{dynamicResult.kpis.totalCapitalGainsTaxPaid.toFixed(0)} meerwaarde</span>
+                )}
               </div>
             </div>
           </div>
@@ -2104,6 +2321,9 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
                       <th className="py-3 px-3">Kalenderjaar</th>
                       <th className="py-3 px-3 text-right">🟢 Strategie Rendement</th>
                       <th className="py-3 px-3 text-right">Jaarwinst (€)</th>
+                      {dynamicResult.parameters?.enableCapitalGainsTax && (
+                        <th className="py-3 px-3 text-right text-emerald-900">🏛️ Meerwaardebelasting</th>
+                      )}
                       <th className="py-3 px-3 text-right">🔵 S&P 500 (SPY)</th>
                       <th className="py-3 px-3 text-right">⚡ Alpha vs SPY</th>
                       <th className="py-3 px-3 text-right">🟠 MSCI World (URTH)</th>
@@ -2124,6 +2344,19 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
                         <td className={`py-3 px-3 text-right font-bold ${y.strategyProfit >= 0 ? 'text-emerald-600' : 'text-red-600'}`}>
                           {y.strategyProfit >= 0 ? '+' : ''}€ {y.strategyProfit.toLocaleString('nl-NL', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         </td>
+                        {dynamicResult.parameters?.enableCapitalGainsTax && (
+                          <td className="py-3 px-3 text-right font-bold">
+                            {y.capitalGainsTax > 0 ? (
+                              <span className="text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                                -€ {y.capitalGainsTax.toLocaleString('nl-NL', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                              </span>
+                            ) : (
+                              <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200 text-[11px]">
+                                € 0 (Vrijgesteld)
+                              </span>
+                            )}
+                          </td>
+                        )}
                         <td className={`py-3 px-3 text-right font-semibold ${y.spyReturnPct >= 0 ? 'text-gray-700' : 'text-red-600'}`}>
                           {y.spyReturnPct >= 0 ? '+' : ''}{y.spyReturnPct.toFixed(1)}%
                         </td>
@@ -2155,6 +2388,15 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
                       <td className="py-3.5 px-3 text-right text-emerald-600 font-extrabold">
                         +€ {dynamicResult.kpis.totalProfit.toLocaleString('nl-NL', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                       </td>
+                      {dynamicResult.parameters?.enableCapitalGainsTax && (
+                        <td className="py-3.5 px-3 text-right font-extrabold text-rose-600">
+                          {dynamicResult.kpis.totalCapitalGainsTaxPaid > 0 ? (
+                            `-€ ${dynamicResult.kpis.totalCapitalGainsTaxPaid.toLocaleString('nl-NL', { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
+                          ) : (
+                            '€ 0 (Vrijgesteld)'
+                          )}
+                        </td>
+                      )}
                       <td className="py-3.5 px-3 text-right text-gray-700">
                         +{dynamicResult.kpis.sp500TotalReturnPct.toFixed(1)}%
                       </td>
