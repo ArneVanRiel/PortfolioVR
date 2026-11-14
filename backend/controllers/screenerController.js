@@ -496,6 +496,7 @@ const calculateAndSaveStockHistory = async (stockId, tickerUpper) => {
         SELECT period_end_date, data_type, value, fp_id
         FROM fundamental_data
         WHERE stock_id = @stockId
+          AND data_type IN ('LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity', 'NetIncomeLoss', 'NetCashProvidedByUsedInOperatingActivities', 'PurchasesOfPropertyAndEquipment', 'WeightedAverageNumberOfDilutedSharesOutstanding')
         ORDER BY period_end_date ASC
       `);
 
@@ -505,6 +506,9 @@ const calculateAndSaveStockHistory = async (stockId, tickerUpper) => {
     fdRes.recordset.forEach(record => {
       const dateStr = record.period_end_date instanceof Date ? record.period_end_date.toISOString().split('T')[0] : record.period_end_date;
       if (!pivoted[dateStr]) pivoted[dateStr] = { period_end_date: dateStr, fp_id: record.fp_id };
+      if (record.data_type === 'NetCashProvidedByUsedInOperatingActivities' && record.fp_id) {
+        pivoted[dateStr].fp_id = record.fp_id;
+      }
       const keyMap = {
         'LiabilitiesCurrent': 'LiabilitiesCurrent',
         'Liabilities': 'Liabilities',
@@ -1071,6 +1075,7 @@ const recalculateAllDbHistory = async (req, res) => {
             SELECT period_end_date, data_type, value, fp_id
             FROM fundamental_data
             WHERE stock_id = @stockId
+              AND data_type IN ('LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity', 'NetIncomeLoss', 'NetCashProvidedByUsedInOperatingActivities', 'PurchasesOfPropertyAndEquipment', 'WeightedAverageNumberOfDilutedSharesOutstanding')
             ORDER BY period_end_date ASC
           `);
 
@@ -1078,6 +1083,9 @@ const recalculateAllDbHistory = async (req, res) => {
         fdRes.recordset.forEach(record => {
           const dateStr = record.period_end_date instanceof Date ? record.period_end_date.toISOString().split('T')[0] : record.period_end_date;
           if (!pivoted[dateStr]) pivoted[dateStr] = { period_end_date: dateStr, fp_id: record.fp_id };
+          if (record.data_type === 'NetCashProvidedByUsedInOperatingActivities' && record.fp_id) {
+            pivoted[dateStr].fp_id = record.fp_id;
+          }
           const keyMap = {
             'LiabilitiesCurrent': 'LiabilitiesCurrent',
             'Liabilities': 'Liabilities',

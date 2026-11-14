@@ -1789,6 +1789,13 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       };
     });
 
+    const startDateObj = new Date(allDates[0]);
+    const endDateObj = new Date(allDates[allDates.length - 1]);
+    const diffYears = Math.max(0.1, (endDateObj - startDateObj) / (1000 * 60 * 60 * 24 * 365.25));
+    const cagrPct = initialCapital > 0 && finalPortfolioValue > 0
+      ? (Math.pow(finalPortfolioValue / initialCapital, 1 / diffYears) - 1) * 100
+      : 0;
+
     res.json({
       portfolioType: 'dynamic_score5',
       parameters: {
@@ -1806,13 +1813,16 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       timeframe: {
         startDate: allDates[0],
         endDate: allDates[allDates.length - 1],
-        totalTradingDays: allDates.length
+        totalTradingDays: allDates.length,
+        durationYears: Math.round(diffYears * 10) / 10
       },
       kpis: {
         initialCapital,
         finalPortfolioValue,
         totalProfit: Math.round(totalProfit * 100) / 100,
         totalReturnPct: Math.round(totalReturnPct * 100) / 100,
+        xirrPct: Math.round(cagrPct * 10) / 10,
+        cagrPct: Math.round(cagrPct * 10) / 10,
         totalFeesPaid: Math.round(totalFeesPaid * 100) / 100,
         totalTobPaid: Math.round(totalTaxesPaid * 100) / 100,
         totalCapitalGainsTaxPaid: Math.round(totalCapitalGainsTaxPaid * 100) / 100,

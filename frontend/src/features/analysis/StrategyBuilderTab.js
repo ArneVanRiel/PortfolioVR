@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import http from '../../http-common';
 
-const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
+const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBacktest }) => {
   const [strategies, setStrategies] = useState([]);
   const [selectedStrategyId, setSelectedStrategyId] = useState(initialStrategyToEdit?.strategy_id || 'new');
 
@@ -9,6 +9,15 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
   const [strategyName, setStrategyName] = useState(initialStrategyToEdit?.name || '');
   const [strategyDescription, setStrategyDescription] = useState(initialStrategyToEdit?.description || '');
   const [isPublic, setIsPublic] = useState(initialStrategyToEdit?.is_public !== undefined ? initialStrategyToEdit.is_public : true);
+
+  // Kapitaalallocatie & Volg-Instelling
+  const [allocationMode, setAllocationMode] = useState('cash_percent'); // 'cash_percent' | 'monthly_amount' | 'fixed_capital'
+  const [allocationPercent, setAllocationPercent] = useState(80); // % van de vrije cash
+  const [monthlyAmount, setMonthlyAmount] = useState(500); // € per maand
+  const [userAvailableCash, setUserAvailableCash] = useState(0);
+  const [advisorData, setAdvisorData] = useState(null);
+  const [actionFilter, setActionFilter] = useState('ALL'); // 'ALL' | 'BUY' | 'HOLD' | 'SELL'
+  const [activating, setActivating] = useState(false);
 
   // Parameters
   const [initialCapital, setInitialCapital] = useState(10000);
@@ -37,6 +46,23 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState({ type: '', text: '' });
 
+  // Haal live portfolio en marktsituatie op voor de actie-screener
+  useEffect(() => {
+    const fetchAdvisorContext = async () => {
+      try {
+        const res = await http.get('/portfolio/strategy-advisor');
+        if (res.data) {
+          setAdvisorData(res.data);
+          const cash = Number(res.data.cashAllocation?.availableCashEur || res.data.totalAvailableCash || 2805.13);
+          setUserAvailableCash(cash);
+        }
+      } catch (err) {
+        console.warn('Kon portfolio advisor context niet laden in builder:', err.message);
+      }
+    };
+    fetchAdvisorContext();
+  }, []);
+
   // Haal eigen strategieën op voor de dropdown
   const fetchMyStrategies = async () => {
     try {
@@ -51,6 +77,114 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
   useEffect(() => {
     fetchMyStrategies();
   }, []);
+
+  // Bereken het actuele inzetbare kapitaal op basis van de gekozen modus
+  const deployableCapital = useMemo(() => {
+    if (allocationMode === 'cash_percent') {
+      return (userAvailableCash * (allocationPercent / 100)) || 0;
+    }
+    if (allocationMode === 'monthly_amount') {
+      return Number(monthlyAmount) || 0;
+    }
+    return Number(initialCapital) || 10000;
+  }, [allocationMode, allocationPercent, monthlyAmount, initialCapital, userAvailableCash]);
+
+  // Realtime Data-Driven Actie-Screener
+  const screenedActions = useMemo(() => {
+    if (!advisorData) return [];
+    const candidates = advisorData.topBuyCandidates || [];
+    const holdings = advisorData.holdings || [];
+
+    // Filter koopkandidaten op basis van de gekozen builder-parameters
+    const qualifiedBuys = candidates.filter(c => {
+      const pToI = Number(c.priceToIntrinsicRatio || (c.price && c.intrinsicValue ? c.price / c.intrinsicValue : 1.0));
+      if (maxPriceToIntrinsicRatio > 0 && pToI > maxPriceToIntrinsicRatio) return false;
+      return true;
+    });
+
+    const numPicks = Math.max(1, Math.min(qualifiedBuys.length, 5));
+    const budgetPerStock = qualifiedBuys.length > 0 ? (deployableCapital / numPicks) : 0;
+
+    const buyActions = qualifiedBuys.slice(0, 5).map(c => {
+      const price = Number(c.price || c.current_price || 100);
+      let orderAmount = Math.max(0, budgetPerStock);
+      if (orderAmount < minOrderSkipThreshold) orderAmount = 0;
+      let rawShares = price > 0 ? orderAmount / price : 0;
+      let shares = allowFractionalShares ? Math.round(rawShares * 10) / 10 : Math.floor(rawShares);
+      if (!allowFractionalShares && shares === 0 && orderAmount >= price) shares = 1;
+      const actualCost = shares * price;
+
+      return {
+        type: 'BUY',
+        ticker: c.ticker,
+        name: c.name || c.ticker,
+        score: c.score || 5,
+        price,
+        intrinsicValue: c.intrinsicValue,
+        priceToIntrinsicRatio: c.priceToIntrinsicRatio,
+        orderAmount: actualCost > 0 ? actualCost : orderAmount,
+        shares,
+        statusBadge: '🟢 Kooporder',
+        badgeColor: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+        reason: `Score ${c.score || 5}/5 • Koers ${c.priceToIntrinsicRatio ? c.priceToIntrinsicRatio.toFixed(2) + 'x' : 'gunstig'} intrinsiek • MACD Koopsignaal`
+      };
+    });
+
+    // Evalueer huidige portefeuilleposities
+    const holdingActions = holdings.map(h => {
+      const score = Number(h.score || 5);
+      const isWvDown = h.prevWaardeVerdeling != null && h.waardeVerdeling < h.prevWaardeVerdeling;
+
+      if (sellOnScoreDrop && score < 5) {
+        return {
+          type: 'SELL',
+          ticker: h.ticker,
+          name: h.name || h.ticker,
+          score,
+          price: h.currentPrice || h.price,
+          orderAmount: h.currentValue || (h.shares * (h.currentPrice || h.price)),
+          shares: h.shares,
+          statusBadge: '🔴 100% Verkoop',
+          badgeColor: 'bg-rose-100 text-rose-800 border-rose-300',
+          reason: `Score is gedaald naar ${score}/5 (strategieregel: enkel 5/5 behouden)`
+        };
+      }
+      if (useWaardeverdelingSell && isWvDown) {
+        const dropAmount = Math.max(0, (h.currentValue || 0) * 0.25);
+        return {
+          type: 'SELL',
+          ticker: h.ticker,
+          name: h.name || h.ticker,
+          score,
+          price: h.currentPrice || h.price,
+          orderAmount: dropAmount,
+          shares: allowFractionalShares ? Math.round((dropAmount / (h.currentPrice || 1)) * 10) / 10 : Math.floor(dropAmount / (h.currentPrice || 1)),
+          statusBadge: '✂️ Deelverkoop (Snoei)',
+          badgeColor: 'bg-purple-100 text-purple-800 border-purple-300',
+          reason: `Waardeverdeling daalde van ${h.prevWaardeVerdeling}% naar ${h.waardeVerdeling}%`
+        };
+      }
+      return {
+        type: 'HOLD',
+        ticker: h.ticker,
+        name: h.name || h.ticker,
+        score,
+        price: h.currentPrice || h.price,
+        orderAmount: h.currentValue || 0,
+        shares: h.shares,
+        statusBadge: '🔵 Behouden',
+        badgeColor: 'bg-blue-50 text-blue-700 border-blue-200',
+        reason: 'Positie voldoet aan kwaliteitsregels en waardering binnen limiet'
+      };
+    });
+
+    return [...buyActions, ...holdingActions];
+  }, [advisorData, deployableCapital, maxPriceToIntrinsicRatio, minOrderSkipThreshold, allowFractionalShares, sellOnScoreDrop, useWaardeverdelingSell]);
+
+  const filteredScreenedActions = useMemo(() => {
+    if (actionFilter === 'ALL') return screenedActions;
+    return screenedActions.filter(a => a.type === actionFilter);
+  }, [screenedActions, actionFilter]);
 
   // Laad strategie als initialStrategyToEdit verandert
   useEffect(() => {
@@ -85,6 +219,9 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
     if (p.capitalGainsTaxRate !== undefined) setCapitalGainsTaxRate(p.capitalGainsTaxRate);
     if (p.capitalGainsExemption !== undefined) setCapitalGainsExemption(p.capitalGainsExemption);
     if (p.capitalGainsScope !== undefined) setCapitalGainsScope(p.capitalGainsScope);
+    if (p.allocationMode !== undefined) setAllocationMode(p.allocationMode);
+    if (p.allocationPercent !== undefined) setAllocationPercent(p.allocationPercent);
+    if (p.monthlyAmount !== undefined) setMonthlyAmount(p.monthlyAmount);
     setTestResult(strat.performance_summary ? { kpis: strat.performance_summary } : null);
   };
 
@@ -93,6 +230,9 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
     setStrategyName('');
     setStrategyDescription('');
     setIsPublic(true);
+    setAllocationMode('cash_percent');
+    setAllocationPercent(80);
+    setMonthlyAmount(500);
     setSellOnScoreDrop(true);
     setUseWaardeverdelingSell(true);
     setUsePortfolioRelativeWeight(true);
@@ -162,6 +302,9 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
     setFeedback({ type: '', text: '' });
 
     const parameters = {
+      allocationMode,
+      allocationPercent: Number(allocationPercent),
+      monthlyAmount: Number(monthlyAmount),
       initialCapital: Number(initialCapital),
       requireScore5: true,
       requireWaardeverdelingRise: true,
@@ -188,6 +331,8 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
 
     const performanceSummary = testResult?.kpis ? {
       totalReturnPct: testResult.kpis.totalReturnPct,
+      xirrPct: testResult.kpis.xirrPct || testResult.kpis.cagrPct,
+      cagrPct: testResult.kpis.cagrPct,
       totalProfit: testResult.kpis.totalProfit,
       winRate: testResult.kpis.winRate,
       maxDrawdownPct: testResult.kpis.maxDrawdownPct,
@@ -226,6 +371,74 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
       setFeedback({ type: 'error', text: err.response?.data?.message || 'Fout bij opslaan strategie.' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Strategie direct activeren op de eigen portefeuille
+  const handleActivateOnPortfolio = async () => {
+    setActivating(true);
+    setFeedback({ type: '', text: '' });
+    try {
+      let stratId = selectedStrategyId;
+      if (!stratId || stratId === 'new') {
+        if (!strategyName.trim()) {
+          setFeedback({ type: 'error', text: 'Geef eerst een naam op voor deze strategie om ze te kunnen activeren.' });
+          setActivating(false);
+          return;
+        }
+        const res = await http.post('/strategies', {
+          name: strategyName.trim(),
+          description: strategyDescription.trim(),
+          is_public: isPublic,
+          parameters: {
+            allocationMode,
+            allocationPercent: Number(allocationPercent),
+            monthlyAmount: Number(monthlyAmount),
+            initialCapital: Number(initialCapital),
+            requireScore5: true,
+            requireWaardeverdelingRise: true,
+            sellOnScoreDrop,
+            useWaardeverdelingSell,
+            usePortfolioRelativeWeight,
+            enableActiveRebalance,
+            useTrendFilter200Sma,
+            allowFractionalShares,
+            minOrderAmount: Number(minOrderAmount),
+            minOrderSkipThreshold: Number(minOrderSkipThreshold),
+            feePerOrder: Number(feePerOrder),
+            taxRatePct: Number(taxRatePct),
+            enableCapitalGainsTax,
+            capitalGainsTaxRate: Number(capitalGainsTaxRate),
+            capitalGainsExemption: Number(capitalGainsExemption),
+            capitalGainsScope,
+            stopLossPct: Number(stopLossPct),
+            maxPositions: Number(maxPositions),
+            maxPriceToIntrinsicRatio: Number(maxPriceToIntrinsicRatio),
+            takeProfitAtIntrinsicRatio: Number(takeProfitAtIntrinsicRatio)
+          },
+          performance_summary: testResult?.kpis ? {
+            totalReturnPct: testResult.kpis.totalReturnPct,
+            xirrPct: testResult.kpis.xirrPct || testResult.kpis.cagrPct,
+            totalProfit: testResult.kpis.totalProfit,
+            winRate: testResult.kpis.winRate,
+            maxDrawdownPct: testResult.kpis.maxDrawdownPct,
+            totalTrades: testResult.kpis.totalTrades
+          } : null
+        });
+        stratId = res.data.strategy_id;
+        setSelectedStrategyId(stratId);
+      }
+      await http.post(`/strategies/${stratId}/activate`);
+      setFeedback({
+        type: 'success',
+        text: `⚡ Strategie "${strategyName || 'Aangepaste Strategie'}" is nu actief gekoppeld aan jouw portefeuille! De Strategie Assistent in Portfolio volgt vanaf nu deze regels en dit budget.`
+      });
+      fetchMyStrategies();
+    } catch (err) {
+      console.error('Fout bij activeren strategie:', err);
+      setFeedback({ type: 'error', text: err.response?.data?.message || 'Fout bij activeren van strategie.' });
+    } finally {
+      setActivating(false);
     }
   };
 
@@ -343,6 +556,200 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
                 Publiceer in Strategie Bibliotheek
               </span>
             </label>
+          </div>
+        </div>
+
+        {/* 2b. Kapitaalallocatie & Volg-Instelling */}
+        <div className="mt-6 pt-6 border-t border-gray-100">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2 mb-4">
+            <div>
+              <h3 className="text-sm font-bold text-gray-900 flex items-center gap-2">
+                <i className="ph-fill ph-coins text-amber-500 text-lg"></i>
+                <span>Kapitaalallocatie &amp; Volg-Instelling</span>
+              </h3>
+              <p className="text-xs text-gray-500">
+                Kies hoeveel kapitaal je aan deze strategie toewijst. De actie-screener hieronder berekent exact welke orders hierbij horen.
+              </p>
+            </div>
+            <div className="px-3.5 py-1.5 rounded-xl bg-blue-50 text-blue-900 font-extrabold text-xs border border-blue-200 flex items-center gap-1.5 shadow-xs">
+              <i className="ph-fill ph-wallet text-blue-600"></i>
+              <span>Vrije Cash: € {userAvailableCash.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Optie 1: Percentage van vrije cash */}
+            <div 
+              onClick={() => setAllocationMode('cash_percent')}
+              className={`p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                allocationMode === 'cash_percent' 
+                  ? 'border-blue-600 bg-blue-50/50 shadow-xs' 
+                  : 'border-gray-200 hover:border-gray-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                  <i className="ph-fill ph-percent text-blue-600"></i>
+                  % van Beschikbaar Saldo
+                </span>
+                <input
+                  type="radio"
+                  name="alloc_mode"
+                  checked={allocationMode === 'cash_percent'}
+                  onChange={() => setAllocationMode('cash_percent')}
+                  className="w-4 h-4 text-blue-600"
+                />
+              </div>
+              <p className="text-[11px] text-gray-500 mb-3">
+                Zet automatisch een percentage van je actuele vrije liquiditeit in.
+              </p>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs font-bold">
+                  <span className="text-blue-900">{allocationPercent}% van cash</span>
+                  <span className="text-emerald-700 font-black">€ {((userAvailableCash * allocationPercent) / 100).toLocaleString('nl-NL', { maximumFractionDigits: 0 })} budget</span>
+                </div>
+                <input
+                  type="range"
+                  min="10"
+                  max="100"
+                  step="5"
+                  value={allocationPercent}
+                  onChange={(e) => setAllocationPercent(Number(e.target.value))}
+                  disabled={allocationMode !== 'cash_percent'}
+                  className="w-full accent-blue-600"
+                />
+                <div className="flex gap-1.5">
+                  {[25, 50, 75, 80, 100].map(pct => (
+                    <button
+                      key={pct}
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setAllocationMode('cash_percent'); setAllocationPercent(pct); }}
+                      className={`flex-1 py-1 text-[10px] font-bold rounded-lg border transition-all ${
+                        allocationPercent === pct && allocationMode === 'cash_percent'
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                          : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                      }`}
+                    >
+                      {pct}%
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Optie 2: Vast maandbedrag (DCA) */}
+            <div 
+              onClick={() => setAllocationMode('monthly_amount')}
+              className={`p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                allocationMode === 'monthly_amount' 
+                  ? 'border-indigo-600 bg-indigo-50/50 shadow-xs' 
+                  : 'border-gray-200 hover:border-gray-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                  <i className="ph-fill ph-calendar text-indigo-600"></i>
+                  Vast Maandbedrag (DCA)
+                </span>
+                <input
+                  type="radio"
+                  name="alloc_mode"
+                  checked={allocationMode === 'monthly_amount'}
+                  onChange={() => setAllocationMode('monthly_amount')}
+                  className="w-4 h-4 text-indigo-600"
+                />
+              </div>
+              <p className="text-[11px] text-gray-500 mb-3">
+                Periodieke maandelijkse inleg gespreid over de top koopkansen.
+              </p>
+              <div className="space-y-2">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">€</span>
+                  <input
+                    type="number"
+                    min="50"
+                    step="50"
+                    value={monthlyAmount}
+                    onChange={(e) => setMonthlyAmount(Number(e.target.value))}
+                    disabled={allocationMode !== 'monthly_amount'}
+                    className="w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-800"
+                  />
+                </div>
+                <div className="flex gap-1.5">
+                  {[250, 500, 750, 1000].map(amt => (
+                    <button
+                      key={amt}
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setAllocationMode('monthly_amount'); setMonthlyAmount(amt); }}
+                      className={`flex-1 py-1 text-[10px] font-bold rounded-lg border transition-all ${
+                        monthlyAmount === amt && allocationMode === 'monthly_amount'
+                          ? 'bg-indigo-600 text-white border-indigo-600 shadow-xs'
+                          : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                      }`}
+                    >
+                      €{amt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Optie 3: Vast startkapitaal */}
+            <div 
+              onClick={() => setAllocationMode('fixed_capital')}
+              className={`p-4 rounded-xl border-2 transition-all cursor-pointer ${
+                allocationMode === 'fixed_capital' 
+                  ? 'border-purple-600 bg-purple-50/50 shadow-xs' 
+                  : 'border-gray-200 hover:border-gray-300 bg-white'
+              }`}
+            >
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
+                  <i className="ph-fill ph-wallet text-purple-600"></i>
+                  Vast Startkapitaal
+                </span>
+                <input
+                  type="radio"
+                  name="alloc_mode"
+                  checked={allocationMode === 'fixed_capital'}
+                  onChange={() => setAllocationMode('fixed_capital')}
+                  className="w-4 h-4 text-purple-600"
+                />
+              </div>
+              <p className="text-[11px] text-gray-500 mb-3">
+                Eenmalig lump-sum budget voor initiële portefeuille-opbouw.
+              </p>
+              <div className="space-y-2">
+                <div className="relative">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-gray-400">€</span>
+                  <input
+                    type="number"
+                    min="500"
+                    step="500"
+                    value={initialCapital}
+                    onChange={(e) => setInitialCapital(Number(e.target.value))}
+                    disabled={allocationMode !== 'fixed_capital'}
+                    className="w-full pl-8 pr-3 py-1.5 bg-white border border-gray-200 rounded-lg text-xs font-bold text-gray-800"
+                  />
+                </div>
+                <div className="flex gap-1.5">
+                  {[5000, 10000, 20000, 50000].map(cap => (
+                    <button
+                      key={cap}
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); setAllocationMode('fixed_capital'); setInitialCapital(cap); }}
+                      className={`flex-1 py-1 text-[10px] font-bold rounded-lg border transition-all ${
+                        initialCapital === cap && allocationMode === 'fixed_capital'
+                          ? 'bg-purple-600 text-white border-purple-600 shadow-xs'
+                          : 'bg-gray-100 text-gray-700 border-gray-200 hover:bg-gray-200'
+                      }`}
+                    >
+                      €{cap >= 1000 ? `${cap / 1000}k` : cap}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -597,7 +1004,114 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
         </div>
       </div>
 
-      {/* 4. Test Resultaat Kaart (indien gesimuleerd) */}
+      {/* 4. Live Data-Driven Actie-Screener */}
+      <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 pb-4 border-b border-gray-100">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="p-2 bg-emerald-100 text-emerald-800 rounded-xl text-xs font-bold">
+                <i className="ph-fill ph-lightning text-lg"></i>
+              </span>
+              <div>
+                <h3 className="text-base font-extrabold text-gray-900">
+                  Actie-Screener: Concrete Voorgestelde Transacties
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Live screening op basis van jouw gekozen kwaliteitsregels en een deployable budget van <strong>€ {deployableCapital.toLocaleString('nl-NL', { maximumFractionDigits: 0 })}</strong>.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-1.5 bg-gray-100 p-1 rounded-xl text-xs font-bold flex-wrap">
+            <button
+              type="button"
+              onClick={() => setActionFilter('ALL')}
+              className={`px-3 py-1.5 rounded-lg transition-all ${actionFilter === 'ALL' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-900'}`}
+            >
+              Alle ({screenedActions.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActionFilter('BUY')}
+              className={`px-3 py-1.5 rounded-lg transition-all ${actionFilter === 'BUY' ? 'bg-emerald-600 text-white shadow-xs' : 'text-emerald-700 hover:bg-emerald-50'}`}
+            >
+              🟢 Kopen ({screenedActions.filter(a => a.type === 'BUY').length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActionFilter('HOLD')}
+              className={`px-3 py-1.5 rounded-lg transition-all ${actionFilter === 'HOLD' ? 'bg-blue-600 text-white shadow-xs' : 'text-blue-700 hover:bg-blue-50'}`}
+            >
+              🔵 Houden ({screenedActions.filter(a => a.type === 'HOLD').length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setActionFilter('SELL')}
+              className={`px-3 py-1.5 rounded-lg transition-all ${actionFilter === 'SELL' ? 'bg-rose-600 text-white shadow-xs' : 'text-rose-700 hover:bg-rose-50'}`}
+            >
+              🔴 Verkopen / Snoeien ({screenedActions.filter(a => a.type === 'SELL').length})
+            </button>
+          </div>
+        </div>
+
+        {filteredScreenedActions.length === 0 ? (
+          <div className="text-center py-10 text-gray-400 text-xs">
+            Geen concrete acties gevonden onder deze filter of criteria.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-gray-50 text-gray-500 font-bold uppercase text-[10px] tracking-wider border-b border-gray-200">
+                <tr>
+                  <th className="py-3 px-4">Aandeel</th>
+                  <th className="py-3 px-4">Kwaliteit &amp; Waardering</th>
+                  <th className="py-3 px-4">Voorgestelde Actie</th>
+                  <th className="py-3 px-4 text-right">Inzetbedrag</th>
+                  <th className="py-3 px-4 text-right">Aantal Stuks</th>
+                  <th className="py-3 px-4">Strategie Signaal &amp; Toelichting</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 font-medium text-gray-800">
+                {filteredScreenedActions.map((act, idx) => (
+                  <tr key={`${act.ticker}-${idx}`} className="hover:bg-gray-50/80 transition-colors">
+                    <td className="py-3 px-4">
+                      <div className="font-extrabold text-sm text-gray-900">{act.ticker}</div>
+                      <div className="text-[11px] text-gray-400 truncate max-w-[140px]">{act.name}</div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-black ${act.score === 5 ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                          {act.score}/5
+                        </span>
+                        <span className="text-[11px] text-gray-600">
+                          {act.priceToIntrinsicRatio ? `${Number(act.priceToIntrinsicRatio).toFixed(2)}x intrinsiek` : `€${Number(act.price).toFixed(2)}`}
+                        </span>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border inline-flex items-center gap-1 ${act.badgeColor}`}>
+                        {act.statusBadge}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-right font-extrabold text-gray-900">
+                      {act.orderAmount > 0 ? `€ ${act.orderAmount.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '-'}
+                    </td>
+                    <td className="py-3 px-4 text-right font-black text-blue-600">
+                      {act.shares > 0 ? (allowFractionalShares ? act.shares.toFixed(1) : act.shares) : '-'}
+                    </td>
+                    <td className="py-3 px-4 text-gray-500 text-[11px] max-w-xs leading-snug">
+                      {act.reason}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* 5. Test Resultaat Kaart (indien gesimuleerd) */}
       {testResult && testResult.kpis && (
         <div className="bg-gradient-to-br from-emerald-500 to-teal-700 rounded-2xl p-6 text-white shadow-md animate-fade-in">
           <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 mb-4 pb-3 border-b border-white/20">
@@ -614,6 +1128,10 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
 
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-white">
             <div className="bg-white/10 p-3 rounded-xl border border-white/15">
+              <span className="text-[10px] uppercase font-bold text-emerald-200">XIRR / Jaar</span>
+              <div className="text-lg font-black">{testResult.kpis.xirrPct != null ? `${testResult.kpis.xirrPct >= 0 ? '+' : ''}${testResult.kpis.xirrPct.toFixed(1)}%` : '-'}</div>
+            </div>
+            <div className="bg-white/10 p-3 rounded-xl border border-white/15">
               <span className="text-[10px] uppercase font-bold text-emerald-200">Win Rate</span>
               <div className="text-lg font-black">{testResult.kpis.winRate.toFixed(0)}%</div>
             </div>
@@ -625,39 +1143,65 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
               <span className="text-[10px] uppercase font-bold text-emerald-200">vs S&amp;P 500</span>
               <div className="text-lg font-black">{testResult.kpis.outperformanceVsSp500 >= 0 ? '+' : ''}{testResult.kpis.outperformanceVsSp500.toFixed(1)}%</div>
             </div>
-            <div className="bg-white/10 p-3 rounded-xl border border-white/15">
-              <span className="text-[10px] uppercase font-bold text-emerald-200">Totale Frictiekosten</span>
-              <div className="text-lg font-black">€ {testResult.kpis.totalCosts?.toLocaleString('nl-NL', { maximumFractionDigits: 0 })}</div>
-            </div>
           </div>
         </div>
       )}
 
-      {/* 5. Vaste Opslag & Test Balk */}
+      {/* 6. Vaste Opslag, Activatie & Test Balk */}
       <div className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 sticky bottom-4 z-10 backdrop-blur-md bg-white/95">
         <div className="text-xs text-gray-500 font-medium">
           {selectedStrategyId !== 'new' ? (
             <span>Bestaande strategie bewerken (ID #{selectedStrategyId})</span>
           ) : (
-            <span>Nieuwe strategie klaar om opgeslagen te worden</span>
+            <span>Nieuwe strategie klaar om opgeslagen of geactiveerd te worden</span>
           )}
         </div>
 
-        <div className="flex items-center gap-3 w-full sm:w-auto">
+        <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap justify-end">
+          {onOpenBacktest && (
+            <button
+              onClick={onOpenBacktest}
+              type="button"
+              className="px-3.5 py-2.5 bg-gray-100 hover:bg-gray-200 active:scale-95 text-gray-800 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
+            >
+              <i className="ph-bold ph-chart-line-up text-purple-600"></i>
+              <span>Open Backtest</span>
+            </button>
+          )}
+
           <button
             onClick={handleTestStrategy}
             disabled={testing}
-            className="flex-1 sm:flex-none px-5 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             {testing ? (
               <>
                 <i className="ph-bold ph-spinner animate-spin"></i>
-                Bezig met Simuleren...
+                Simuleren...
               </>
             ) : (
               <>
                 <i className="ph-bold ph-play"></i>
-                ▶ Test Strategie (Simulatie)
+                ▶ Test (Simulatie)
+              </>
+            )}
+          </button>
+
+          <button
+            onClick={handleActivateOnPortfolio}
+            disabled={activating}
+            className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+            title="Koppel deze strategie direct aan je portefeuille zodat de assistent conform deze regels adviseert"
+          >
+            {activating ? (
+              <>
+                <i className="ph-bold ph-spinner animate-spin"></i>
+                Koppelen...
+              </>
+            ) : (
+              <>
+                <i className="ph-fill ph-lightning text-amber-300"></i>
+                ⚡ Activeer op Portfolio
               </>
             )}
           </button>
@@ -665,7 +1209,7 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
           <button
             onClick={handleSaveStrategy}
             disabled={saving}
-            className="flex-1 sm:flex-none px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+            className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
           >
             {saving ? (
               <>
@@ -675,7 +1219,7 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved }) => {
             ) : (
               <>
                 <i className="ph-bold ph-floppy-disk"></i>
-                💾 Strategie Opslaan
+                💾 Opslaan
               </>
             )}
           </button>

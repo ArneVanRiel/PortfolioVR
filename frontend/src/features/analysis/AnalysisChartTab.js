@@ -68,19 +68,30 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
         const calcs = calcsRes.data;
         const macdHistory = macdRes.data;
 
+        // Vroegste prijsdatum bepalen (koershistorie gaat 10 jaar terug)
+        const minPriceDate = (prices && prices.length > 0)
+            ? new Date(prices[0].date).toISOString().split('T')[0]
+            : null;
+
+        // Filter calcs, macdHistory en alerts zodat we NOOIT data tonen vóór het begin van de koersgrafiek (-10 jaar).
+        // Dit lost het vertekende beeld op van berekeningen vóór 2016 waar onvoldoende kwartalen voorhanden waren.
+        const relevantCalcs = minPriceDate ? calcs.filter(c => new Date(c.period_end_date).toISOString().split('T')[0] >= minPriceDate) : calcs;
+        const relevantAlerts = minPriceDate ? alerts.filter(a => new Date(a.date).toISOString().split('T')[0] >= minPriceDate) : alerts;
+        const relevantMacd = minPriceDate ? macdHistory.filter(m => new Date(m.date).toISOString().split('T')[0] >= minPriceDate) : macdHistory;
+
         const allDates = new Set();
         prices.forEach(p => allDates.add(new Date(p.date).toISOString().split('T')[0]));
-        calcs.forEach(c => allDates.add(new Date(c.period_end_date).toISOString().split('T')[0]));
-        macdHistory.forEach(m => allDates.add(new Date(m.date).toISOString().split('T')[0]));
-        alerts.forEach(a => allDates.add(new Date(a.date).toISOString().split('T')[0]));
+        relevantCalcs.forEach(c => allDates.add(new Date(c.period_end_date).toISOString().split('T')[0]));
+        relevantMacd.forEach(m => allDates.add(new Date(m.date).toISOString().split('T')[0]));
+        relevantAlerts.forEach(a => allDates.add(new Date(a.date).toISOString().split('T')[0]));
 
         const sortedDates = Array.from(allDates).sort((a, b) => new Date(a) - new Date(b));
         setChartDates(sortedDates);
         setActiveRange('All');
         
         const priceMap = new Map(prices.map(p => [new Date(p.date).toISOString().split('T')[0], p.closing_price]));
-        const macdMap = new Map(macdHistory.map(m => [new Date(m.date).toISOString().split('T')[0], m]));
-        const calcMap = new Map(calcs.map(c => [new Date(c.period_end_date).toISOString().split('T')[0], c.waarde_verdeling]));
+        const macdMap = new Map(relevantMacd.map(m => [new Date(m.date).toISOString().split('T')[0], m]));
+        const calcMap = new Map(relevantCalcs.map(c => [new Date(c.period_end_date).toISOString().split('T')[0], c.waarde_verdeling]));
         
         // Hulpfunctie om de dichtstbijzijnde koers te vinden als de exacte datum (bv. kwartaalweekend) geen beurskoers heeft
         const getPriceForDate = (targetDateStr) => {
@@ -166,8 +177,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
             let sellVal = null;
             if (daysAlerts) {
                 daysAlerts.forEach(a => {
-                    // STRATEGIE KOPEN: Alleen als signal line < 0
-                    if (a.type_melding === 'Koopsignaal' && a.signal_line_value < 0) {
+                    // STRATEGIE KOPEN: Alleen als signal line < 0 én aandeel heeft score 5/5
+                    if (a.type_melding === 'Koopsignaal' && a.signal_line_value < 0 && (a.score_on_date == null || a.score_on_date === 5)) {
                         buyVal = a.prijs_op_moment || getPriceForDate(date);
                     } else if (a.type_melding === 'Verkoopsignaal') {
                         // Verkoopsignaal (score daling of waardeverdeling daling)
@@ -188,7 +199,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
                 yAxisID: 'y',
                 pointRadius: 0,
                 borderWidth: 2,
-                tension: 0.1,
+                tension: 0,
+                normalized: true,
                 order: 2
             }
         ];
@@ -203,7 +215,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
                 spanGaps: true,
                 pointRadius: 4,
                 borderWidth: 2,
-                tension: 0.1,
+                tension: 0,
+                normalized: true,
                 order: 1
             });
         }
@@ -217,7 +230,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
                 yAxisID: 'y_macd',
                 pointRadius: 0,
                 borderWidth: 1.5,
-                tension: 0.1,
+                tension: 0,
+                normalized: true,
                 order: 3
             },
             {
@@ -228,7 +242,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
                 yAxisID: 'y_macd',
                 pointRadius: 0,
                 borderWidth: 1.5,
-                tension: 0.1,
+                tension: 0,
+                normalized: true,
                 order: 3
             },
             {
@@ -239,6 +254,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
                 pointRadius: 0,
                 borderDash: [5, 5],
                 yAxisID: 'y_macd',
+                tension: 0,
+                normalized: true,
                 order: 4
             },
             {
@@ -323,6 +340,8 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
 
   // Memoizeer de opties zodat React de reference behoudt en de zoom plugin zijn eigen werk kan doen.
   const chartOptions = useMemo(() => ({
+      animation: false,
+      normalized: true,
       responsive: true,
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
@@ -356,10 +375,11 @@ const AnalysisChartTab = ({ selectedStock, useSharedData = false, sharedCalculat
               pan: {
                   enabled: true,
                   mode: 'x',
+                  threshold: 5,
                   onPanComplete: () => setActiveRange('Custom')
               },
               zoom: {
-                  wheel: { enabled: true },
+                  wheel: { enabled: true, speed: 0.08 },
                   pinch: { enabled: true },
                   mode: 'x',
                   onZoomComplete: () => setActiveRange('Custom')

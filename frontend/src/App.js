@@ -6,6 +6,7 @@ import { Toaster } from 'react-hot-toast';
 import http from './http-common';
 import Dashboard from './features/dashboard/Dashboard.js';
 import Analysis from './features/analysis/Analysis.js';
+import StrategyStudioPage from './features/strategy/StrategyStudioPage.js';
 import PortfolioManager from './features/portfolio/PortfolioManager.js';
 import Settings from './features/settings/settings.js';
 import Profile from './features/profile/Profile.js';
@@ -168,6 +169,7 @@ function App() {
     const path = location.pathname;
     if (path.startsWith('/dashboard')) setActiveTab('Dashboard');
     else if (path.startsWith('/analysis')) setActiveTab('Analysis');
+    else if (path.startsWith('/strategy-builder')) setActiveTab('StrategyBuilder');
     else if (path.startsWith('/portfolio')) setActiveTab('Portfolio');
     else if (path.startsWith('/settings')) setActiveTab('Settings');
     else if (path.startsWith('/profile')) setActiveTab('Profile');
@@ -345,7 +347,10 @@ function App() {
                 <SidebarLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')} isSidebarPinned={isSidebarPinned}>Dashboard</SidebarLink>
               )}
               {(isAdmin || permissions.canViewAnalysis !== false) && (
-                <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analysis</SidebarLink>
+                <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analyse</SidebarLink>
+              )}
+              {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
+                <SidebarLink to="/strategy-builder" iconClass="ph-fill ph-sliders-horizontal" isActive={activeTab === 'StrategyBuilder'} onClick={() => setActiveTab('StrategyBuilder')} isSidebarPinned={isSidebarPinned}>Strategie Builder</SidebarLink>
               )}
               {(isAdmin || permissions.canViewPortfolio !== false) && (
                 <SidebarLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')} isSidebarPinned={isSidebarPinned}>Portfolio</SidebarLink>
@@ -368,6 +373,7 @@ function App() {
               <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
               <Route path='/dashboard' element={<ProtectedRoute>{(isAdmin || permissions.canViewDashboard !== false) ? <Dashboard/> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/analysis/*' element={<ProtectedRoute>{(isAdmin || permissions.canViewAnalysis !== false) ? <Analysis /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
+              <Route path='/strategy-builder/*' element={<ProtectedRoute><StrategyStudioPage /></ProtectedRoute>} />
               <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager/></ProtectedRoute>} />
               <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings/> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/profile' element={<ProtectedRoute><Profile/></ProtectedRoute>} />
@@ -384,7 +390,10 @@ function App() {
               <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')}>Dashboard</MobileBottomLink>
             )}
             {(isAdmin || permissions.canViewAnalysis !== false) && (
-              <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')}>Analysis</MobileBottomLink>
+              <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')}>Analyse</MobileBottomLink>
+            )}
+            {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
+              <MobileBottomLink to="/strategy-builder" iconClass="ph-fill ph-sliders-horizontal" isActive={activeTab === 'StrategyBuilder'} onClick={() => setActiveTab('StrategyBuilder')}>Strategieën</MobileBottomLink>
             )}
             {(isAdmin || permissions.canViewPortfolio !== false) && (
               <MobileBottomLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')}>Portfolio</MobileBottomLink>

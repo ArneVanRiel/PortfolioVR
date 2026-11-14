@@ -139,6 +139,9 @@ async function performCalculations(stockId, periodEndDate = null) {
     const pivotedData = fundamentalDataResult.recordset.reduce((acc, record) => {
         const dateStr = record.period_end_date.toISOString().split('T')[0];
         if (!acc[dateStr]) acc[dateStr] = { period_end_date: dateStr, fp_id: record.fp_id };
+        if (record.data_type === 'NetCashProvidedByUsedInOperatingActivities' && record.fp_id) {
+            acc[dateStr].fp_id = record.fp_id;
+        }
         const keyMap = { 'LiabilitiesCurrent': 'liabilitiesCurrent', 'Liabilities': 'liabilities', 'StockholdersEquity': 'stockholdersEquity', 'NetIncomeLoss': 'netIncomeLoss', 'NetCashProvidedByUsedInOperatingActivities': 'netCashProvidedByUsedInOperatingActivities', 'PurchasesOfPropertyAndEquipment': 'purchasesOfPropertyAndEquipment', 'WeightedAverageNumberOfDilutedSharesOutstanding': 'weightedAverageNumberOfDilutedSharesOutstanding' };
         acc[dateStr][keyMap[record.data_type] || record.data_type] = parseFloat(record.value);
         return acc;
@@ -691,10 +694,76 @@ exports.getPriceHistory = async (req, res) => {
     }
 };
 
+function calculateEMA_Series(data, period) {
+    if (!data || data.length < period) return Array(data ? data.length : 0).fill(NaN);
+    const k = 2 / (period + 1);
+    const emaArray = Array(data.length).fill(NaN);
+    let initialSMA = 0;
+    for (let i = 0; i < period; i++) initialSMA += data[i];
+    initialSMA /= period;
+    emaArray[period - 1] = initialSMA;
+    let prevEMA = initialSMA;
+    for (let i = period; i < data.length; i++) {
+        const currentEMA = data[i] * k + prevEMA * (1 - k);
+        emaArray[i] = currentEMA;
+        prevEMA = currentEMA;
+    }
+    return emaArray;
+}
+
+function calculateFullMACDSeries(closingPrices) {
+    const fastLength = 30;
+    const slowLength = 90;
+    const signalSmoothing = 9;
+
+    const pricesOnly = closingPrices.map(p => parseFloat(p.closing_price));
+    const fastEMAs = calculateEMA_Series(pricesOnly, fastLength);
+    const slowEMAs = calculateEMA_Series(pricesOnly, slowLength);
+
+    const macdLines = [];
+    for (let i = 0; i < pricesOnly.length; i++) {
+        if (i >= fastLength - 1 && i >= slowLength - 1 && !isNaN(fastEMAs[i]) && !isNaN(slowEMAs[i])) {
+            macdLines.push(fastEMAs[i] - slowEMAs[i]);
+        } else {
+            macdLines.push(null);
+        }
+    }
+
+    let signalLines = [];
+    const validMacdStartIndex = macdLines.findIndex(val => val !== null && !isNaN(val));
+    if (validMacdStartIndex !== -1) {
+        const validMacdLines = macdLines.slice(validMacdStartIndex);
+        const validSignalLines = calculateEMA_Series(validMacdLines, signalSmoothing);
+        signalLines = Array(validMacdStartIndex).fill(null).concat(validSignalLines.map(v => isNaN(v) ? null : v));
+    } else {
+        signalLines = Array(pricesOnly.length).fill(null);
+    }
+
+    return closingPrices.map((p, index) => ({
+        date: p.date,
+        closing_price: pricesOnly[index],
+        macdLine: macdLines[index] !== null ? Number(macdLines[index].toFixed(4)) : null,
+        signalLine: signalLines[index] !== null ? Number(signalLines[index].toFixed(4)) : null
+    }));
+}
+
 exports.getMACDHistory = async (req, res) => {
     const { stockId } = req.params;
     try {
         const pool = await sql.connect(dbConfig);
+        const pricesRes = await pool.request()
+            .input('stockId', sql.Int, stockId)
+            .query('SELECT date, closing_price FROM DailyClosingPrices WHERE aandeel_id = @stockId ORDER BY date ASC');
+
+        if (pricesRes.recordset.length >= 90) {
+            const series = calculateFullMACDSeries(pricesRes.recordset);
+            return res.status(200).json(series.map(s => ({
+                date: s.date,
+                macdLine: s.macdLine,
+                signalLine: s.signalLine
+            })));
+        }
+
         const result = await pool.request()
             .input('stockId', sql.Int, stockId)
             .query('SELECT date, macdLine, signalLine FROM MACDValues WHERE aandeel_id = @stockId ORDER BY date ASC');
@@ -715,10 +784,11 @@ exports.getMACDAlerts = async (req, res) => {
             .query(`
                 SELECT 
                     a.date, a.type_melding, a.signal_line_value, a.prijs_op_moment, a.trade_amount,
+                    CurrentCalc.selectiecriteria as score_on_date,
                     (CurrentCalc.waarde_verdeling - PrevCalc.waarde_verdeling) / NULLIF(PrevCalc.waarde_verdeling, 0) as diff_percentage
                 FROM MACDAlerts a
                 OUTER APPLY (
-                    SELECT TOP 1 sc.waarde_verdeling, sc.period_end_date
+                    SELECT TOP 1 sc.waarde_verdeling, sc.period_end_date, sc.selectiecriteria
                     FROM stock_calculations sc
                     WHERE sc.stock_id = a.aandeel_id AND sc.period_end_date <= a.date
                     ORDER BY sc.period_end_date DESC
@@ -730,6 +800,10 @@ exports.getMACDAlerts = async (req, res) => {
                     ORDER BY sc_prev.period_end_date DESC
                 ) as PrevCalc
                 WHERE a.aandeel_id = @stockId 
+                  AND (
+                    (a.type_melding = 'Koopsignaal' AND CurrentCalc.selectiecriteria = 5)
+                    OR (a.type_melding = 'Verkoopsignaal')
+                  )
                 ORDER BY a.date ASC
             `);
         if (canViewFormulas) {

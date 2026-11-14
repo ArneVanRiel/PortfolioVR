@@ -106,8 +106,8 @@ const AnalysisAlertsTab = ({ selectedStock, useSharedData = false, sharedAlerts 
 
     const filteredAlerts = useMemo(() => {
         return alerts.filter(alert => {
-            // STRATEGIE KOPEN: Verberg Koopsignalen als de signal line >= 0 is
-            if (alert.type_melding === 'Koopsignaal' && alert.signal_line_value >= 0) return false;
+            // STRATEGIE KOPEN: Verberg Koopsignalen als de signal line >= 0 is of als aandeel geen 5/5 score had
+            if (alert.type_melding === 'Koopsignaal' && (alert.signal_line_value >= 0 || (alert.score_on_date != null && alert.score_on_date < 5))) return false;
 
             // STRATEGIE VERKOPEN: Filter oude signalen (die nog een signal_line_value hebben)
             if (alert.type_melding === 'Verkoopsignaal' && alert.signal_line_value != null) return false;
@@ -124,7 +124,7 @@ const AnalysisAlertsTab = ({ selectedStock, useSharedData = false, sharedAlerts 
 
             return true;
         });
-    }, [alerts, alertTypeFilter, percentageFilter, stockContext]);
+    }, [alerts, alertTypeFilter, percentageFilter]);
 
     const sortedAlerts = useMemo(() => {
         let sorted = [...filteredAlerts];

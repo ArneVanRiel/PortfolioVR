@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import http from '../../http-common';
 
 const StrategyExplorerTab = ({ onSelectStrategyForBuilder }) => {
+  const navigate = useNavigate();
   const [strategies, setStrategies] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -221,12 +223,25 @@ const StrategyExplorerTab = ({ onSelectStrategyForBuilder }) => {
                     {strat.description || 'Geen uitgebreide beschrijving opgegeven.'}
                   </p>
 
-                  {/* Prestatie Kaartjes (Geen formules, enkel resultaten!) */}
-                  <div className="grid grid-cols-3 gap-2.5 p-3.5 bg-gray-50/80 rounded-xl border border-gray-200 mb-5">
+                  {/* Prestatie Kaartjes met XIRR (Geen formules, enkel resultaten!) */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 p-3.5 bg-gray-50/80 rounded-xl border border-gray-200 mb-5">
                     <div>
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">10-Jaars Rendement</div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400">Totaal Rendement</div>
                       <div className={`text-base font-black mt-0.5 ${isReturnPositive ? 'text-emerald-600' : 'text-red-600'}`}>
                         {perf.totalReturnPct != null ? `${perf.totalReturnPct >= 0 ? '+' : ''}${perf.totalReturnPct.toFixed(1)}%` : 'N.v.t.'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-500 flex items-center gap-1" title="Extended Internal Rate of Return (Geannualiseerd rendement per jaar)">
+                        <span>XIRR / Jaar</span>
+                        <i className="ph ph-info text-xs"></i>
+                      </div>
+                      <div className="text-base font-black text-indigo-700 mt-0.5">
+                        {perf.xirrPct != null 
+                          ? `${perf.xirrPct >= 0 ? '+' : ''}${perf.xirrPct.toFixed(1)}%` 
+                          : perf.cagrPct != null
+                          ? `${perf.cagrPct >= 0 ? '+' : ''}${perf.cagrPct.toFixed(1)}%`
+                          : (perf.totalReturnPct ? `+${((Math.pow(1 + perf.totalReturnPct / 100, 1 / 10.75) - 1) * 100).toFixed(1)}%` : '-')}
                       </div>
                     </div>
                     <div>
@@ -259,11 +274,17 @@ const StrategyExplorerTab = ({ onSelectStrategyForBuilder }) => {
                     {/* Bewerkknop enkel voor eigenaar of beheerder */}
                     {strat.can_view_details && (
                       <button
-                        onClick={() => onSelectStrategyForBuilder && onSelectStrategyForBuilder(strat)}
+                        onClick={() => {
+                          if (onSelectStrategyForBuilder) {
+                            onSelectStrategyForBuilder(strat);
+                          } else {
+                            navigate('/strategy-builder', { state: { strategyToEdit: strat } });
+                          }
+                        }}
                         className="px-3 py-2 bg-gray-100 hover:bg-gray-200 active:scale-95 text-gray-800 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
                         title="Open en bewerk deze strategie in de Strategie Builder"
                       >
-                        <i className="ph-bold ph-pencil-simple"></i>
+                        <i className="ph-bold ph-sliders-horizontal text-blue-600"></i>
                         <span>Bewerken</span>
                       </button>
                     )}
