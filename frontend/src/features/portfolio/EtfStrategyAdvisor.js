@@ -195,6 +195,25 @@ const EtfStrategyAdvisor = () => {
 
   return (
     <div className="space-y-3 sm:space-y-6 animate-fade-in">
+      {/* ACTIEVE ETF STRATEGIE BANNER */}
+      <div className="bg-gradient-to-r from-slate-900 via-emerald-950 to-slate-900 text-white rounded-2xl p-4 sm:p-5 shadow-md border border-emerald-500/30 flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black bg-gradient-to-r from-emerald-400 to-teal-300 text-slate-950 shadow-sm">
+              📈 Gekoppelde ETF Strategie: {data?.activeStrategyConfig?.name || "Arne ETF DCA & MACD Dip-Buy (€450/mnd • 4 Kern-ETF's)"}
+            </span>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-200 border border-emerald-400/30">
+              💰 Inleg: Vast bedrag (€{data?.activeStrategyConfig?.monthlyBudget || monthlyBudgetInput}/mnd = €{((data?.activeStrategyConfig?.monthlyBudget || monthlyBudgetInput) / 30).toFixed(2)}/dag)
+            </span>
+            <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-teal-500/20 text-teal-200 border border-teal-400/30">
+              🔒 Verkopen: {data?.activeStrategyConfig?.allowSelling === 'full_strategy' ? 'Herbalanceren toegestaan' : 'Nee, 100% Buy & Hold'}
+            </span>
+          </div>
+          <p className="text-xs text-slate-300 leading-relaxed max-w-3xl">
+            {data?.activeStrategyConfig?.description || "Bouwt dagelijks een vaste DCA-spaarpot op verdeeld over de 4 kern-ETF's (70% VGWL, 12% VUSA, 10% VGWD, 8% SPYM) en koopt uitsluitend bij een MACD Golden Cross onder de 0-lijn."}
+          </p>
+        </div>
+      </div>
       
       {/* 1. HOOFD STATISTIEKEN BANNER (4 KPI KAARTEN - Identiek aan Losse Aandelen) */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4">
@@ -568,6 +587,9 @@ const EtfStrategyAdvisor = () => {
                                 ⚡ Actie Vereist
                               </span>
                             )}
+                            <span className="text-[10px] font-extrabold px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200" title="Gekoppelde ETF-strategie">
+                              📈 {item.strategyName || data?.activeStrategyConfig?.name || "Arne ETF DCA (€450/mnd)"}
+                            </span>
                             <span className="text-xs text-gray-500 font-medium truncate max-w-[200px]" title={item.name}>
                               {item.name}
                             </span>

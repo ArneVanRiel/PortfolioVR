@@ -12,16 +12,17 @@ const { getEffectiveUserId, isAdminUser, buildUserPermissions } = require('../mi
 const lastCheckedTimeByStock = new Map();
 let isCheckRunning = false;
 
-// Bepaal of er een concrete actie vereist is naar aanleiding van nieuwe kwartaalcijfers
-const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, fy, reportDate) => {
+// Bepaal of er een concrete actie vereist is naar aanleiding van nieuwe kwartaalcijfers VOOR EEN SPECIFIEKE GEBRUIKER
+const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, fy, reportDate, userId = 1, allowSelling = 'full_strategy', strategyName = 'Huidige Live Strategie') => {
     try {
-        // 1. Controleer of de gebruiker aandelen bezit van dit fonds
+        // 1. Controleer of deze gebruiker aandelen bezit van dit fonds
         const txRes = await pool.request()
             .input('stock_id', sql.Int, stockId)
+            .input('user_id', sql.Int, userId)
             .query(`
                 SELECT ISNULL(SUM(CASE WHEN transaction_type = 'BUY' THEN quantity WHEN transaction_type = 'SELL' THEN -quantity ELSE 0 END), 0) AS shares_owned
                 FROM PF_transactions
-                WHERE aandeel_id = @stock_id
+                WHERE aandeel_id = @stock_id AND ISNULL(user_id, 1) = @user_id
             `);
         const sharesOwned = parseFloat(txRes.recordset[0]?.shares_owned || 0);
         const isOwned = sharesOwned > 0.0001;
@@ -46,6 +47,18 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
         const dateSuffix = reportDate ? `, eindigend op ${reportDate}` : '';
 
         if (isOwned) {
+            // Als de gebruiker 'buy_only' (nooit verkopen) heeft ingesteld:
+            if (allowSelling === 'buy_only') {
+                return {
+                    action_required: false,
+                    action_type: 'HOLD',
+                    action_shares: 0,
+                    action_pct: 0,
+                    action_title: '✅ Positie Behouden (100% Buy & Hold)',
+                    message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n✅ Positie Behouden: Score ${curScore}/5, Waardeverdeling ${curWv !== null ? curWv.toFixed(2) + '%' : '-'}. Verkoopregels zijn uitgeschakeld conform jouw 100% Buy & Hold instelling.`
+                };
+            }
+
             // Aandeel in portefeuille: check score < 5 of daling waardeverdeling
             if (curScore !== null && curScore < 5) {
                 const actionShares = Math.round(sharesOwned * 100) / 100;
@@ -55,17 +68,16 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
                     action_shares: actionShares,
                     action_pct: 100,
                     action_title: '🔴 Volledige Verkoop Vereist (Score < 5)',
-                    message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop 100% (${actionShares} stuks)\nReden: Kwaliteit gedaald naar score ${curScore}/5 (voldoet niet meer aan Super-Kwaliteit criteria).`
+                    message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop 100% (${actionShares} stuks)\nReden: Kwaliteit gedaald naar score ${curScore}/5 (voldoet niet meer aan Super-Kwaliteit criteria).`
                 };
             }
 
-            if (prevWv !== null && curWv !== null && curWv < prevWv && prevWv > 0) {
-                const absDiff = curWv - prevWv; // bv. -0.02 of -0.15
+            if (allowSelling === 'full_strategy' && prevWv !== null && curWv !== null && curWv < prevWv && prevWv > 0) {
+                const absDiff = curWv - prevWv;
                 const dropPct = ((prevWv - curWv) / prevWv) * 100;
                 const roundedDropPct = Math.round(dropPct * 10) / 10;
                 const rawShares = Math.round((sharesOwned * (dropPct / 100)) * 100) / 100;
 
-                // Haal huidige koers en wisselkoers op om EUR verkoopbedrag te bepalen
                 let priceInEur = 0;
                 try {
                     const priceRes = await pool.request()
@@ -97,10 +109,6 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
 
                 const rawSellAmountEur = rawShares * priceInEur;
 
-                // STRATEGIE REGEL VOOR DEELVERKOPEN:
-                // 1. < €50: NIET VERKOPEN (onevenredige transactiekosten)
-                // 2. €50 - €100: Afronden naar €100
-                // 3. >= €100: Normaal voorgesteld bedrag
                 if (rawSellAmountEur < 50) {
                     return {
                         action_required: false,
@@ -108,7 +116,7 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
                         action_shares: 0,
                         action_pct: 0,
                         action_title: '🟡 Deelverkoop Te Klein (< €50: Niet Verkopen)',
-                        message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n🟡 GEEN VERKOOP VEREIST: Waardeverdeling licht gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%).\nHet berekende verkoopbedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< minimum drempel van € 50).\nNiet verkopen wegens onevenredige transactiekosten. Score: ${curScore}/5. Positie behouden.`
+                        message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n🟡 GEEN VERKOOP VEREIST: Waardeverdeling licht gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%).\nHet berekende verkoopbedrag is slechts € ${rawSellAmountEur.toFixed(2)} (< minimum drempel van € 50).\nNiet verkopen wegens onevenredige transactiekosten. Score: ${curScore}/5. Positie behouden.`
                     };
                 } else if (rawSellAmountEur >= 50 && rawSellAmountEur < 100) {
                     const effectiveAmountEur = 100;
@@ -120,17 +128,16 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
                         action_shares: effectiveShares,
                         action_pct: effectivePct,
                         action_title: '🔴 Deelverkoop Vereist (Afgerond naar €100)',
-                        message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${effectiveShares} stuks (€ 100,00)\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100. Score ${curScore}/5.`
+                        message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${effectiveShares} stuks (€ 100,00)\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%). Oorspronkelijk voorstel was € ${rawSellAmountEur.toFixed(2)}, afgerond naar minimum effectieve ordergrootte van € 100. Score ${curScore}/5.`
                     };
                 } else {
-                    // >= €100
                     return {
                         action_required: true,
                         action_type: 'MANDATORY_PARTIAL_SELL_WV',
                         action_shares: rawShares,
                         action_pct: roundedDropPct,
                         action_title: `🔴 Deelverkoop Vereist (-${roundedDropPct}%)`,
-                        message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${rawShares} stuks (-${roundedDropPct}% = € ${rawSellAmountEur.toFixed(2)})\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%). Score ${curScore}/5.`
+                        message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n⚡ ACTIE VEREIST: Verkoop ${rawShares} stuks (-${roundedDropPct}% = € ${rawSellAmountEur.toFixed(2)})\nReden: Waardeverdeling gedaald van ${prevWv.toFixed(2)}% naar ${curWv.toFixed(2)}% (${absDiff.toFixed(2)}% verschil, -${roundedDropPct}%). Score ${curScore}/5.`
                     };
                 }
             }
@@ -155,10 +162,9 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
                 action_shares: 0,
                 action_pct: 0,
                 action_title: '✅ Positie Behouden',
-                message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n✅ Positie Behouden: Score ${curScore}/5. ${wvExplanation} Geen verkoopactie nodig.`
+                message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n✅ Positie Behouden: Score ${curScore}/5. ${wvExplanation} Geen verkoopactie nodig.`
             };
         } else {
-            // Watchlist / universum aandeel (niet in portefeuille)
             let changeText = '';
             if (prevWv !== null && curWv !== null) {
                 const diff = curWv - prevWv;
@@ -171,7 +177,7 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
                 action_shares: 0,
                 action_pct: 0,
                 action_title: '👁️ Watchlist',
-                message: `Nieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n👁️ Watchlist: Score ${curScore ?? '-'}/5, Waardeverdeling ${curWv ? curWv.toFixed(2) + '%' : '-'} ${changeText}. Geen positie in portefeuille.`
+                message: `[Strategie: ${strategyName}]\nNieuwe cijfers (${quarterLabel} ${fy}${dateSuffix}) berekend voor ${ticker}.\n\n👁️ Watchlist: Score ${curScore ?? '-'}/5, Waardeverdeling ${curWv ? curWv.toFixed(2) + '%' : '-'} ${changeText}. Geen positie in portefeuille.`
             };
         }
     } catch (err) {
@@ -182,7 +188,7 @@ const determineStockQuarterAction = async (pool, stockId, ticker, quarterLabel, 
             action_shares: 0,
             action_pct: 0,
             action_title: 'Nieuwe Kwartaalcijfers',
-            message: `Nieuwe cijfers (${quarterLabel} ${fy}) geïmporteerd & berekend voor ${ticker}!`
+            message: `[Strategie: ${strategyName}] Nieuwe cijfers (${quarterLabel} ${fy}) geïmporteerd & berekend voor ${ticker}!`
         };
     }
 };
@@ -200,8 +206,6 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
     try {
         const pool = await sql.connect(config);
 
-        // 1. Haal alle relevante aandelen op (Watchlist, Ideale Portfolio, Huidige Portefeuille)
-        // Sluit ETF's en Europese beurzen (.AS, .DE) uit
         const stocksResult = await pool.request().query(`
             SELECT DISTINCT s.aandeel_id, s.ticker_symbol, s.name 
             FROM Stocks s 
@@ -215,13 +219,25 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
         `);
         const stocks = stocksResult.recordset;
 
+        // Haal actieve gebruikers + hun gekoppelde losse aandelen strategie op voor persoonlijke SEC-meldingen
+        const usersRes = await pool.request().query(`
+            SELECT 
+                u.id, u.role, u.strategy_mode, u.permissions,
+                ISNULL(u.active_strategy_id, 1) AS active_strategy_id,
+                ISNULL(u.stocks_allow_selling, 'full_strategy') AS stocks_allow_selling,
+                ISNULL(s.name, 'Huidige Live Strategie Arne (5/5 Kwaliteit & Waardeverdeling)') AS strategy_name
+            FROM PF_Users u
+            LEFT JOIN PF_Strategies s ON ISNULL(u.active_strategy_id, 1) = s.strategy_id
+            WHERE ISNULL(u.is_active, 1) = 1
+        `);
+        const activeUsers = usersRes.recordset || [];
+
         const now = Date.now();
         const FOUR_HOURS_MS = 4 * 60 * 60 * 1000;
 
         for (const stock of stocks) {
             const { aandeel_id, ticker_symbol } = stock;
 
-            // Debounce: als aandeel in de afgelopen 4 uur al is gecheckt en niet geforceerd, sla over
             if (!force && lastCheckedTimeByStock.has(ticker_symbol)) {
                 const lastTime = lastCheckedTimeByStock.get(ticker_symbol);
                 if (now - lastTime < FOUR_HOURS_MS) {
@@ -229,7 +245,6 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
                 }
             }
 
-            // 2. Haal de laatste period_end_date op uit fundamental_data
             const latestDataQuery = await pool.request()
                 .input('stock_id', sql.Int, aandeel_id)
                 .query(`
@@ -245,8 +260,6 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
             if (!CIK) continue;
 
             lastCheckedTimeByStock.set(ticker_symbol, now);
-
-            // Rate limit bescherming voor SEC API (max 10 calls/sec)
             await new Promise(r => setTimeout(r, 120));
 
             let secResponse;
@@ -266,10 +279,9 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
             for (let i = 0; i < filings.form.length; i++) {
                 const form = filings.form[i];
                 if (form === '10-Q' || form === '10-K') {
-                    const reportDate = filings.reportDate[i]; // Periode einddatum (bv. 2026-09-30)
-                    const filingDate = filings.filingDate[i]; // Datum van indiening (bv. 2026-10-22)
+                    const reportDate = filings.reportDate[i];
+                    const filingDate = filings.filingDate[i];
 
-                    // Check of deze filing nieuwer is dan onze database
                     if (!lastPeriodEndDateStr || reportDate > lastPeriodEndDateStr) {
                         const reportDateObj = new Date(reportDate);
                         const fy = reportDateObj.getFullYear();
@@ -286,55 +298,64 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
                         console.log(`[Auto-SEC] 🚀 Nieuwe ${form} filing gedetecteerd voor ${ticker_symbol} (${quarterLabel} ${fy}, eindigend op ${reportDate}, ingediend op ${filingDate})!`);
 
                         try {
-                            // 1. Download financiële facts van SEC
                             const financialData = await getFinancialData(CIK);
-
-                            // 2. Verwerk financiële data
                             const allProcessed = processFinancialData(financialData, ticker_symbol);
-
-                            // 3. Filter voor deze nieuwe periode
                             const newQuarterData = allProcessed.filter(d => d.period_end_date && d.period_end_date.startsWith(reportDate));
 
                             if (newQuarterData.length > 0) {
-                                // Sla exacte filingDate als report_date op!
                                 newQuarterData.forEach(d => { d.report_date = filingDate; });
-
-                                // 4. Sla op in fundamental_data
                                 await saveProcessedDataToDb(aandeel_id, newQuarterData);
-
-                                // 5. Volledige 10-jaar kwartaalberekeningen & Waardeverdeling synchroniseren in stock_calculations
                                 await calculateAndSaveStockHistory(aandeel_id, ticker_symbol);
 
                                 console.log(`[Auto-SEC] ✅ ${newQuarterData.length} datapunten opgeslagen & berekend voor ${ticker_symbol} (${quarterLabel} ${fy})!`);
 
-                                // 6. Notificatie toevoegen met concrete actieberekening (verkoop / behouden / watchlist)
-                                const actionInfo = await determineStockQuarterAction(pool, aandeel_id, ticker_symbol, quarterLabel, fy, reportDate);
+                                // 6. Persoonlijke notificaties per actieve gebruiker met diens strategie
+                                for (const u of activeUsers) {
+                                    const perms = buildUserPermissions(u.role, u.strategy_mode, u.permissions, u.id);
+                                    if (!perms.canReceiveStrategyAlerts) continue;
 
-                                await pool.request()
-                                    .input('stock_id', sql.Int, aandeel_id)
-                                    .input('ticker', sql.NVarChar, ticker_symbol)
-                                    .input('message', sql.NVarChar, actionInfo.message)
-                                    .input('new_quarter', sql.NVarChar, form)
-                                    .input('new_year', sql.Int, fy)
-                                    .input('action_required', sql.Bit, actionInfo.action_required ? 1 : 0)
-                                    .input('action_type', sql.NVarChar, actionInfo.action_type)
-                                    .input('action_shares', sql.Float, actionInfo.action_shares)
-                                    .input('action_pct', sql.Float, actionInfo.action_pct)
-                                    .input('action_title', sql.NVarChar, actionInfo.action_title)
-                                    .query(`
-                                        INSERT INTO PF_Notifications 
-                                        (stock_id, ticker, message, is_read, new_quarter, new_year, action_required, action_type, action_shares, action_pct, action_title)
-                                        VALUES 
-                                        (@stock_id, @ticker, @message, 0, @new_quarter, @new_year, @action_required, @action_type, @action_shares, @action_pct, @action_title)
-                                    `);
+                                    const actionInfo = await determineStockQuarterAction(
+                                        pool,
+                                        aandeel_id,
+                                        ticker_symbol,
+                                        quarterLabel,
+                                        fy,
+                                        reportDate,
+                                        u.id,
+                                        u.stocks_allow_selling,
+                                        u.strategy_name
+                                    );
 
-                                updatedStocks.push({ ticker: ticker_symbol, form, quarterLabel, fy, reportDate, filingDate, actionInfo });
+                                    await pool.request()
+                                        .input('user_id', sql.Int, u.id)
+                                        .input('stock_id', sql.Int, aandeel_id)
+                                        .input('ticker', sql.NVarChar, ticker_symbol)
+                                        .input('message', sql.NVarChar, actionInfo.message)
+                                        .input('new_quarter', sql.NVarChar, form)
+                                        .input('new_year', sql.Int, fy)
+                                        .input('action_required', sql.Bit, actionInfo.action_required ? 1 : 0)
+                                        .input('action_type', sql.NVarChar, actionInfo.action_type)
+                                        .input('action_shares', sql.Float, actionInfo.action_shares)
+                                        .input('action_pct', sql.Float, actionInfo.action_pct)
+                                        .input('action_title', sql.NVarChar, actionInfo.action_title)
+                                        .input('strategy_id', sql.Int, u.active_strategy_id)
+                                        .input('strategy_name', sql.NVarChar, u.strategy_name)
+                                        .input('strategy_type', sql.VarChar, 'STOCKS')
+                                        .query(`
+                                            INSERT INTO PF_Notifications 
+                                            (user_id, stock_id, ticker, message, is_read, new_quarter, new_year, action_required, action_type, action_shares, action_pct, action_title, strategy_id, strategy_name, strategy_type)
+                                            VALUES 
+                                            (@user_id, @stock_id, @ticker, @message, 0, @new_quarter, @new_year, @action_required, @action_type, @action_shares, @action_pct, @action_title, @strategy_id, @strategy_name, @strategy_type)
+                                        `);
+                                }
+
+                                updatedStocks.push({ ticker: ticker_symbol, form, quarterLabel, fy, reportDate, filingDate });
                             }
                         } catch (importErr) {
                             console.error(`[Auto-SEC] Fout bij importeren van facts voor ${ticker_symbol}:`, importErr.message);
                         }
 
-                        break; // Enkel de meest recente filing verwerken
+                        break;
                     }
                 }
             }
@@ -357,10 +378,8 @@ const checkNewSecQuarters = async ({ force = false } = {}) => {
     }
 };
 
-// Synchroniseer actieve koopkansen (zowel losse kwaliteitsaandelen als ETF DCA) naar PF_Notifications
-// Zorgt voor 100% consistentie met de Tijdlijn & Strategie tabbladen:
-// - Losse aandelen: Uitsluitend als er echt gekocht moet worden (Score 5/5, koers <= 1.05x intrinsiek, WV niet gedaald, streefdoel NIET bereikt, actie stuks > 0).
-// - ETF DCA: Uitsluitend als er een valide MACD signaal is met opgebouwde pot en aankoop nog niet is uitgevoerd.
+// Synchroniseer actieve koop- en verkoopkansen (zowel losse kwaliteitsaandelen als ETF DCA) naar PF_Notifications VOOR EEN GEBRUIKER
+// BEWAART ALTIJD MELDINGEN VAN VORIGE STRATEGIEËN (verwijdert nooit meldingen met een ander strategy_id of STRATEGY_SWITCH)!
 const strategySyncRunningUsers = new Set();
 const lastStrategySyncByUser = new Map();
 const STRATEGY_SYNC_COOLDOWN_MS = 15 * 60 * 1000; // 15 minuten
@@ -374,136 +393,268 @@ const syncActiveStrategyAlerts = async (pool, userId = 1, { force = false } = {}
     try {
         lastStrategySyncByUser.set(uid, Date.now());
 
-        // Controleer of deze gebruiker strategie-meldingen mag/wil ontvangen
+        // Controleer de strategie-instellingen en rechten van deze gebruiker
         const userRes = await pool.request()
             .input('uid', sql.Int, uid)
-            .query('SELECT id, role, strategy_mode, permissions FROM PF_Users WHERE id = @uid');
+            .query(`
+                SELECT 
+                    u.id, u.role, u.strategy_mode, u.permissions,
+                    ISNULL(u.active_strategy_id, 1) AS active_strategy_id,
+                    ISNULL(s1.name, 'Huidige Live Strategie Arne (5/5 Kwaliteit & Waardeverdeling)') AS stock_strategy_name,
+                    ISNULL(u.stocks_funding_mode, 'available_cash') AS stocks_funding_mode,
+                    ISNULL(u.stocks_monthly_budget, 500) AS stocks_monthly_budget,
+                    ISNULL(u.stocks_allow_selling, 'full_strategy') AS stocks_allow_selling,
+                    ISNULL(u.active_etf_strategy_id, 2) AS active_etf_strategy_id,
+                    ISNULL(s2.name, 'Arne ETF DCA & MACD Dip-Buy (€450/mnd • 4 Kern-ETF''s)') AS etf_strategy_name,
+                    ISNULL(u.etf_funding_mode, 'monthly_amount') AS etf_funding_mode,
+                    ISNULL(u.etf_monthly_budget, 450) AS etf_monthly_budget,
+                    ISNULL(u.etf_allow_selling, 'buy_only') AS etf_allow_selling
+                FROM PF_Users u
+                LEFT JOIN PF_Strategies s1 ON ISNULL(u.active_strategy_id, 1) = s1.strategy_id
+                LEFT JOIN PF_Strategies s2 ON ISNULL(u.active_etf_strategy_id, 2) = s2.strategy_id
+                WHERE u.id = @uid
+            `);
         const userRow = userRes.recordset[0];
-        if (userRow) {
-            const perms = buildUserPermissions(userRow.role, userRow.strategy_mode, userRow.permissions, userRow.id);
-            if (!perms.canReceiveStrategyAlerts) {
-                await pool.request()
-                    .input('user_id', sql.Int, uid)
-                    .query('DELETE FROM PF_Notifications WHERE user_id = @user_id AND action_required = 1');
-                return;
+        if (!userRow) return;
+
+        const perms = buildUserPermissions(userRow.role, userRow.strategy_mode, userRow.permissions, userRow.id);
+        if (!perms.canReceiveStrategyAlerts) {
+            return;
+        }
+
+        const activeStratsRes = await pool.request()
+            .input('uid', sql.Int, uid)
+            .query(`
+                SELECT ua.strategy_id, ua.priority_order, ua.funding_mode, ua.monthly_budget, ua.allow_selling,
+                       s.name AS strategy_name, ISNULL(s.strategy_type, 'STOCKS') AS strategy_type
+                FROM PF_UserActiveStrategies ua
+                INNER JOIN PF_Strategies s ON ua.strategy_id = s.strategy_id
+                WHERE ua.user_id = @uid
+                ORDER BY ua.priority_order ASC
+            `);
+        const activeStrats = activeStratsRes.recordset || [];
+        const activeStockStrats = activeStrats.filter(s => (s.strategy_type || 'STOCKS').toUpperCase() === 'STOCKS');
+        const activeEtfStrats = activeStrats.filter(s => (s.strategy_type || 'STOCKS').toUpperCase() === 'ETF');
+
+        // 1. LOSSE AANDELEN KOOPKANSEN & VERKOOPMELDINGEN (voor elke actieve aandelenstrategie van deze gebruiker)
+        if (activeStockStrats.length > 0) {
+            let stockTimeline = [];
+            let stockAlerts = [];
+            try {
+                const stocksAdvisor = await calculateStrategyAdvisorInternal(uid, { forceRefresh: false });
+                stockTimeline = stocksAdvisor?.timeline || [];
+                stockAlerts = stocksAdvisor?.dataDrivenAlerts || [];
+            } catch (e) {
+                console.warn('[NotificationSync] Kon Strategy Advisor data niet ophalen:', e.message);
+            }
+
+            const activeStockBuys = stockTimeline.filter(item =>
+                item.status === 'OPEN_OPPORTUNITY' &&
+                !item.isCautionStock &&
+                !item.isTargetReached &&
+                (Number(item.shares) > 0 || Number(item.actionShares) > 0)
+            );
+            const activeStockTickers = activeStockBuys.map(b => b.ticker);
+
+            for (const stockStrat of activeStockStrats) {
+                const stockStrategyId = stockStrat.strategy_id;
+                const stockStrategyName = stockStrat.strategy_name;
+                const fundingTextStocks = stockStrat.funding_mode === 'monthly_amount'
+                    ? `Vast maandbedrag (€${Number(stockStrat.monthly_budget || 500).toFixed(0)}/mnd)`
+                    : 'Vrij beschikbaar geld';
+
+                if (activeStockTickers.length > 0) {
+                    const tickerListStr = activeStockTickers.map(t => "'" + t + "'").join(',');
+                    await pool.request()
+                        .input('user_id', sql.Int, uid)
+                        .input('strat_id', sql.Int, stockStrategyId)
+                        .query(
+                            "DELETE FROM PF_Notifications WHERE user_id = @user_id AND strategy_id = @strat_id AND action_type IN ('BUY_OPPORTUNITY', 'BUY_OPPORTUNITY_TARGET_REACHED') AND ticker NOT IN (" + tickerListStr + ")"
+                        );
+                } else {
+                    await pool.request()
+                        .input('user_id', sql.Int, uid)
+                        .input('strat_id', sql.Int, stockStrategyId)
+                        .query(
+                            "DELETE FROM PF_Notifications WHERE user_id = @user_id AND strategy_id = @strat_id AND action_type IN ('BUY_OPPORTUNITY', 'BUY_OPPORTUNITY_TARGET_REACHED')"
+                        );
+                }
+
+                for (const buy of activeStockBuys) {
+                    const notifExists = await pool.request()
+                        .input('user_id', sql.Int, uid)
+                        .input('stock_id', sql.Int, buy.stockId)
+                        .input('strat_id', sql.Int, stockStrategyId)
+                        .input('alert_pattern', sql.NVarChar, '%' + buy.date + '%')
+                        .query('SELECT id FROM PF_Notifications WHERE user_id = @user_id AND stock_id = @stock_id AND strategy_id = @strat_id AND action_type = \'BUY_OPPORTUNITY\' AND message LIKE @alert_pattern');
+
+                    if (notifExists.recordset.length === 0) {
+                        const totalValEur = buy.totalAmount || (buy.shares * buy.signalPrice);
+                        const message = `[Prioriteit #${stockStrat.priority_order} • ${stockStrategyName}]\nMACD Koopsignaal gedetecteerd voor ${buy.ticker} (signaal van ${buy.date}).\n\n⚡ ACTIE VEREIST: Koop ${buy.shares} stuks (à ca. € ${buy.signalPrice.toFixed(2)} = € ${totalValEur.toFixed(2)}).\nInlegmodus: ${fundingTextStocks}.`;
+
+                        await pool.request()
+                            .input('user_id', sql.Int, uid)
+                            .input('stock_id', sql.Int, buy.stockId)
+                            .input('ticker', sql.NVarChar, buy.ticker)
+                            .input('message', sql.NVarChar, message)
+                            .input('action_required', sql.Bit, 1)
+                            .input('action_type', sql.NVarChar, 'BUY_OPPORTUNITY')
+                            .input('action_shares', sql.Float, buy.shares)
+                            .input('action_pct', sql.Float, 0)
+                            .input('action_title', sql.NVarChar, `🟢 Koopkans (Prio #${stockStrat.priority_order}: ${stockStrategyName})`)
+                            .input('strategy_id', sql.Int, stockStrategyId)
+                            .input('strategy_name', sql.NVarChar, stockStrategyName)
+                            .input('strategy_type', sql.VarChar, 'STOCKS')
+                            .query(`
+                                INSERT INTO PF_Notifications 
+                                (user_id, stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, strategy_id, strategy_name, strategy_type, created_at) 
+                                VALUES 
+                                (@user_id, @stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, @strategy_id, @strategy_name, @strategy_type, GETDATE())
+                            `);
+                    }
+                }
+
+                if (stockStrat.allow_selling !== 'buy_only') {
+                    const activeSells = stockAlerts.filter(a => a.signalType === 'Verkoopsignaal' && !a.isFromOldStrategy && Number(a.shares) > 0);
+                    for (const sell of activeSells) {
+                        if (stockStrat.allow_selling === 'score_drop_only' && sell.fundamentalScore >= 5) continue;
+                        const sellExists = await pool.request()
+                            .input('user_id', sql.Int, uid)
+                            .input('ticker', sql.NVarChar, sell.ticker)
+                            .input('strat_id', sql.Int, stockStrategyId)
+                            .input('date_pat', sql.NVarChar, '%' + sell.date + '%')
+                            .query(`
+                                SELECT id FROM PF_Notifications 
+                                WHERE user_id = @user_id AND ticker = @ticker AND strategy_id = @strat_id 
+                                  AND action_type IN ('MANDATORY_SELL_SCORE', 'MANDATORY_PARTIAL_SELL_WV')
+                                  AND message LIKE @date_pat
+                            `);
+                        if (sellExists.recordset.length === 0) {
+                            const isFull = sell.fundamentalScore < 5;
+                            const actType = isFull ? 'MANDATORY_SELL_SCORE' : 'MANDATORY_PARTIAL_SELL_WV';
+                            const actPct = sell.totalOwnedShares > 0 ? Math.round((sell.shares / sell.totalOwnedShares) * 1000) / 10 : 100;
+                            const sellMsg = `[Prioriteit #${stockStrat.priority_order} • ${stockStrategyName}]\nVerkoopsignaal voor ${sell.ticker} (rapportagedatum ${sell.date}).\n\n⚡ ACTIE VEREIST: Verkoop ${sell.shares} stuks (ca. € ${(sell.amountEur || 0).toFixed(2)}).\n${sell.fundingSource?.message || ''}`;
+
+                            await pool.request()
+                                .input('user_id', sql.Int, uid)
+                                .input('stock_id', sql.Int, sell.stockId || null)
+                                .input('ticker', sql.NVarChar, sell.ticker)
+                                .input('message', sql.NVarChar, sellMsg)
+                                .input('action_required', sql.Bit, 1)
+                                .input('action_type', sql.NVarChar, actType)
+                                .input('action_shares', sql.Float, sell.shares)
+                                .input('action_pct', sql.Float, actPct)
+                                .input('action_title', sql.NVarChar, sell.actionBadge || '🔴 Verkoop Vereist')
+                                .input('strategy_id', sql.Int, stockStrategyId)
+                                .input('strategy_name', sql.NVarChar, stockStrategyName)
+                                .input('strategy_type', sql.VarChar, 'STOCKS')
+                                .query(`
+                                    INSERT INTO PF_Notifications 
+                                    (user_id, stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, strategy_id, strategy_name, strategy_type, created_at) 
+                                    VALUES 
+                                    (@user_id, @stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, @strategy_id, @strategy_name, @strategy_type, GETDATE())
+                                `);
+                        }
+                    }
+                }
             }
         }
 
-        // 1. LOSSE AANDELEN KOOPKANSEN
-        let stockTimeline = [];
-        try {
-            const stocksAdvisor = await calculateStrategyAdvisorInternal(uid, { forceRefresh: false });
-            stockTimeline = stocksAdvisor?.timeline || [];
-        } catch (e) {
-            console.warn('[NotificationSync] Kon Strategy Advisor data niet ophalen:', e.message);
-        }
-
-        const activeStockBuys = stockTimeline.filter(item =>
-            item.status === 'OPEN_OPPORTUNITY' &&
-            !item.isCautionStock &&
-            !item.isTargetReached &&
-            (Number(item.shares) > 0 || Number(item.actionShares) > 0)
-        );
-
-        const activeStockTickers = activeStockBuys.map(b => b.ticker);
-        if (activeStockTickers.length > 0) {
-            const tickerListStr = activeStockTickers.map(t => "'" + t + "'").join(',');
-            await pool.request()
-                .input('user_id', sql.Int, uid)
-                .query(
-                    "DELETE FROM PF_Notifications WHERE user_id = @user_id AND action_type IN ('BUY_OPPORTUNITY', 'BUY_OPPORTUNITY_TARGET_REACHED') AND ticker NOT IN (" + tickerListStr + ")"
-                );
-        } else {
-            await pool.request()
-                .input('user_id', sql.Int, uid)
-                .query(
-                    "DELETE FROM PF_Notifications WHERE user_id = @user_id AND action_type IN ('BUY_OPPORTUNITY', 'BUY_OPPORTUNITY_TARGET_REACHED')"
-                );
-        }
-
-        for (const buy of activeStockBuys) {
-            const notifExists = await pool.request()
-                .input('user_id', sql.Int, uid)
-                .input('stock_id', sql.Int, buy.stockId)
-                .input('alert_pattern', sql.NVarChar, '%' + buy.date + '%')
-                .query('SELECT id FROM PF_Notifications WHERE user_id = @user_id AND stock_id = @stock_id AND action_type = \'BUY_OPPORTUNITY\' AND message LIKE @alert_pattern');
-
-            if (notifExists.recordset.length === 0) {
-                const totalValEur = buy.totalAmount || (buy.shares * buy.signalPrice);
-                const message = 'MACD Koopsignaal gedetecteerd voor ' + buy.ticker + ' (signaal van ' + buy.date + ').\n\n⚡ ACTIE VEREIST: Koop ' + buy.shares + ' stuks (à ca. € ' + buy.signalPrice.toFixed(2) + ' = € ' + totalValEur.toFixed(2) + ').\nConform het geselecteerde strategie- en allocatiemodel.';
-
-                await pool.request()
-                    .input('user_id', sql.Int, uid)
-                    .input('stock_id', sql.Int, buy.stockId)
-                    .input('ticker', sql.NVarChar, buy.ticker)
-                    .input('message', sql.NVarChar, message)
-                    .input('action_required', sql.Bit, 1)
-                    .input('action_type', sql.NVarChar, 'BUY_OPPORTUNITY')
-                    .input('action_shares', sql.Float, buy.shares)
-                    .input('action_pct', sql.Float, 0)
-                    .input('action_title', sql.NVarChar, '🟢 Koopkans (Strategie)')
-                    .query('INSERT INTO PF_Notifications (user_id, stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, created_at) VALUES (@user_id, @stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, GETDATE())');
+        // 2. ETF DCA KOOPKANSEN (enkel indien de gebruiker tenminste 1 actieve ETF strategie heeft!)
+        if (activeEtfStrats.length > 0) {
+            let etfTimeline = [];
+            try {
+                const etfAdvisor = await calculateEtfStrategyInternal(uid, { forceRefresh: false });
+                etfTimeline = etfAdvisor?.timeline || [];
+            } catch (e) {
+                console.warn('[NotificationSync] Kon ETF Strategie data niet ophalen:', e.message);
             }
-        }
 
-        // 2. ETF DCA KOOPKANSEN
-        let etfTimeline = [];
-        try {
-            const etfAdvisor = await calculateEtfStrategyInternal(uid, { forceRefresh: false });
-            etfTimeline = etfAdvisor?.timeline || [];
-        } catch (e) {
-            console.warn('[NotificationSync] Kon ETF Strategie data niet ophalen:', e.message);
-        }
+            const activeEtfBuys = etfTimeline.filter(item =>
+                item.status === 'OPEN_OPPORTUNITY' &&
+                (Number(item.shares) >= 1 || Number(item.actionShares) >= 1)
+            );
+            const activeEtfTickers = activeEtfBuys.map(b => b.ticker);
 
-        const activeEtfBuys = etfTimeline.filter(item =>
-            item.status === 'OPEN_OPPORTUNITY' &&
-            (Number(item.shares) >= 1 || Number(item.actionShares) >= 1)
-        );
+            for (const etfStrat of activeEtfStrats) {
+                const etfStrategyId = etfStrat.strategy_id;
+                const etfStrategyName = etfStrat.strategy_name;
 
-        const activeEtfTickers = activeEtfBuys.map(b => b.ticker);
-        if (activeEtfTickers.length > 0) {
-            const etfListStr = activeEtfTickers.map(t => "'" + t + "'").join(',');
-            await pool.request()
-                .input('user_id', sql.Int, uid)
-                .query(
-                    "DELETE FROM PF_Notifications WHERE user_id = @user_id AND action_type = 'ETF_BUY_OPPORTUNITY' AND ticker NOT IN (" + etfListStr + ")"
-                );
-        } else {
-            await pool.request()
-                .input('user_id', sql.Int, uid)
-                .query(
-                    "DELETE FROM PF_Notifications WHERE user_id = @user_id AND action_type = 'ETF_BUY_OPPORTUNITY'"
-                );
-        }
+                if (activeEtfTickers.length > 0) {
+                    const etfListStr = activeEtfTickers.map(t => "'" + t + "'").join(',');
+                    await pool.request()
+                        .input('user_id', sql.Int, uid)
+                        .input('strat_id', sql.Int, etfStrategyId)
+                        .query(
+                            "DELETE FROM PF_Notifications WHERE user_id = @user_id AND strategy_id = @strat_id AND action_type = 'ETF_BUY_OPPORTUNITY' AND ticker NOT IN (" + etfListStr + ")"
+                        );
+                } else {
+                    await pool.request()
+                        .input('user_id', sql.Int, uid)
+                        .input('strat_id', sql.Int, etfStrategyId)
+                        .query(
+                            "DELETE FROM PF_Notifications WHERE user_id = @user_id AND strategy_id = @strat_id AND action_type = 'ETF_BUY_OPPORTUNITY'"
+                        );
+                }
 
-        for (const etfBuy of activeEtfBuys) {
-            const notifExists = await pool.request()
-                .input('user_id', sql.Int, uid)
-                .input('stock_id', sql.Int, etfBuy.stockId)
-                .input('date_pattern', sql.NVarChar, '%' + etfBuy.date + '%')
-                .query('SELECT id FROM PF_Notifications WHERE user_id = @user_id AND stock_id = @stock_id AND action_type = \'ETF_BUY_OPPORTUNITY\' AND message LIKE @date_pattern');
+                for (const etfBuy of activeEtfBuys) {
+                    const notifExists = await pool.request()
+                        .input('user_id', sql.Int, uid)
+                        .input('stock_id', sql.Int, etfBuy.stockId)
+                        .input('strat_id', sql.Int, etfStrategyId)
+                        .input('date_pattern', sql.NVarChar, '%' + etfBuy.date + '%')
+                        .query('SELECT id FROM PF_Notifications WHERE user_id = @user_id AND stock_id = @stock_id AND strategy_id = @strat_id AND action_type = \'ETF_BUY_OPPORTUNITY\' AND message LIKE @date_pattern');
 
-            if (notifExists.recordset.length === 0) {
-                const totalInvest = etfBuy.totalAmount || (etfBuy.shares * etfBuy.signalPrice);
-                const message = 'MACD Koopsignaal gedetecteerd voor ' + etfBuy.ticker + ' (' + etfBuy.name + ') op ' + etfBuy.date + '.\n\n⚡ ACTIE VEREIST: Koop ' + etfBuy.shares + ' stuks (à ca. € ' + etfBuy.signalPrice.toFixed(2) + ' = € ' + totalInvest.toFixed(2) + ').\nConform de 100% Buy & Hold DCA ETF strategie.';
+                    if (notifExists.recordset.length === 0) {
+                        const totalInvest = etfBuy.totalAmount || (etfBuy.shares * etfBuy.signalPrice);
+                        const message = `[Prioriteit #${etfStrat.priority_order} • ${etfStrategyName}]\nMACD Koopsignaal gedetecteerd voor ${etfBuy.ticker} (${etfBuy.name}) op ${etfBuy.date}.\n\n⚡ ACTIE VEREIST: Koop ${etfBuy.shares} stuks (à ca. € ${etfBuy.signalPrice.toFixed(2)} = € ${totalInvest.toFixed(2)}).\nInlegmodus: Vast maandbedrag (€${Number(etfStrat.monthly_budget || 450).toFixed(0)}/mnd) • 100% Buy & Hold.`;
 
-                await pool.request()
-                    .input('user_id', sql.Int, uid)
-                    .input('stock_id', sql.Int, etfBuy.stockId)
-                    .input('ticker', sql.NVarChar, etfBuy.ticker)
-                    .input('message', sql.NVarChar, message)
-                    .input('action_required', sql.Bit, 1)
-                    .input('action_type', sql.NVarChar, 'ETF_BUY_OPPORTUNITY')
-                    .input('action_shares', sql.Float, etfBuy.shares)
-                    .input('action_pct', sql.Float, 0)
-                    .input('action_title', sql.NVarChar, '🟢 ETF DCA Koopkans')
-                    .query('INSERT INTO PF_Notifications (user_id, stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, created_at) VALUES (@user_id, @stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, GETDATE())');
+                        await pool.request()
+                            .input('user_id', sql.Int, uid)
+                            .input('stock_id', sql.Int, etfBuy.stockId)
+                            .input('ticker', sql.NVarChar, etfBuy.ticker)
+                            .input('message', sql.NVarChar, message)
+                            .input('action_required', sql.Bit, 1)
+                            .input('action_type', sql.NVarChar, 'ETF_BUY_OPPORTUNITY')
+                            .input('action_shares', sql.Float, etfBuy.shares)
+                            .input('action_pct', sql.Float, 0)
+                            .input('action_title', sql.NVarChar, `🟢 ETF Koopkans (Prio #${etfStrat.priority_order}: ${etfStrategyName})`)
+                            .input('strategy_id', sql.Int, etfStrategyId)
+                            .input('strategy_name', sql.NVarChar, etfStrategyName)
+                            .input('strategy_type', sql.VarChar, 'ETF')
+                            .query(`
+                                INSERT INTO PF_Notifications 
+                                (user_id, stock_id, ticker, message, is_read, action_required, action_type, action_shares, action_pct, action_title, strategy_id, strategy_name, strategy_type, created_at) 
+                                VALUES 
+                                (@user_id, @stock_id, @ticker, @message, 0, @action_required, @action_type, @action_shares, @action_pct, @action_title, @strategy_id, @strategy_name, @strategy_type, GETDATE())
+                            `);
+                    }
+                }
             }
         }
     } catch (err) {
         console.error('Fout bij synchroniseren strategie notificaties:', err.message);
     } finally {
         strategySyncRunningUsers.delete(uid);
+    }
+};
+
+// Multi-User Alert Sync Engine (Fase 4): loopt langs alle actieve gebruikers in de database
+const syncAllUsersStrategyAlerts = async (pool, { force = false } = {}) => {
+    try {
+        const dbPool = pool || await sql.connect(config);
+        const activeUsersRes = await dbPool.request().query(`
+            SELECT id, username 
+            FROM PF_Users 
+            WHERE ISNULL(is_active, 1) = 1
+        `);
+        const users = activeUsersRes.recordset || [];
+        for (const u of users) {
+            await syncActiveStrategyAlerts(dbPool, u.id, { force });
+        }
+        console.log(`[Multi-User Alert Engine] Persoonlijke strategie-alerts gesynchroniseerd voor ${users.length} actieve gebruiker(s).`);
+    } catch (err) {
+        console.error('[Multi-User Alert Engine] Fout bij synchroniseren voor alle gebruikers:', err.message);
     }
 };
 
@@ -522,18 +673,44 @@ const getNotifications = async (req, res) => {
             );
         }
 
+        const activeSetRes = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(`SELECT strategy_id, priority_order FROM PF_UserActiveStrategies WHERE user_id = @userId ORDER BY priority_order ASC`);
+        const activeStratMap = new Map();
+        (activeSetRes.recordset || []).forEach(r => {
+            if (!activeStratMap.has(r.strategy_id)) activeStratMap.set(r.strategy_id, r.priority_order);
+        });
+
+        const includeRead = req.query.includeRead === 'true';
+
         const result = await pool.request()
             .input('userId', sql.Int, userId)
             .input('isAdmin', sql.Bit, isAdmin ? 1 : 0)
+            .input('includeRead', sql.Bit, includeRead ? 1 : 0)
             .query(`
                 SELECT id, user_id, stock_id, ticker, message, created_at, is_read, new_quarter, new_year,
-                       action_required, action_type, action_shares, action_pct, action_title 
+                       action_required, action_type, action_shares, action_pct, action_title,
+                       strategy_id, strategy_name, strategy_type
                 FROM PF_Notifications 
-                WHERE is_read = 0 
+                WHERE (@includeRead = 1 OR is_read = 0)
                   AND (user_id = @userId OR (user_id IS NULL AND @isAdmin = 1))
                 ORDER BY action_required DESC, created_at DESC
             `);
-        res.json(result.recordset);
+
+        const enriched = (result.recordset || []).map(n => {
+            const sType = (n.strategy_type || (n.action_type === 'ETF_BUY_OPPORTUNITY' ? 'ETF' : 'STOCKS')).toUpperCase();
+            const isFromOldStrategy = n.action_type !== 'STRATEGY_SWITCH' && n.strategy_id != null && !activeStratMap.has(n.strategy_id);
+            const priorityOrder = n.strategy_id != null ? (activeStratMap.get(n.strategy_id) || null) : null;
+            return {
+                ...n,
+                strategy_type: sType,
+                strategy_name: n.strategy_name || (sType === 'ETF' ? "Arne ETF DCA & MACD Dip-Buy (€450/mnd • 4 Kern-ETF's)" : 'Huidige Live Strategie Arne (5/5 Kwaliteit & Waardeverdeling)'),
+                priority_order: priorityOrder,
+                is_from_old_strategy: isFromOldStrategy
+            };
+        });
+
+        res.json(enriched);
     } catch (err) {
         console.error('Fout bij ophalen meldingen:', err.message);
         res.status(500).json({ message: 'Fout bij het ophalen van meldingen.' });
@@ -571,5 +748,6 @@ module.exports = {
     checkNewSecQuarters,
     getNotifications,
     markAsRead,
-    syncActiveStrategyAlerts
+    syncActiveStrategyAlerts,
+    syncAllUsersStrategyAlerts
 };

@@ -2589,14 +2589,32 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
     // Haal gebruikersinstellingen op voor ordergroottes, deelaandelen en actieve strategie
     const userSettingsRes = await pool.request()
         .input('userId', sql.Int, userId)
-        .query(`SELECT allow_fractional_shares, min_order_amount, min_order_skip_threshold, active_strategy_id FROM PF_Users WHERE id = @userId`);
+        .query(`
+            SELECT 
+                allow_fractional_shares, min_order_amount, min_order_skip_threshold, 
+                active_strategy_id, active_etf_strategy_id,
+                ISNULL(stocks_funding_mode, 'available_cash') AS stocks_funding_mode,
+                ISNULL(stocks_monthly_budget, 500) AS stocks_monthly_budget,
+                ISNULL(stocks_allow_selling, 'full_strategy') AS stocks_allow_selling,
+                ISNULL(etf_funding_mode, 'monthly_amount') AS etf_funding_mode,
+                ISNULL(etf_monthly_budget, 450) AS etf_monthly_budget,
+                ISNULL(etf_allow_selling, 'buy_only') AS etf_allow_selling,
+                stocks_strategy_activated_at,
+                etf_strategy_activated_at
+            FROM PF_Users WHERE id = @userId
+        `);
     const userSettings = (userSettingsRes.recordset && userSettingsRes.recordset[0]) || {};
     const allowFractionalShares = userSettings.allow_fractional_shares !== false && userSettings.allow_fractional_shares !== 0;
     const minOrderAmount = parseFloat(userSettings.min_order_amount || 100);
     const minOrderSkipThreshold = parseFloat(userSettings.min_order_skip_threshold || 50);
+    const stocksFundingMode = userSettings.stocks_funding_mode || 'available_cash';
+    const stocksMonthlyBudget = parseFloat(userSettings.stocks_monthly_budget || 500);
+    const stocksAllowSelling = userSettings.stocks_allow_selling || 'full_strategy';
 
-    // Ophalen van gekoppelde actieve strategie
+    // Ophalen van gekoppelde actieve strategie + historiek
     let activeStrategyRecord = null;
+    let strategyHistoryList = [];
+    let oldStrategyNotifications = [];
     try {
         if (userSettings.active_strategy_id) {
             const stratRes = await pool.request()
@@ -2608,16 +2626,36 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         }
         if (!activeStrategyRecord) {
             const defStratRes = await pool.request()
-                .query(`SELECT TOP 1 strategy_id, name, description, parameters_json, performance_summary_json FROM PF_Strategies WHERE is_system_default = 1`);
+                .query(`SELECT TOP 1 strategy_id, name, description, parameters_json, performance_summary_json FROM PF_Strategies WHERE ISNULL(strategy_type, 'STOCKS') = 'STOCKS' AND is_system_default = 1`);
             if (defStratRes.recordset && defStratRes.recordset.length > 0) {
                 activeStrategyRecord = defStratRes.recordset[0];
             }
         }
+        const histRes = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(`SELECT TOP 30 * FROM PF_UserStrategyHistory WHERE user_id = @userId ORDER BY changed_at DESC, history_id DESC`);
+        strategyHistoryList = histRes.recordset || [];
+
+        const activeStratId = activeStrategyRecord?.strategy_id || 1;
+        const oldNotifRes = await pool.request()
+            .input('userId', sql.Int, userId)
+            .input('activeStratId', sql.Int, activeStratId)
+            .query(`
+                SELECT id, stock_id, ticker, message, created_at, is_read, action_required, action_type, action_shares, action_pct, action_title, strategy_id, strategy_name, strategy_type
+                FROM PF_Notifications
+                WHERE user_id = @userId
+                  AND (
+                    (strategy_id IS NOT NULL AND strategy_id != @activeStratId AND ISNULL(strategy_type, 'STOCKS') = 'STOCKS')
+                    OR action_type = 'STRATEGY_SWITCH'
+                  )
+                ORDER BY created_at DESC
+            `);
+        oldStrategyNotifications = oldNotifRes.recordset || [];
     } catch (err) {
-        console.warn('Kon PF_Strategies niet uitlezen voor portfolioController:', err.message);
+        console.warn('Kon PF_Strategies / PF_UserStrategyHistory niet uitlezen voor portfolioController:', err.message);
     }
 
-    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}`;
+    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}_${stocksFundingMode}_${stocksMonthlyBudget}_${stocksAllowSelling}_${strategyHistoryList.length}`;
     if (!forceRefresh) {
         const cached = advisorDataCache.get(cacheKey);
         if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
@@ -4322,23 +4360,103 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             stratParams = activeStrategyRecord?.parameters_json ? JSON.parse(activeStrategyRecord.parameters_json) : null;
         } catch (e) {}
 
+        const effectiveSellOnScoreDrop = stocksAllowSelling === 'buy_only'
+            ? false
+            : (stratParams?.sellOnScoreDrop !== undefined ? stratParams.sellOnScoreDrop : true);
+        const effectiveUseWaardeverdelingSell = (stocksAllowSelling === 'buy_only' || stocksAllowSelling === 'score_drop_only')
+            ? false
+            : (stratParams?.useWaardeverdelingSell !== undefined ? stratParams.useWaardeverdelingSell : true);
+
         const activeStrategyConfig = {
             id: activeStrategyRecord?.strategy_id || 1,
-            name: activeStrategyRecord?.name || 'Huidige Live Strategie',
+            name: activeStrategyRecord?.name || 'Huidige Live Strategie Arne (5/5 Kwaliteit & Waardeverdeling)',
+            strategyType: 'STOCKS',
             backtestAlpha: stratPerf?.totalReturn !== undefined ? `${stratPerf.totalReturn > 0 ? '+' : ''}${stratPerf.totalReturn}%` : '+212%',
             universe: 'Score 5/5 Universum',
-            sellOnScoreDrop: stratParams?.sellOnScoreDrop !== undefined ? stratParams.sellOnScoreDrop : true,
-            useWaardeverdelingSell: stratParams?.useWaardeverdelingSell !== undefined ? stratParams.useWaardeverdelingSell : true,
+            sellOnScoreDrop: effectiveSellOnScoreDrop,
+            useWaardeverdelingSell: effectiveUseWaardeverdelingSell,
             usePortfolioRelativeWeight: stratParams?.usePortfolioRelativeWeight !== undefined ? stratParams.usePortfolioRelativeWeight : true,
             enableActiveRebalance: stratParams?.enableActiveRebalance !== undefined ? stratParams.enableActiveRebalance : true,
             maxPriceToIntrinsicRatio: stratParams?.maxPriceToIntrinsicRatio !== undefined ? stratParams.maxPriceToIntrinsicRatio : maxPriceToIntrinsic,
             useTrendFilter200Sma: stratParams?.useTrendFilter200Sma !== undefined ? stratParams.useTrendFilter200Sma : false,
+            fundingMode: stocksFundingMode,
+            monthlyBudget: stocksMonthlyBudget,
+            allowSelling: stocksAllowSelling,
+            activatedAt: userSettings.stocks_strategy_activated_at || '2026-01-01T09:00:00.000Z',
             allowFractionalShares,
             minOrderAmount,
             minOrderSkipThreshold,
             fractionalDecimals: 0.1,
             description: activeStrategyRecord?.description || 'Kwartalen met Score 5/5, 100% verkoop bij Score < 5, deelverkoop bij daling waardeverdeling, actieve herbalancering en relatieve kwaliteitsweging.'
         };
+
+        // Indien gebruiker 'buy_only' of 'score_drop_only' heeft gekozen, pas verkoopmeldingen hierop aan
+        if (stocksAllowSelling === 'buy_only') {
+            for (let i = dataDrivenAlerts.length - 1; i >= 0; i--) {
+                if (dataDrivenAlerts[i].signalType === 'Verkoopsignaal') {
+                    dataDrivenAlerts.splice(i, 1);
+                }
+            }
+        } else if (stocksAllowSelling === 'score_drop_only') {
+            for (let i = dataDrivenAlerts.length - 1; i >= 0; i--) {
+                if (dataDrivenAlerts[i].signalType === 'Verkoopsignaal' && dataDrivenAlerts[i].fundamentalScore >= 5) {
+                    dataDrivenAlerts.splice(i, 1);
+                }
+            }
+        }
+
+        // Tag alle actuele meldingen & tijdlijn-items met de actieve strategie
+        dataDrivenAlerts.forEach(a => {
+            a.strategyId = activeStrategyConfig.id;
+            a.strategyName = activeStrategyConfig.name;
+            a.strategyType = 'STOCKS';
+            a.isFromOldStrategy = false;
+        });
+
+        stockTimeline.forEach(item => {
+            item.strategyId = activeStrategyConfig.id;
+            item.strategyName = activeStrategyConfig.name;
+            item.strategyType = 'STOCKS';
+            item.isFromOldStrategy = false;
+        });
+
+        // Voeg bewaarde meldingen van een OUDE strategie (vóór strategiewissel) toe zodat deze nooit verloren gaan
+        const preservedOldAlerts = (oldStrategyNotifications || [])
+            .filter(n => n.action_type !== 'STRATEGY_SWITCH' && n.ticker && n.strategy_id && n.strategy_id !== activeStrategyConfig.id)
+            .map(n => {
+                const isSellNotif = n.action_type && n.action_type.includes('SELL');
+                const dateStr = n.created_at ? toIsoDateOnly(n.created_at) : todayStr;
+                return {
+                    alertId: `old_strat_notif_${n.id}`,
+                    stockId: n.stock_id,
+                    ticker: n.ticker,
+                    name: n.ticker,
+                    date: dateStr,
+                    signalType: isSellNotif ? 'Verkoopsignaal' : 'Koopsignaal',
+                    isActionableBuy: !isSellNotif,
+                    isCautionBuy: false,
+                    isFromOldStrategy: true,
+                    strategyId: n.strategy_id,
+                    strategyName: n.strategy_name || 'Vorige Strategie',
+                    strategyType: n.strategy_type || 'STOCKS',
+                    actionBadge: `🕰️ Oude Strategie (${n.strategy_name || 'Vorige'}): ${n.action_title || (isSellNotif ? 'Verkoop' : 'Koopkans')}`,
+                    severity: 'neutral',
+                    priceAtAlert: 0,
+                    currentPrice: 0,
+                    amountEur: 0,
+                    shares: Number(n.action_shares || 0),
+                    fundamentalScore: 5,
+                    warning: `Historische melding uit vorige strategie "${n.strategy_name || 'Vorige Strategie'}" (bewaard na strategiewissel).`,
+                    fundingSource: {
+                        status: 'DIRECT_CASH',
+                        badge: `🕰️ Bewaard uit: ${n.strategy_name || 'Vorige Strategie'}`,
+                        message: n.message
+                    },
+                    linkedSales: []
+                };
+            });
+
+        const combinedAlerts = [...dataDrivenAlerts, ...preservedOldAlerts].sort((a, b) => new Date(b.date) - new Date(a.date));
 
         const responseData = {
             currency,
@@ -4352,12 +4470,14 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             actionItems,
             exactActions,
             idealPortfolio,
-            dataDrivenAlerts,
+            dataDrivenAlerts: combinedAlerts,
             holdings: evaluatedHoldings,
             topBuyCandidates,
             timeline: stockTimeline,
             timelineSummary,
             activeStrategyConfig,
+            strategyHistory: strategyHistoryList,
+            oldStrategyNotifications,
             dataFreshness: {
                 lastUpdatedDate,
                 isUpdatedToday: lastUpdatedDate >= todayStr,
@@ -4479,15 +4599,54 @@ const getStrategyAdvisorData = async (req, res) => {
 // Startdatum standaard 2026-01-01 (overeenkomstig actieve DCA aankopen in 2026) of configureerbaar.
 const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
     try {
-        const monthlyBudget = parseFloat(options.monthlyBudget || 450.0);
+        const pool = await sql.connect(config);
+
+        // Haal persoonlijke ETF strategie-instellingen op van de gebruiker
+        let activeEtfStrategyRecord = null;
+        let userEtfSettings = {};
+        let etfStrategyHistory = [];
+        try {
+            const uRes = await pool.request()
+                .input('userId', sql.Int, userId)
+                .query(`
+                    SELECT active_etf_strategy_id, ISNULL(etf_funding_mode, 'monthly_amount') AS etf_funding_mode,
+                           ISNULL(etf_monthly_budget, 450) AS etf_monthly_budget,
+                           ISNULL(etf_allow_selling, 'buy_only') AS etf_allow_selling,
+                           etf_strategy_activated_at
+                    FROM PF_Users WHERE id = @userId
+                `);
+            userEtfSettings = uRes.recordset?.[0] || {};
+            if (userEtfSettings.active_etf_strategy_id) {
+                const sRes = await pool.request()
+                    .input('stratId', sql.Int, userEtfSettings.active_etf_strategy_id)
+                    .query(`SELECT strategy_id, name, description, parameters_json, performance_summary_json FROM PF_Strategies WHERE strategy_id = @stratId`);
+                activeEtfStrategyRecord = sRes.recordset?.[0] || null;
+            }
+            if (!activeEtfStrategyRecord) {
+                const defRes = await pool.request()
+                    .query(`SELECT TOP 1 strategy_id, name, description, parameters_json, performance_summary_json FROM PF_Strategies WHERE strategy_type = 'ETF' ORDER BY is_system_default DESC, strategy_id ASC`);
+                activeEtfStrategyRecord = defRes.recordset?.[0] || null;
+            }
+            const hRes = await pool.request()
+                .input('userId', sql.Int, userId)
+                .query(`SELECT TOP 20 * FROM PF_UserStrategyHistory WHERE user_id = @userId AND strategy_type = 'ETF' ORDER BY changed_at DESC`);
+            etfStrategyHistory = hRes.recordset || [];
+        } catch (e) {}
+
+        let etfParams = {};
+        try {
+            if (activeEtfStrategyRecord?.parameters_json) etfParams = JSON.parse(activeEtfStrategyRecord.parameters_json);
+        } catch (e) {}
+
+        const monthlyBudget = parseFloat(options.monthlyBudget || userEtfSettings.etf_monthly_budget || etfParams.monthlyBudget || 450.0);
         const initialPot = parseFloat(options.initialPot || 0.0);
-        const startDateStr = options.startDate || '2026-01-01';
-        const fastLength = parseInt(options.fastLength || 30);
-        const slowLength = parseInt(options.slowLength || 90);
-        const signalLength = parseInt(options.signalLength || 9);
+        const startDateStr = options.startDate || etfParams.startDate || '2026-01-01';
+        const fastLength = parseInt(options.fastLength || etfParams.macdFast || 30);
+        const slowLength = parseInt(options.slowLength || etfParams.macdSlow || 90);
+        const signalLength = parseInt(options.signalLength || etfParams.macdSignal || 9);
         const forceRefresh = options.forceRefresh === true;
 
-        const cacheKey = `etf_${userId}_${monthlyBudget}_${initialPot}_${startDateStr}_${fastLength}_${slowLength}_${signalLength}`;
+        const cacheKey = `etf_${userId}_${activeEtfStrategyRecord?.strategy_id || 2}_${monthlyBudget}_${initialPot}_${startDateStr}_${fastLength}_${slowLength}_${signalLength}`;
         if (!forceRefresh) {
             const cached = etfDataCache.get(cacheKey);
             if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
@@ -4499,8 +4658,6 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
                 return diskCached;
             }
         }
-
-        const pool = await sql.connect(config);
 
         // De 4 ETF's conform specificatie van de gebruiker
         const etfConfigs = [
@@ -5032,6 +5189,24 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
         // Sorteer finale tijdlijn aflopend op datum (nieuwste eerst)
         matchedTimeline.sort((a, b) => b.timestamp - a.timestamp);
 
+        const activeEtfStrategyConfig = {
+            id: activeEtfStrategyRecord?.strategy_id || 2,
+            name: activeEtfStrategyRecord?.name || "Arne ETF DCA & MACD Dip-Buy (€450/mnd • 4 Kern-ETF's)",
+            strategyType: 'ETF',
+            fundingMode: userEtfSettings.etf_funding_mode || 'monthly_amount',
+            monthlyBudget,
+            allowSelling: userEtfSettings.etf_allow_selling || 'buy_only',
+            activatedAt: userEtfSettings.etf_strategy_activated_at || '2026-10-01T09:00:00.000Z',
+            description: activeEtfStrategyRecord?.description || "Maandelijkse opbouwpot (€450/mnd = €15/dag) verdeeld over 4 kern-ETF's met MACD Golden Cross onder de 0-lijn en 100% Buy & Hold."
+        };
+
+        matchedTimeline.forEach(item => {
+            item.strategyId = activeEtfStrategyConfig.id;
+            item.strategyName = activeEtfStrategyConfig.name;
+            item.strategyType = 'ETF';
+            item.isFromOldStrategy = false;
+        });
+
         const responseData = {
             meta: {
                 userId,
@@ -5044,6 +5219,8 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
                 signalLength,
                 calculatedAt: new Date().toISOString()
             },
+            activeStrategyConfig: activeEtfStrategyConfig,
+            strategyHistory: etfStrategyHistory,
             cashAllocation,
             summary: {
                 totalSignals: matchedTimeline.length,

@@ -896,7 +896,7 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
           res.write(JSON.stringify({ type: 'progress', message: "Controleren op nieuwe SEC kwartaalcijfers & filings..." }) + '\n');
         }
         await notificationController.checkNewSecQuarters({ force: true });
-        await notificationController.syncActiveStrategyAlerts(pool, 1);
+        await notificationController.syncAllUsersStrategyAlerts(pool, { force: true });
       } catch (secErr) {
         console.warn('[WatchlistUpdate] SEC controle overgeslagen:', secErr.message);
       }

@@ -140,15 +140,74 @@ const StrategyAdvisorTab = () => {
   });
   const [searchQuery, setSearchQuery] = useState('');
   const [isUpdating, setIsUpdating] = useState(false);
-  const [activeViewMode, setActiveViewMode] = useState('timeline'); // 'timeline' | 'alerts' | 'charts' | 'matrix'
+  const [activeViewMode, setActiveViewMode] = useState('timeline'); // 'timeline' | 'alerts' | 'charts' | 'matrix' | 'history'
   const [alertLayoutMode, setAlertLayoutMode] = useState('COLUMNS'); // 'COLUMNS' (2-koloms groen/geel) | 'TIMELINE' (lijst)
-  const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'ACTIONABLE' | 'CAUTION' | 'SELL' | 'ROTATION'
+  const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'ACTIONABLE' | 'CAUTION' | 'SELL' | 'ROTATION' | 'OLD_STRATEGY'
   const [matrixFilter, setMatrixFilter] = useState('ALL');
   const [showTimingRules, setShowTimingRules] = useState(false);
   const [strategyType, setStrategyType] = useState(() => (canUseStocks ? 'stocks' : 'etf')); // 'stocks' | 'etf'
   const [isCashWidgetOpen, setIsCashWidgetOpen] = useState(false);
+  const [showStrategyConfigModal, setShowStrategyConfigModal] = useState(false);
+  const [myStrategyConfig, setMyStrategyConfig] = useState(null);
+  const [allStrategiesList, setAllStrategiesList] = useState([]);
+  const [savingConfigType, setSavingConfigType] = useState('');
+
+  // Flexibele lijst van actieve strategieën (1, 2 of meer; elk Aandelen of ETF met prioriteit)
+  const [activeStrategiesDraft, setActiveStrategiesDraft] = useState([]);
+  const [showAddStrategyForm, setShowAddStrategyForm] = useState(false);
+  const [newStratId, setNewStratId] = useState(1);
+  const [newStratPriority, setNewStratPriority] = useState(1);
+  const [newStratFundingMode, setNewStratFundingMode] = useState('available_cash');
+  const [newStratMonthlyBudget, setNewStratMonthlyBudget] = useState(500);
+  const [newStratAllowSelling, setNewStratAllowSelling] = useState('full_strategy');
+
+  // Bevestigingsmodal state zodat er nooit per ongeluk een strategie wordt aangepast of verwijderd
+  const [confirmModal, setConfirmModal] = useState({
+    isOpen: false,
+    title: '',
+    description: '',
+    details: [],
+    confirmLabel: 'Bevestigen',
+    variant: 'indigo', // 'indigo' | 'red' | 'amber'
+    onConfirm: null
+  });
 
   const isIncognito = useIncognito();
+
+  const fetchMyStrategyConfig = useCallback(async () => {
+    try {
+      const [cfgRes, listRes] = await Promise.all([
+        http.get('/strategies/my-config'),
+        http.get('/strategies')
+      ]);
+      if (cfgRes.data) {
+        setMyStrategyConfig(cfgRes.data);
+        const activeList = Array.isArray(cfgRes.data.activeStrategies) ? cfgRes.data.activeStrategies : [];
+        setActiveStrategiesDraft(
+          activeList.map((item, idx) => ({
+            entry_id: item.entry_id,
+            strategy_id: Number(item.strategy_id),
+            name: item.name,
+            strategy_type: item.strategy_type || 'STOCKS',
+            priority_order: Number(item.priority_order || idx + 1),
+            funding_mode: item.funding_mode || (item.strategy_type === 'ETF' ? 'monthly_amount' : 'available_cash'),
+            monthly_budget: Number(item.monthly_budget ?? (item.strategy_type === 'ETF' ? 450 : 500)),
+            allow_selling: item.allow_selling || (item.strategy_type === 'ETF' ? 'buy_only' : 'full_strategy'),
+            activated_at: item.activated_at
+          }))
+        );
+        setNewStratPriority(activeList.length + 1);
+      }
+      if (listRes.data) {
+        setAllStrategiesList(listRes.data);
+        if (listRes.data.length > 0) {
+          setNewStratId(listRes.data[0].strategy_id);
+        }
+      }
+    } catch (err) {
+      console.warn('Kon persoonlijke strategie-configuratie niet laden:', err.message);
+    }
+  }, []);
 
   const fetchAdvisorData = useCallback(async (force = false) => {
     if (force) setLoading(true);
@@ -170,7 +229,186 @@ const StrategyAdvisorTab = () => {
 
   useEffect(() => {
     fetchAdvisorData();
-  }, [fetchAdvisorData]);
+    fetchMyStrategyConfig();
+  }, [fetchAdvisorData, fetchMyStrategyConfig]);
+
+  const updateDraftField = (index, field, value) => {
+    setActiveStrategiesDraft(prev => {
+      const next = [...prev];
+      const item = { ...next[index], [field]: value };
+      if (field === 'strategy_id') {
+        const found = allStrategiesList.find(s => Number(s.strategy_id) === Number(value));
+        if (found) {
+          item.name = found.name;
+          item.strategy_type = found.strategy_type || 'STOCKS';
+        }
+      }
+      next[index] = item;
+      return next;
+    });
+  };
+
+  const formatFundingLabel = (mode, budget) => {
+    if (mode === 'monthly_amount') return `Vast bedrag (€${Number(budget || 0)}/mnd)`;
+    if (mode === 'cash_plus_rotation') return 'Beschikbaar vrij geld + Rotatie';
+    return 'Enkel beschikbaar vrij geld';
+  };
+
+  const formatSellingLabel = (rule) => {
+    if (rule === 'buy_only') return 'Nooit verkopen (100% Buy & Hold)';
+    if (rule === 'score_drop_only') return 'Enkel verkopen bij Score < 5';
+    return 'Volledige verkoop- & snoeiregels';
+  };
+
+  // 1. Bevestiging vragen vóór het opslaan/aanpassen van een actieve strategie
+  const requestSaveActiveStrategy = (draftItem) => {
+    const chosenStrat = allStrategiesList.find(s => Number(s.strategy_id) === Number(draftItem.strategy_id));
+    const stratName = chosenStrat ? chosenStrat.name : draftItem.name;
+    setConfirmModal({
+      isOpen: true,
+      title: 'Bevestig aanpassing van actieve strategie',
+      description: `Weet je zeker dat je jouw actieve strategie op Prioriteit #${draftItem.priority_order} wilt aanpassen?`,
+      details: [
+        `Strategie: ${stratName} (${(chosenStrat?.strategy_type || draftItem.strategy_type) === 'ETF' ? 'ETF DCA' : 'Losse Aandelen'})`,
+        `Prioriteit: #${draftItem.priority_order}`,
+        `Inlegmethode: ${formatFundingLabel(draftItem.funding_mode, draftItem.monthly_budget)}`,
+        `Verkoopregel: ${formatSellingLabel(draftItem.allow_selling)}`,
+        `Meldingen van eventuele vorige strategieën blijven altijd bewaard.`
+      ],
+      confirmLabel: 'Ja, wijziging opslaan',
+      variant: 'indigo',
+      onConfirm: async () => {
+        setSavingConfigType(`save-${draftItem.entry_id || draftItem.priority_order}`);
+        try {
+          const res = await http.post('/strategies/my-active', {
+            entry_id: draftItem.entry_id,
+            strategy_id: Number(draftItem.strategy_id),
+            priority_order: Number(draftItem.priority_order),
+            funding_mode: draftItem.funding_mode,
+            monthly_budget: Number(draftItem.monthly_budget || 0),
+            allow_selling: draftItem.allow_selling
+          });
+          toast.success(res.data?.message || 'Actieve strategie bijgewerkt!');
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+          await fetchMyStrategyConfig();
+          await fetchAdvisorData(true);
+        } catch (err) {
+          toast.error(err.response?.data?.message || 'Kon strategie niet aanpassen.');
+        } finally {
+          setSavingConfigType('');
+        }
+      }
+    });
+  };
+
+  // 2. Bevestiging vragen vóór het wijzigen van de prioriteitsvolgorde
+  const requestChangePriority = (draftItem, newPriority) => {
+    if (!draftItem.entry_id) return;
+    setConfirmModal({
+      isOpen: true,
+      title: 'Prioriteit van strategie wijzigen',
+      description: `Wil je "${draftItem.name}" verplaatsen van Prioriteit #${draftItem.priority_order} naar Prioriteit #${newPriority}?`,
+      details: [
+        `Prioriteit #1 heeft altijd als eerste recht op jouw beschikbare cash of maandbudget.`,
+        `De overige actieve strategieën schuiven automatisch mee op.`
+      ],
+      confirmLabel: `Ja, zet op Prioriteit #${newPriority}`,
+      variant: 'indigo',
+      onConfirm: async () => {
+        setSavingConfigType(`prio-${draftItem.entry_id}`);
+        try {
+          const res = await http.put(`/strategies/my-active/${draftItem.entry_id}/priority`, {
+            new_priority: Number(newPriority)
+          });
+          toast.success(res.data?.message || `Prioriteit aangepast naar #${newPriority}`);
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+          await fetchMyStrategyConfig();
+          await fetchAdvisorData(true);
+        } catch (err) {
+          toast.error(err.response?.data?.message || 'Kon prioriteit niet aanpassen.');
+        } finally {
+          setSavingConfigType('');
+        }
+      }
+    });
+  };
+
+  // 3. Bevestiging vragen vóór het verwijderen/stopzetten van een actieve strategie
+  const requestRemoveActiveStrategy = (draftItem) => {
+    if (!draftItem.entry_id) return;
+    setConfirmModal({
+      isOpen: true,
+      title: 'Actieve strategie verwijderen / stopzetten?',
+      description: `Weet je zeker dat je "${draftItem.name}" (Prioriteit #${draftItem.priority_order}) uit jouw actieve strategieën wilt verwijderen?`,
+      details: [
+        `Je ontvangt voor deze strategie geen nieuwe dagelijkse meldingen meer.`,
+        `Alle eerdere meldingen van "${draftItem.name}" blijven wél netjes bewaard in je historiek met hun oorspronkelijke strategielabel.`,
+        `De strategie zelf blijft gewoon beschikbaar in de lijst mocht je haar later opnieuw willen activeren.`
+      ],
+      confirmLabel: 'Ja, actieve strategie verwijderen',
+      variant: 'red',
+      onConfirm: async () => {
+        setSavingConfigType(`del-${draftItem.entry_id}`);
+        try {
+          const res = await http.delete(`/strategies/my-active/${draftItem.entry_id}`);
+          toast.success(res.data?.message || 'Strategie verwijderd uit je actieve lijst.');
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+          await fetchMyStrategyConfig();
+          await fetchAdvisorData(true);
+        } catch (err) {
+          toast.error(err.response?.data?.message || 'Kon actieve strategie niet verwijderen.');
+        } finally {
+          setSavingConfigType('');
+        }
+      }
+    });
+  };
+
+  // 4. Bevestiging vragen vóór het toevoegen van een extra actieve strategie
+  const requestAddActiveStrategy = () => {
+    const chosenStrat = allStrategiesList.find(s => Number(s.strategy_id) === Number(newStratId));
+    if (!chosenStrat) {
+      toast.error('Selecteer eerst een strategie.');
+      return;
+    }
+    const alreadyActive = activeStrategiesDraft.some(s => Number(s.strategy_id) === Number(newStratId));
+    setConfirmModal({
+      isOpen: true,
+      title: alreadyActive ? 'Bestaande actieve strategie bijwerken?' : 'Nieuwe actieve strategie toevoegen?',
+      description: alreadyActive
+        ? `"${chosenStrat.name}" staat al in je actieve lijst. Wil je haar instellingen en prioriteit (#${newStratPriority}) bijwerken?`
+        : `Wil je "${chosenStrat.name}" toevoegen aan jouw actieve strategieën op Prioriteit #${newStratPriority}?`,
+      details: [
+        `Type: ${(chosenStrat.strategy_type || 'STOCKS') === 'ETF' ? 'ETF DCA Strategie' : 'Losse Aandelen Strategie'}`,
+        `Prioriteit: #${newStratPriority} (${Number(newStratPriority) === 1 ? 'Hoogste prioriteit voor cash/budget' : `Volgt na prioriteit #${Number(newStratPriority) - 1}`})`,
+        `Inlegmethode: ${formatFundingLabel(newStratFundingMode, newStratMonthlyBudget)}`,
+        `Verkoopregel: ${formatSellingLabel(newStratAllowSelling)}`
+      ],
+      confirmLabel: alreadyActive ? 'Ja, bijwerken' : 'Ja, strategie activeren',
+      variant: 'indigo',
+      onConfirm: async () => {
+        setSavingConfigType('add-new');
+        try {
+          const res = await http.post('/strategies/my-active', {
+            strategy_id: Number(newStratId),
+            priority_order: Number(newStratPriority),
+            funding_mode: newStratFundingMode,
+            monthly_budget: Number(newStratMonthlyBudget || 0),
+            allow_selling: newStratAllowSelling
+          });
+          toast.success(res.data?.message || 'Strategie geactiveerd!');
+          setConfirmModal(prev => ({ ...prev, isOpen: false }));
+          setShowAddStrategyForm(false);
+          await fetchMyStrategyConfig();
+          await fetchAdvisorData(true);
+        } catch (err) {
+          toast.error(err.response?.data?.message || 'Kon strategie niet toevoegen.');
+        } finally {
+          setSavingConfigType('');
+        }
+      }
+    });
+  };
 
   // Handmatige update trigger
   const handleTriggerUpdate = async () => {
@@ -306,8 +544,8 @@ const StrategyAdvisorTab = () => {
   const hideFormulas = !isAdmin && (isBlackBoxMode || !userPermissions.canViewFormulas);
 
   const filteredAlerts = dataDrivenAlerts.filter(a => {
-    const matchesSearch = a.ticker.toLowerCase().includes(searchQuery.toLowerCase()) || 
-                          a.name.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesSearch = (a.ticker || '').toLowerCase().includes(searchQuery.toLowerCase()) || 
+                          (a.name || '').toLowerCase().includes(searchQuery.toLowerCase());
     if (!matchesSearch) return false;
 
     if (alertFilter === 'ALL') return true;
@@ -315,6 +553,7 @@ const StrategyAdvisorTab = () => {
     if (alertFilter === 'CAUTION') return a.isCautionBuy;
     if (alertFilter === 'SELL') return a.signalType === 'Verkoopsignaal';
     if (alertFilter === 'ROTATION') return a.fundingSource?.status === 'ROTATION_REQUIRED';
+    if (alertFilter === 'OLD_STRATEGY') return Boolean(a.isFromOldStrategy);
     return true;
   });
 
@@ -326,6 +565,7 @@ const StrategyAdvisorTab = () => {
   const cautionCount = dataDrivenAlerts.filter(a => a.isCautionBuy).length;
   const sellAlertsCount = dataDrivenAlerts.filter(a => a.signalType === 'Verkoopsignaal').length;
   const rotationNeededCount = dataDrivenAlerts.filter(a => a.fundingSource?.status === 'ROTATION_REQUIRED').length;
+  const oldStrategyAlertsCount = dataDrivenAlerts.filter(a => a.isFromOldStrategy).length;
 
   const filteredHoldings = holdings.filter(h => {
     const matchesSearch = h.ticker.toLowerCase().includes(searchQuery.toLowerCase()) || 
@@ -349,12 +589,16 @@ const StrategyAdvisorTab = () => {
     const isBuy = !isSell && !isCaution;
     const hasLinkedSales = alert.linkedSales && alert.linkedSales.length > 0;
     const isWvDropping = alert.isWvDown || (alert.wvDiff < 0);
+    const isOldStrategy = Boolean(alert.isFromOldStrategy);
+    const cardStrategyName = alert.strategyName || data?.activeStrategyConfig?.name || 'Huidige Live Strategie Arne';
 
     return (
       <div
         key={alert.alertId}
         className={`bg-white rounded-3xl p-5 border transition-all shadow-xs hover:shadow-md flex flex-col justify-between ${
-          isSell 
+          isOldStrategy
+            ? 'border-purple-300 bg-gradient-to-b from-purple-50/40 to-white ring-1 ring-purple-200'
+            : isSell 
             ? 'border-rose-200/90 hover:border-rose-300' 
             : isActionable 
             ? 'border-emerald-200 hover:border-emerald-300 bg-gradient-to-b from-white to-emerald-50/20' 
@@ -362,6 +606,25 @@ const StrategyAdvisorTab = () => {
         }`}
       >
         <div className="space-y-4">
+          {/* STRATEGIE HERKOMST BALK: Laat direct zien bij welke strategie deze melding hoort */}
+          <div className={`px-3 py-1.5 rounded-xl border text-[11px] font-extrabold flex items-center justify-between gap-2 ${
+            isOldStrategy
+              ? 'bg-purple-100/90 text-purple-950 border-purple-300'
+              : 'bg-indigo-50/90 text-indigo-950 border-indigo-200/80'
+          }`}>
+            <span className="flex items-center gap-1.5 truncate">
+              <i className={`ph-fill ${isOldStrategy ? 'ph-clock-counter-clockwise text-purple-700' : 'ph-target text-indigo-600'} text-sm shrink-0`}></i>
+              <span className="truncate">
+                {isOldStrategy ? `Vorige Strategie (Bewaard): ${cardStrategyName}` : `Strategie: ${cardStrategyName}`}
+              </span>
+            </span>
+            <span className={`px-2 py-0.5 rounded-md text-[9px] uppercase tracking-wider shrink-0 font-black ${
+              isOldStrategy ? 'bg-purple-200 text-purple-900' : 'bg-indigo-200/80 text-indigo-900'
+            }`}>
+              {isOldStrategy ? 'Vóór wissel' : 'Actief'}
+            </span>
+          </div>
+
           {/* Top Row: Date, Ticker, Badges */}
           <div className="flex items-start justify-between gap-3">
             <div className="flex items-center gap-3">
@@ -722,42 +985,541 @@ const StrategyAdvisorTab = () => {
   return (
     <div className="space-y-3 sm:space-y-6 animate-fade-in">
       
-      {/* HOOFDSTRATEGIE SELECTOR: Losse Aandelen vs ETF DCA Strategie */}
+      {/* HOOFDSTRATEGIE SELECTOR: Losse Aandelen vs ETF DCA Strategie + Mijn Strategie-Instellingen Knop */}
       {(canUseStocks && canUseEtf) && (
-        <div className="flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 bg-slate-900/5 border border-slate-200 rounded-xl sm:rounded-3xl">
-          <button
-            onClick={() => setStrategyType('stocks')}
-            className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
-              strategyType === 'stocks'
-                ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
-                : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
-            }`}
-          >
-            <i className="ph-fill ph-diamonds-four text-xs sm:text-base text-amber-300"></i>
-            <span>Losse Aandelen</span>
-            <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
-              strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
-            }`}>
-              Score 5 & Waardeverdeling
-            </span>
-          </button>
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+          <div className="flex-1 flex items-center gap-1 sm:gap-1.5 p-1 sm:p-1.5 bg-slate-900/5 border border-slate-200 rounded-xl sm:rounded-3xl">
+            <button
+              onClick={() => setStrategyType('stocks')}
+              className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
+                strategyType === 'stocks'
+                  ? 'bg-gradient-to-r from-indigo-600 to-blue-600 text-white shadow-md shadow-indigo-600/20'
+                  : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+              }`}
+            >
+              <i className="ph-fill ph-diamonds-four text-xs sm:text-base text-amber-300"></i>
+              <span>Losse Aandelen</span>
+              {myStrategyConfig?.activeStockStrategy ? (
+                <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold truncate max-w-[190px] ${
+                  strategyType === 'stocks' ? 'bg-white/20 text-white' : 'bg-indigo-100 text-indigo-800'
+                }`}>
+                  #{myStrategyConfig.activeStockStrategy.priority_order || 1} • {myStrategyConfig.activeStockStrategy.name}
+                </span>
+              ) : (
+                <span className="hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold bg-gray-100 text-gray-500">
+                  Geen actief
+                </span>
+              )}
+            </button>
+
+            <button
+              onClick={() => setStrategyType('etf')}
+              className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
+                strategyType === 'etf'
+                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
+                  : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+              }`}
+            >
+              <i className="ph-fill ph-chart-line-up text-xs sm:text-base text-emerald-300"></i>
+              <span>ETF DCA</span>
+              {myStrategyConfig?.activeEtfStrategy ? (
+                <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold truncate max-w-[190px] ${
+                  strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
+                }`}>
+                  #{myStrategyConfig.activeEtfStrategy.priority_order || 1} • €{myStrategyConfig.activeEtfStrategy.monthly_budget || 450}/mnd
+                </span>
+              ) : (
+                <span className="hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold bg-gray-100 text-gray-500">
+                  Geen actief
+                </span>
+              )}
+            </button>
+          </div>
 
           <button
-            onClick={() => setStrategyType('etf')}
-            className={`flex-1 px-2.5 sm:px-5 py-1.5 sm:py-2.5 rounded-lg sm:rounded-2xl text-xs sm:text-sm font-extrabold transition-all flex items-center justify-center gap-1 sm:gap-2 ${
-              strategyType === 'etf'
-                ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md shadow-emerald-600/20'
-                : 'bg-white text-slate-700 hover:text-slate-950 hover:bg-slate-50 border border-slate-200'
+            onClick={() => setShowStrategyConfigModal(prev => !prev)}
+            className={`px-4 py-2.5 rounded-xl sm:rounded-2xl text-xs font-extrabold transition-all flex items-center justify-center gap-2 border shrink-0 shadow-xs ${
+              showStrategyConfigModal
+                ? 'bg-purple-700 text-white border-purple-800 shadow-purple-500/20'
+                : 'bg-white hover:bg-purple-50 text-purple-900 border-purple-200'
             }`}
           >
-            <i className="ph-fill ph-chart-line-up text-xs sm:text-base text-emerald-300"></i>
-            <span>ETF DCA</span>
-            <span className={`hidden sm:inline-block text-[10px] px-2 py-0.5 rounded-full font-bold ${
-              strategyType === 'etf' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
-            }`}>
-              4 ETF's • €450/mnd
-            </span>
+            <i className="ph-fill ph-sliders-horizontal text-base"></i>
+            <span>Mijn Actieve Strategieën & Prioriteit ({activeStrategiesDraft.length})</span>
+            {myStrategyConfig?.strategyHistory?.length > 0 && (
+              <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-black ${
+                showStrategyConfigModal ? 'bg-white/20 text-white' : 'bg-purple-100 text-purple-800'
+              }`}>
+                {myStrategyConfig.strategyHistory.length} wissels
+              </span>
+            )}
           </button>
+        </div>
+      )}
+
+      {/* UITKLAPBAAR PANEEL: MIJN ACTIEVE STRATEGIEËN (FLEXIBEL AANTAL + PRIORITEIT + VERWIJDEREN + BEVESTIGING) */}
+      {showStrategyConfigModal && (
+        <div className="bg-white rounded-3xl p-5 sm:p-6 border-2 border-purple-200 shadow-lg space-y-6 animate-fade-in">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
+            <div>
+              <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-purple-100 text-purple-900 border border-purple-200 mb-1">
+                🎯 Persoonlijke Strategie-Koppeling, Prioriteit & Historiek
+              </div>
+              <h2 className="text-lg sm:text-xl font-black text-gray-900">
+                Mijn Actieve Strategieën ({activeStrategiesDraft.length}) & Prioriteitsvolgorde
+              </h2>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Je kiest zelf hoeveel en welke strategieën je volgt: bijvoorbeeld <strong>enkel 1 strategie</strong>, <strong>2 aandelen-strategieën</strong>, <strong>1 ETF-strategie</strong> of een combinatie. Met <strong>Prioriteit (#1, #2, ...)</strong> bepaal je welke strategie als eerste recht heeft op je beschikbare cash/maandbudget. Elke wijziging of verwijdering vraagt eerst om een bevestiging.
+              </p>
+            </div>
+            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+              <button
+                onClick={() => {
+                  setNewStratPriority(activeStrategiesDraft.length + 1);
+                  setShowAddStrategyForm(prev => !prev);
+                }}
+                className="px-3.5 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-extrabold shadow-xs flex items-center gap-1.5 transition-all"
+              >
+                <i className="ph-bold ph-plus-circle text-sm"></i>
+                <span>Extra Strategie Toevoegen</span>
+              </button>
+              <button
+                onClick={() => setShowStrategyConfigModal(false)}
+                className="px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold"
+              >
+                Sluiten ✕
+              </button>
+            </div>
+          </div>
+
+          {/* FORMULIER OM EEN EXTRA STRATEGIE TOE TE VOEGEN */}
+          {showAddStrategyForm && (
+            <div className="p-4 sm:p-5 rounded-2xl bg-purple-50/70 border-2 border-purple-300 space-y-4 animate-fade-in">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-black text-purple-950 flex items-center gap-2">
+                  <i className="ph-fill ph-plus-circle text-purple-600 text-lg"></i>
+                  <span>Nieuwe of Extra Strategie Activeren op jouw Portefeuille</span>
+                </h3>
+                <button
+                  onClick={() => setShowAddStrategyForm(false)}
+                  className="text-xs font-bold text-gray-500 hover:text-gray-800"
+                >
+                  Annuleren ✕
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                <div className="sm:col-span-2">
+                  <label className="block font-bold text-gray-700 mb-1">Welke strategie wil je activeren? (Aandelen of ETF):</label>
+                  <select
+                    value={newStratId}
+                    onChange={(e) => {
+                      const val = Number(e.target.value);
+                      setNewStratId(val);
+                      const found = allStrategiesList.find(s => Number(s.strategy_id) === val);
+                      if (found?.strategy_type === 'ETF') {
+                        setNewStratFundingMode('monthly_amount');
+                        setNewStratMonthlyBudget(450);
+                        setNewStratAllowSelling('buy_only');
+                      } else {
+                        setNewStratFundingMode('available_cash');
+                        setNewStratMonthlyBudget(500);
+                        setNewStratAllowSelling('full_strategy');
+                      }
+                    }}
+                    className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-bold text-gray-900 focus:ring-2 focus:ring-purple-500 outline-none"
+                  >
+                    {allStrategiesList.map(s => (
+                      <option key={s.strategy_id} value={s.strategy_id}>
+                        [{(s.strategy_type || 'STOCKS') === 'ETF' ? '📈 ETF' : '💎 Aandelen'}] {s.name} {s.is_system_default ? '(Standaard)' : `(${s.creator_username})`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Prioriteit toekennen:</label>
+                  <select
+                    value={newStratPriority}
+                    onChange={(e) => setNewStratPriority(Number(e.target.value))}
+                    className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-bold text-purple-900 focus:ring-2 focus:ring-purple-500 outline-none"
+                  >
+                    {Array.from({ length: activeStrategiesDraft.length + 1 }, (_, i) => i + 1).map(p => (
+                      <option key={p} value={p}>
+                        Prioriteit #{p} {p === 1 ? '(Hoogste prioriteit / Eerste keus)' : p === activeStrategiesDraft.length + 1 ? '(Onderaan toevoegen)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block font-bold text-gray-700 mb-1">Hoe kopen? (Inleg):</label>
+                  <select
+                    value={newStratFundingMode}
+                    onChange={(e) => setNewStratFundingMode(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-purple-500 outline-none"
+                  >
+                    <option value="available_cash">💰 Enkel beschikbaar vrij geld</option>
+                    <option value="monthly_amount">📅 Vast bedrag per maand (€/mnd)</option>
+                    <option value="cash_plus_rotation">🔄 Beschikbaar geld + Rotatie</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs items-end">
+                {newStratFundingMode === 'monthly_amount' && (
+                  <div>
+                    <label className="block font-bold text-gray-700 mb-1">Maandbedrag (€/mnd):</label>
+                    <input
+                      type="number"
+                      min="25"
+                      step="25"
+                      value={newStratMonthlyBudget}
+                      onChange={(e) => setNewStratMonthlyBudget(e.target.value)}
+                      className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-bold text-gray-900 focus:ring-2 focus:ring-purple-500 outline-none"
+                    />
+                  </div>
+                )}
+
+                <div className={newStratFundingMode === 'monthly_amount' ? '' : 'sm:col-span-2'}>
+                  <label className="block font-bold text-gray-700 mb-1">Moeten er ook posities verkocht worden?</label>
+                  <select
+                    value={newStratAllowSelling}
+                    onChange={(e) => setNewStratAllowSelling(e.target.value)}
+                    className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-purple-500 outline-none"
+                  >
+                    <option value="full_strategy">✅ Ja, volledige verkoop- & snoeiregels</option>
+                    <option value="score_drop_only">🛡️ Enkel verkopen bij Score &lt; 5</option>
+                    <option value="buy_only">🔒 Nee, nooit verkopen (100% Buy & Hold)</option>
+                  </select>
+                </div>
+
+                <button
+                  onClick={requestAddActiveStrategy}
+                  disabled={savingConfigType === 'add-new'}
+                  className="py-2.5 px-4 bg-purple-700 hover:bg-purple-800 text-white font-extrabold rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <i className="ph-bold ph-check-circle"></i>
+                  <span>Strategie Toevoegen (met bevestiging)</span>
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* LIJST VAN ACTIEVE STRATEGIEËN OP VOLGORDE VAN PRIORITEIT */}
+          {activeStrategiesDraft.length === 0 ? (
+            <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200 text-center space-y-3">
+              <p className="text-sm font-black text-amber-950">Je hebt momenteel geen actieve strategieën gekoppeld.</p>
+              <p className="text-xs text-amber-800">
+                Klik op <strong>"Extra Strategie Toevoegen"</strong> om 1 of meerdere strategieën (Losse Aandelen en/of ETF DCA) te activeren.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+              {activeStrategiesDraft.map((item, idx) => {
+                const isEtf = item.strategy_type === 'ETF';
+                return (
+                  <div
+                    key={item.entry_id || `draft-${idx}`}
+                    className={`p-4 sm:p-5 rounded-2xl border-2 space-y-4 transition-all ${
+                      isEtf
+                        ? 'bg-emerald-50/40 border-emerald-200'
+                        : 'bg-indigo-50/40 border-indigo-200'
+                    }`}
+                  >
+                    {/* Header met Prioriteit-badge + Pijltjes om prioriteit te wisselen + Verwijderknop */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-black/5 pb-3">
+                      <div className="flex items-center gap-2.5">
+                        <span className={`px-2.5 py-1 rounded-xl font-black text-xs shadow-2xs flex items-center gap-1 ${
+                          item.priority_order === 1
+                            ? 'bg-amber-400 text-amber-950 border border-amber-500'
+                            : 'bg-slate-800 text-white'
+                        }`}>
+                          {item.priority_order === 1 ? '🏆 Prioriteit #1' : `Prioriteit #${item.priority_order}`}
+                        </span>
+                        <span className={`px-2.5 py-1 rounded-lg text-[11px] font-black border ${
+                          isEtf
+                            ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                            : 'bg-indigo-100 text-indigo-900 border-indigo-300'
+                        }`}>
+                          {isEtf ? '📈 ETF DCA' : '💎 Losse Aandelen'}
+                        </span>
+                      </div>
+
+                      {/* Prioriteit hoger/lager knoppen */}
+                      <div className="flex items-center gap-1">
+                        {activeStrategiesDraft.length > 1 && (
+                          <>
+                            <button
+                              type="button"
+                              disabled={idx === 0}
+                              onClick={() => requestChangePriority(item, item.priority_order - 1)}
+                              title="Verhoog prioriteit (eerder aan de beurt voor cash/budget)"
+                              className="px-2 py-1 rounded-lg bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 text-[11px] font-extrabold disabled:opacity-35 flex items-center gap-1"
+                            >
+                              ▲ Hoger
+                            </button>
+                            <button
+                              type="button"
+                              disabled={idx === activeStrategiesDraft.length - 1}
+                              onClick={() => requestChangePriority(item, item.priority_order + 1)}
+                              title="Verlaag prioriteit"
+                              className="px-2 py-1 rounded-lg bg-white hover:bg-gray-100 text-gray-700 border border-gray-300 text-[11px] font-extrabold disabled:opacity-35 flex items-center gap-1"
+                            >
+                              ▼ Lager
+                            </button>
+                          </>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => requestRemoveActiveStrategy(item)}
+                          title="Verwijder / deactiveer deze actieve strategie (met bevestiging)"
+                          className="px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-[11px] font-extrabold flex items-center gap-1 ml-1"
+                        >
+                          <i className="ph-bold ph-trash"></i>
+                          <span>Verwijderen</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3 text-xs">
+                      <div className="flex items-center justify-between text-[11px] text-gray-500">
+                        <span>
+                          {item.priority_order === 1
+                            ? '🔥 Eerste recht op vrij beschikbaar geld / budget'
+                            : `Volgt na Prioriteit #${item.priority_order - 1}`}
+                        </span>
+                        <span>
+                          Actief sinds: {item.activated_at ? new Date(item.activated_at).toLocaleDateString('nl-BE') : 'Vandaag'}
+                        </span>
+                      </div>
+
+                      <div>
+                        <label className="block font-bold text-gray-700 mb-1">Gekozen Strategie (Aandelen of ETF):</label>
+                        <select
+                          value={item.strategy_id}
+                          onChange={(e) => updateDraftField(idx, 'strategy_id', Number(e.target.value))}
+                          className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-bold text-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+                        >
+                          {allStrategiesList.map(s => (
+                            <option key={s.strategy_id} value={s.strategy_id}>
+                              [{(s.strategy_type || 'STOCKS') === 'ETF' ? '📈 ETF' : '💎 Aandelen'}] {s.name} {s.is_system_default ? '(Standaard)' : `(${s.creator_username})`}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block font-bold text-gray-700 mb-1">Hoe kopen? (Inlegmethode):</label>
+                          <select
+                            value={item.funding_mode}
+                            onChange={(e) => updateDraftField(idx, 'funding_mode', e.target.value)}
+                            className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none"
+                          >
+                            <option value="available_cash">💰 Enkel beschikbaar vrij geld</option>
+                            <option value="monthly_amount">📅 Vast bedrag per maand (€/mnd)</option>
+                            <option value="cash_plus_rotation">🔄 Beschikbaar geld + Rotatie</option>
+                          </select>
+                        </div>
+
+                        {item.funding_mode === 'monthly_amount' ? (
+                          <div>
+                            <label className="block font-bold text-gray-700 mb-1">Maandbedrag (€/mnd):</label>
+                            <input
+                              type="number"
+                              min="25"
+                              step="25"
+                              value={item.monthly_budget}
+                              onChange={(e) => updateDraftField(idx, 'monthly_budget', e.target.value)}
+                              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-bold text-gray-900 focus:ring-2 focus:ring-indigo-500 outline-none"
+                            />
+                          </div>
+                        ) : (
+                          <div>
+                            <label className="block font-bold text-gray-700 mb-1">Moeten posities verkocht worden?</label>
+                            <select
+                              value={item.allow_selling}
+                              onChange={(e) => updateDraftField(idx, 'allow_selling', e.target.value)}
+                              className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none"
+                            >
+                              <option value="full_strategy">✅ Ja, volledige verkoop- & snoeiregels</option>
+                              <option value="score_drop_only">🛡️ Enkel verkopen bij Score &lt; 5</option>
+                              <option value="buy_only">🔒 Nee, nooit verkopen (100% Buy & Hold)</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+
+                      {item.funding_mode === 'monthly_amount' && (
+                        <div>
+                          <label className="block font-bold text-gray-700 mb-1">Moeten posities verkocht worden?</label>
+                          <select
+                            value={item.allow_selling}
+                            onChange={(e) => updateDraftField(idx, 'allow_selling', e.target.value)}
+                            className="w-full px-3 py-2 bg-white border border-gray-300 rounded-xl font-semibold text-gray-800 focus:ring-2 focus:ring-indigo-500 outline-none"
+                          >
+                            <option value="full_strategy">✅ Ja, volledige verkoop- & snoeiregels</option>
+                            <option value="score_drop_only">🛡️ Enkel verkopen bij Score &lt; 5</option>
+                            <option value="buy_only">🔒 Nee, nooit verkopen (100% Buy & Hold)</option>
+                          </select>
+                        </div>
+                      )}
+
+                      <div className="pt-1 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => requestSaveActiveStrategy(item)}
+                          disabled={savingConfigType === `save-${item.entry_id || item.priority_order}`}
+                          className={`flex-1 py-2.5 px-4 text-white font-extrabold rounded-xl shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50 ${
+                            isEtf ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-indigo-600 hover:bg-indigo-700'
+                          }`}
+                        >
+                          <i className="ph-bold ph-floppy-disk"></i>
+                          <span>Wijziging Opslaan (met bevestiging)</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Historiek van Strategiewissels */}
+          <div className="p-4 sm:p-5 rounded-2xl bg-slate-50 border border-slate-200 space-y-3">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <div className="flex items-center gap-2">
+                <i className="ph-fill ph-clock-counter-clockwise text-purple-600 text-lg"></i>
+                <h3 className="text-sm font-black text-gray-900">
+                  Historiek van Strategiewissels & Instellingen ({myStrategyConfig?.strategyHistory?.length || 0})
+                </h3>
+              </div>
+              <span className="text-[11px] font-bold text-emerald-800 bg-emerald-100 px-2.5 py-0.5 rounded-full border border-emerald-200">
+                ✓ Meldingen van oude of verwijderde strategieën blijven altijd bewaard
+              </span>
+            </div>
+
+            {(!myStrategyConfig?.strategyHistory || myStrategyConfig.strategyHistory.length === 0) ? (
+              <p className="text-xs text-gray-500">Nog geen strategiewissels geregistreerd.</p>
+            ) : (
+              <div className="space-y-2 max-h-60 overflow-y-auto pr-1">
+                {myStrategyConfig.strategyHistory.map((item) => (
+                  <div
+                    key={item.history_id}
+                    className="p-3 bg-white rounded-xl border border-gray-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs"
+                  >
+                    <div className="space-y-1">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={`px-2 py-0.5 rounded font-black text-[10px] ${
+                          item.strategy_type === 'ETF'
+                            ? 'bg-emerald-100 text-emerald-900 border border-emerald-200'
+                            : 'bg-indigo-100 text-indigo-900 border border-indigo-200'
+                        }`}>
+                          {item.strategy_type === 'ETF' ? '📈 ETF DCA' : '💎 Losse Aandelen'}
+                        </span>
+                        {!item.new_strategy_id && item.old_strategy_name ? (
+                          <span className="font-bold text-red-700">
+                            Actieve strategie verwijderd / stopgezet: <strong>{item.old_strategy_name}</strong>
+                          </span>
+                        ) : item.old_strategy_name && item.old_strategy_id !== item.new_strategy_id ? (
+                          <span className="font-bold text-gray-800">
+                            Gewisseld van <span className="text-amber-700 underline">{item.old_strategy_name}</span> ➔ <strong className="text-indigo-700">{item.new_strategy_name}</strong>
+                          </span>
+                        ) : (
+                          <span className="font-bold text-gray-900">
+                            Actieve Strategie: <strong className="text-indigo-700">{item.new_strategy_name}</strong>
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-gray-500 flex flex-wrap items-center gap-2">
+                        <span>⚙️ Inleg: <strong>{item.funding_label}</strong></span>
+                        <span>•</span>
+                        <span>🛡️ Verkopen: <strong>{item.selling_label}</strong></span>
+                      </div>
+                      {item.notes && (
+                        <p className="text-[11px] text-gray-600 italic">{item.notes}</p>
+                      )}
+                    </div>
+                    <div className="text-right shrink-0 font-mono text-[11px] text-gray-500 bg-gray-50 px-2.5 py-1 rounded-lg border border-gray-200">
+                      {new Date(item.changed_at).toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* VERPLICHTE BEVESTIGINGSMODAL VOOR ELKE STRATEGIE-WIJZIGING, PRIORITEITSWISSEL OF VERWIJDERING */}
+      {confirmModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 border-2 border-gray-200 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className={`w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-black shrink-0 ${
+                  confirmModal.variant === 'red'
+                    ? 'bg-red-100 text-red-700 border border-red-200'
+                    : 'bg-indigo-100 text-indigo-700 border border-indigo-200'
+                }`}>
+                  {confirmModal.variant === 'red' ? '🗑️' : '🛡️'}
+                </span>
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-gray-400">
+                    Bevestiging Vereist
+                  </span>
+                  <h3 className="text-base font-black text-gray-900">
+                    {confirmModal.title}
+                  </h3>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-700 leading-relaxed font-medium">
+              {confirmModal.description}
+            </p>
+
+            {confirmModal.details?.length > 0 && (
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs text-gray-700">
+                {confirmModal.details.map((line, i) => (
+                  <div key={i} className="flex items-start gap-2">
+                    <span className="text-indigo-600 font-black">•</span>
+                    <span>{line}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <div className="flex items-center justify-end gap-2.5 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-extrabold transition-all"
+              >
+                Annuleren
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmModal.onConfirm && confirmModal.onConfirm()}
+                className={`px-4 py-2.5 rounded-xl text-white text-xs font-extrabold shadow-md transition-all flex items-center gap-1.5 ${
+                  confirmModal.variant === 'red'
+                    ? 'bg-red-600 hover:bg-red-700'
+                    : 'bg-indigo-600 hover:bg-indigo-700'
+                }`}
+              >
+                <i className="ph-bold ph-check"></i>
+                <span>{confirmModal.confirmLabel}</span>
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -1155,6 +1917,13 @@ const StrategyAdvisorTab = () => {
               >
                 🔴 Verkoop ({sellAlertsCount})
               </button>
+              <button
+                onClick={() => setAlertFilter('OLD_STRATEGY')}
+                className={`px-2.5 sm:px-3 py-1 sm:py-1.5 rounded-lg sm:rounded-xl text-xs font-bold transition-all whitespace-nowrap shrink-0 ${alertFilter === 'OLD_STRATEGY' ? 'bg-purple-600 text-white shadow-xs' : 'bg-purple-50 text-purple-800 hover:bg-purple-100'}`}
+                title="Toon bewaarde meldingen uit een vorige strategie (vóór een strategiewissel)"
+              >
+                🕰️ Vorige Strategie ({oldStrategyAlertsCount})
+              </button>
             </div>
 
             <div className="w-full md:w-64 relative">
@@ -1176,7 +1945,7 @@ const StrategyAdvisorTab = () => {
               <div className="font-bold text-base text-gray-700">Geen meldingen gevonden</div>
               <p className="text-xs text-gray-400">Er zijn momenteel geen signalen die voldoen aan de geselecteerde filters.</p>
             </div>
-          ) : alertLayoutMode === 'COLUMNS' && alertFilter !== 'SELL' ? (
+          ) : alertLayoutMode === 'COLUMNS' && alertFilter !== 'SELL' && alertFilter !== 'OLD_STRATEGY' ? (
             /* 3-KOLOMS WEERGAVE: GROEN | GEEL | ROOD */
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 items-start">
               

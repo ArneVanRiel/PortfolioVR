@@ -516,6 +516,14 @@ const StockStrategyTimeline = ({
                         </span>
                       )}
 
+                      <span className={`text-[10px] font-extrabold px-2 py-0.5 rounded-md border ${
+                        item.isFromOldStrategy
+                          ? 'bg-purple-100 text-purple-900 border-purple-300'
+                          : 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                      }`} title="Gekoppelde strategie waar deze melding uit voortkomt">
+                        {item.isFromOldStrategy ? `🕰️ Vorige: ${item.strategyName}` : `🎯 ${item.strategyName || 'Live Strategie Arne'}`}
+                      </span>
+
                       {item.score && (
                         <span className="text-[10px] font-bold text-gray-600 bg-gray-100 px-1.5 sm:px-2 py-0.5 rounded-md">
                           Score {item.score}/5

@@ -43,15 +43,8 @@ connectToDatabase().then(() => {
       await watchlistController.updateAndProcessStocks(null, null, true);
       await notificationController.checkNewSecQuarters();
       const pool = await sql.connect();
-      const activeUsersRes = await pool.request().query(`
-        SELECT id FROM PF_Users 
-        WHERE ISNULL(is_active, 1) = 1 
-          AND ISNULL(strategy_mode, 'arne_advies') IN ('arne_advies', 'full_access')
-      `);
-      for (const u of activeUsersRes.recordset) {
-        await notificationController.syncActiveStrategyAlerts(pool, u.id);
-      }
-      console.log('[Auto-Sync] Data, SEC checks & strategie-alerts succesvol uitgevoerd.');
+      await notificationController.syncAllUsersStrategyAlerts(pool, { force: true });
+      console.log('[Auto-Sync] Data, SEC checks & persoonlijke strategie-alerts voor alle gebruikers succesvol uitgevoerd.');
     } catch (schedErr) {
       console.warn('[Auto-Sync Notice] Interne achtergrond-update overgeslagen of mislukt:', schedErr.message);
     }
@@ -93,6 +86,10 @@ app.all('/public/cron/update-data', async (req, res, next) => {
       
       console.log('[Cron Background] Starten met SEC controle...');
       await notificationController.checkNewSecQuarters();
+
+      console.log('[Cron Background] Synchroniseren persoonlijke strategie-meldingen voor alle gebruikers...');
+      const pool = await sql.connect();
+      await notificationController.syncAllUsersStrategyAlerts(pool, { force: true });
       console.log('[Cron Background] Alle achtergrond-updates afgerond.');
     })().catch(backgroundError => {
       console.error('[Cron Background] Fout opgetreden tijdens achtergrondverwerking:', backgroundError);

@@ -6,14 +6,22 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
   const [selectedStrategyId, setSelectedStrategyId] = useState(initialStrategyToEdit?.strategy_id || 'new');
 
   // Metadata
+  const [strategyType, setStrategyType] = useState(initialStrategyToEdit?.strategy_type || 'STOCKS'); // 'STOCKS' | 'ETF'
   const [strategyName, setStrategyName] = useState(initialStrategyToEdit?.name || '');
   const [strategyDescription, setStrategyDescription] = useState(initialStrategyToEdit?.description || '');
   const [isPublic, setIsPublic] = useState(initialStrategyToEdit?.is_public !== undefined ? initialStrategyToEdit.is_public : true);
 
-  // Kapitaalallocatie & Volg-Instelling
+  // Kapitaalallocatie & Volg-Instelling (Hoe kopen & Moeten er aandelen verkocht worden?)
   const [allocationMode, setAllocationMode] = useState('cash_percent'); // 'cash_percent' | 'monthly_amount' | 'fixed_capital'
-  const [allocationPercent, setAllocationPercent] = useState(80); // % van de vrije cash
-  const [monthlyAmount, setMonthlyAmount] = useState(500); // € per maand
+  const [allocationPercent, setAllocationPercent] = useState(100); // % van de vrije cash
+  const [monthlyAmount, setMonthlyAmount] = useState(450); // € per maand
+  const [allowSellingMode, setAllowSellingMode] = useState('full_strategy'); // 'full_strategy' | 'score_drop_only' | 'buy_only'
+  const [etfAllocations, setEtfAllocations] = useState([
+    { ticker: 'VGWL.DE', name: 'Vanguard FTSE All-World UCITS ETF', weightPct: 70 },
+    { ticker: 'VUSA.DE', name: 'Vanguard S&P 500 UCITS ETF', weightPct: 12 },
+    { ticker: 'VGWD.DE', name: 'Vanguard All-World High Dividend', weightPct: 10 },
+    { ticker: 'SPYM', name: 'SPDR MSCI Emerging Markets UCITS ETF', weightPct: 8 }
+  ]);
   const [userAvailableCash, setUserAvailableCash] = useState(0);
   const [advisorData, setAdvisorData] = useState(null);
   const [actionFilter, setActionFilter] = useState('ALL'); // 'ALL' | 'BUY' | 'HOLD' | 'SELL'
@@ -45,6 +53,17 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
   const [testResult, setTestResult] = useState(null);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState({ type: '', text: '' });
+  const [userActiveStrategies, setUserActiveStrategies] = useState([]);
+  const [activatePriority, setActivatePriority] = useState(1);
+
+  // Verplichte Bevestigingsmodal voor Opslaan/Aanpassen, Activeren en Verwijderen
+  const [builderConfirmModal, setBuilderConfirmModal] = useState({
+    isOpen: false,
+    mode: '', // 'UPDATE_EXISTING' | 'SAVE_NEW' | 'ACTIVATE' | 'DEACTIVATE_ACTIVE' | 'DELETE_STRATEGY'
+    title: '',
+    description: '',
+    details: []
+  });
 
   // Haal live portfolio en marktsituatie op voor de actie-screener
   useEffect(() => {
@@ -63,12 +82,19 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     fetchAdvisorContext();
   }, []);
 
-  // Haal eigen strategieën op voor de dropdown
+  // Haal eigen strategieën én actieve strategie-koppelingen op
   const fetchMyStrategies = async () => {
     try {
-      const res = await http.get('/strategies');
-      const myOnly = (res.data || []).filter(s => s.can_view_details);
+      const [stratRes, cfgRes] = await Promise.all([
+        http.get('/strategies'),
+        http.get('/strategies/my-config').catch(() => ({ data: null }))
+      ]);
+      const myOnly = (stratRes.data || []).filter(s => s.can_view_details);
       setStrategies(myOnly);
+      if (cfgRes?.data?.activeStrategies) {
+        setUserActiveStrategies(cfgRes.data.activeStrategies);
+        setActivatePriority(cfgRes.data.activeStrategies.length + 1);
+      }
     } catch (err) {
       console.error('Fout bij ophalen eigen strategieën:', err);
     }
@@ -200,6 +226,9 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     setIsPublic(strat.is_public !== undefined ? strat.is_public : true);
 
     const p = strat.parameters || {};
+    const sType = (strat.strategy_type || p.strategyType || 'STOCKS').toUpperCase() === 'ETF' ? 'ETF' : 'STOCKS';
+    setStrategyType(sType);
+
     if (p.initialCapital !== undefined) setInitialCapital(p.initialCapital);
     if (p.sellOnScoreDrop !== undefined) setSellOnScoreDrop(p.sellOnScoreDrop);
     if (p.useWaardeverdelingSell !== undefined) setUseWaardeverdelingSell(p.useWaardeverdelingSell);
@@ -220,21 +249,29 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     if (p.capitalGainsExemption !== undefined) setCapitalGainsExemption(p.capitalGainsExemption);
     if (p.capitalGainsScope !== undefined) setCapitalGainsScope(p.capitalGainsScope);
     if (p.allocationMode !== undefined) setAllocationMode(p.allocationMode);
+    else if (p.fundingMode === 'monthly_amount') setAllocationMode('monthly_amount');
+    else if (p.fundingMode === 'available_cash') setAllocationMode('cash_percent');
     if (p.allocationPercent !== undefined) setAllocationPercent(p.allocationPercent);
     if (p.monthlyAmount !== undefined) setMonthlyAmount(p.monthlyAmount);
+    else if (p.monthlyBudget !== undefined) setMonthlyAmount(p.monthlyBudget);
+    if (p.allowSelling !== undefined) setAllowSellingMode(p.allowSelling);
+    if (Array.isArray(p.etfAllocations) && p.etfAllocations.length > 0) setEtfAllocations(p.etfAllocations);
     setTestResult(strat.performance_summary ? { kpis: strat.performance_summary } : null);
   };
 
-  const resetToNew = () => {
+  const resetToNew = (targetType = 'STOCKS') => {
+    const cleanType = targetType === 'ETF' ? 'ETF' : 'STOCKS';
     setSelectedStrategyId('new');
+    setStrategyType(cleanType);
     setStrategyName('');
     setStrategyDescription('');
     setIsPublic(true);
-    setAllocationMode('cash_percent');
-    setAllocationPercent(80);
-    setMonthlyAmount(500);
-    setSellOnScoreDrop(true);
-    setUseWaardeverdelingSell(true);
+    setAllocationMode(cleanType === 'ETF' ? 'monthly_amount' : 'cash_percent');
+    setAllocationPercent(100);
+    setMonthlyAmount(cleanType === 'ETF' ? 450 : 500);
+    setAllowSellingMode(cleanType === 'ETF' ? 'buy_only' : 'full_strategy');
+    setSellOnScoreDrop(cleanType !== 'ETF');
+    setUseWaardeverdelingSell(cleanType !== 'ETF');
     setUsePortfolioRelativeWeight(true);
     setEnableActiveRebalance(true);
     setUseTrendFilter200Sma(false);
@@ -242,7 +279,7 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     setTakeProfitAtIntrinsicRatio(0);
     setStopLossPct(0);
     setMaxPositions(0);
-    setAllowFractionalShares(true);
+    setAllowFractionalShares(cleanType !== 'ETF');
     setMinOrderAmount(100);
     setMinOrderSkipThreshold(50);
     setFeePerOrder(1.0);
@@ -291,25 +328,21 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     }
   };
 
-  // Strategie Opslaan
-  const handleSaveStrategy = async () => {
-    if (!strategyName.trim()) {
-      setFeedback({ type: 'error', text: 'Geef eerst een naam op voor deze strategie.' });
-      return;
-    }
-
-    setSaving(true);
-    setFeedback({ type: '', text: '' });
-
-    const parameters = {
+  const buildParametersPayload = () => {
+    const fundingMode = allocationMode === 'monthly_amount' ? 'monthly_amount' : 'available_cash';
+    return {
+      strategyType,
+      fundingMode,
+      allowSelling: allowSellingMode,
+      monthlyBudget: Number(monthlyAmount),
       allocationMode,
       allocationPercent: Number(allocationPercent),
       monthlyAmount: Number(monthlyAmount),
       initialCapital: Number(initialCapital),
-      requireScore5: true,
-      requireWaardeverdelingRise: true,
-      sellOnScoreDrop,
-      useWaardeverdelingSell,
+      requireScore5: strategyType === 'STOCKS',
+      requireWaardeverdelingRise: strategyType === 'STOCKS',
+      sellOnScoreDrop: allowSellingMode === 'buy_only' ? false : sellOnScoreDrop,
+      useWaardeverdelingSell: allowSellingMode === 'full_strategy' ? useWaardeverdelingSell : false,
       useMacdSell: false,
       usePortfolioRelativeWeight,
       enableActiveRebalance,
@@ -326,8 +359,33 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
       stopLossPct: Number(stopLossPct),
       maxPositions: Number(maxPositions),
       maxPriceToIntrinsicRatio: Number(maxPriceToIntrinsicRatio),
-      takeProfitAtIntrinsicRatio: Number(takeProfitAtIntrinsicRatio)
+      takeProfitAtIntrinsicRatio: Number(takeProfitAtIntrinsicRatio),
+      etfAllocations: strategyType === 'ETF' ? etfAllocations : undefined
     };
+  };
+
+  const currentSelectedStrategyObj = useMemo(() => {
+    if (!selectedStrategyId || selectedStrategyId === 'new') return null;
+    return strategies.find(s => Number(s.strategy_id) === Number(selectedStrategyId)) || null;
+  }, [strategies, selectedStrategyId]);
+
+  const activeEntryForSelected = useMemo(() => {
+    if (!selectedStrategyId || selectedStrategyId === 'new') return null;
+    return userActiveStrategies.find(a => Number(a.strategy_id) === Number(selectedStrategyId)) || null;
+  }, [userActiveStrategies, selectedStrategyId]);
+
+  // Daadwerkelijke API-call voor opslaan (als update of als nieuwe kopie)
+  const executeSaveStrategy = async (forceAsNewCopy = false) => {
+    if (!strategyName.trim()) {
+      setFeedback({ type: 'error', text: 'Geef eerst een naam op voor deze strategie.' });
+      return;
+    }
+
+    setSaving(true);
+    setFeedback({ type: '', text: '' });
+    setBuilderConfirmModal(prev => ({ ...prev, isOpen: false }));
+
+    const parameters = buildParametersPayload();
 
     const performanceSummary = testResult?.kpis ? {
       totalReturnPct: testResult.kpis.totalReturnPct,
@@ -342,29 +400,33 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     } : null;
 
     try {
-      if (selectedStrategyId && selectedStrategyId !== 'new') {
-        // Update
+      if (!forceAsNewCopy && selectedStrategyId && selectedStrategyId !== 'new') {
         await http.put(`/strategies/${selectedStrategyId}`, {
           name: strategyName.trim(),
           description: strategyDescription.trim(),
           is_public: isPublic,
+          strategy_type: strategyType,
           parameters,
           performance_summary: performanceSummary
         });
         setFeedback({ type: 'success', text: `Strategie "${strategyName}" succesvol bijgewerkt!` });
       } else {
-        // Create new
+        const copyName = forceAsNewCopy && currentSelectedStrategyObj && strategyName.trim() === currentSelectedStrategyObj.name
+          ? `${strategyName.trim()} (Kopie)`
+          : strategyName.trim();
         const res = await http.post('/strategies', {
-          name: strategyName.trim(),
+          name: copyName,
           description: strategyDescription.trim(),
           is_public: isPublic,
+          strategy_type: strategyType,
           parameters,
           performance_summary: performanceSummary
         });
+        setStrategyName(copyName);
         setSelectedStrategyId(res.data.strategy_id);
-        setFeedback({ type: 'success', text: `Nieuwe strategie "${strategyName}" succesvol aangemaakt en opgeslagen!` });
+        setFeedback({ type: 'success', text: `Nieuwe ${strategyType === 'ETF' ? 'ETF-' : 'Aandelen-'}strategie "${copyName}" succesvol aangemaakt en opgeslagen!` });
       }
-      fetchMyStrategies();
+      await fetchMyStrategies();
       if (onStrategySaved) onStrategySaved();
     } catch (err) {
       console.error('Fout bij opslaan:', err);
@@ -374,48 +436,67 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
     }
   };
 
-  // Strategie direct activeren op de eigen portefeuille
-  const handleActivateOnPortfolio = async () => {
+  // Vraag ALTIJD bevestiging vóór het aanpassen/opslaan van een bestaande strategie
+  const handleSaveStrategy = () => {
+    if (!strategyName.trim()) {
+      setFeedback({ type: 'error', text: 'Geef eerst een naam op voor deze strategie.' });
+      return;
+    }
+
+    if (selectedStrategyId && selectedStrategyId !== 'new') {
+      setBuilderConfirmModal({
+        isOpen: true,
+        mode: 'UPDATE_EXISTING',
+        title: `Strategie "${strategyName}" aanpassen of als nieuwe kopie opslaan?`,
+        description: `Je bewerkt momenteel een bestaande strategie (ID #${selectedStrategyId}). Wil je deze bestaande strategie overschrijven, of liever opslaan als een aparte nieuwe strategie?`,
+        details: [
+          `Naam: ${strategyName}`,
+          `Type: ${strategyType === 'ETF' ? 'ETF DCA Strategie' : 'Losse Aandelen Strategie'}`,
+          `Tip: Kies "Opslaan als Nieuwe Kopie" als je de bestaande strategie ongewijzigd wilt laten.`
+        ]
+      });
+    } else {
+      executeSaveStrategy(false);
+    }
+  };
+
+  // Vraag bevestiging vóór het activeren op de portefeuille (met Prioriteit-keuze)
+  const handleActivateOnPortfolio = () => {
+    if ((!selectedStrategyId || selectedStrategyId === 'new') && !strategyName.trim()) {
+      setFeedback({ type: 'error', text: 'Geef eerst een naam op voor deze strategie om ze te kunnen activeren.' });
+      return;
+    }
+    const existingPrio = activeEntryForSelected ? activeEntryForSelected.priority_order : userActiveStrategies.length + 1;
+    setActivatePriority(existingPrio);
+    setBuilderConfirmModal({
+      isOpen: true,
+      mode: 'ACTIVATE',
+      title: `Strategie "${strategyName || 'Gekozen Strategie'}" activeren op je portefeuille?`,
+      description: activeEntryForSelected
+        ? `Deze strategie staat al in je actieve lijst (Prioriteit #${activeEntryForSelected.priority_order}). Bevestig hieronder om de volg-instellingen en prioriteit bij te werken.`
+        : `Je kunt 1, 2 of meer strategieën tegelijk volgen (bijv. 2 aandelen-strategieën of enkel 1 ETF-strategie). Kies hieronder welke prioriteit deze strategie krijgt.`,
+      details: [
+        `Type: ${strategyType === 'ETF' ? '📈 ETF DCA Strategie' : '💎 Losse Aandelen Strategie'}`,
+        `Inleg: ${allocationMode === 'monthly_amount' ? `Vast bedrag (€${monthlyAmount}/mnd)` : 'Beschikbaar vrij geld'}`,
+        `Verkopen: ${allowSellingMode === 'buy_only' ? 'Nooit verkopen (Buy & Hold)' : allowSellingMode === 'score_drop_only' ? 'Enkel verkopen bij Score < 5' : 'Volledige verkoop- & snoeiregels'}`
+      ]
+    });
+  };
+
+  const executeActivateOnPortfolio = async () => {
     setActivating(true);
     setFeedback({ type: '', text: '' });
+    setBuilderConfirmModal(prev => ({ ...prev, isOpen: false }));
     try {
       let stratId = selectedStrategyId;
+      const parameters = buildParametersPayload();
       if (!stratId || stratId === 'new') {
-        if (!strategyName.trim()) {
-          setFeedback({ type: 'error', text: 'Geef eerst een naam op voor deze strategie om ze te kunnen activeren.' });
-          setActivating(false);
-          return;
-        }
         const res = await http.post('/strategies', {
           name: strategyName.trim(),
           description: strategyDescription.trim(),
           is_public: isPublic,
-          parameters: {
-            allocationMode,
-            allocationPercent: Number(allocationPercent),
-            monthlyAmount: Number(monthlyAmount),
-            initialCapital: Number(initialCapital),
-            requireScore5: true,
-            requireWaardeverdelingRise: true,
-            sellOnScoreDrop,
-            useWaardeverdelingSell,
-            usePortfolioRelativeWeight,
-            enableActiveRebalance,
-            useTrendFilter200Sma,
-            allowFractionalShares,
-            minOrderAmount: Number(minOrderAmount),
-            minOrderSkipThreshold: Number(minOrderSkipThreshold),
-            feePerOrder: Number(feePerOrder),
-            taxRatePct: Number(taxRatePct),
-            enableCapitalGainsTax,
-            capitalGainsTaxRate: Number(capitalGainsTaxRate),
-            capitalGainsExemption: Number(capitalGainsExemption),
-            capitalGainsScope,
-            stopLossPct: Number(stopLossPct),
-            maxPositions: Number(maxPositions),
-            maxPriceToIntrinsicRatio: Number(maxPriceToIntrinsicRatio),
-            takeProfitAtIntrinsicRatio: Number(takeProfitAtIntrinsicRatio)
-          },
+          strategy_type: strategyType,
+          parameters,
           performance_summary: testResult?.kpis ? {
             totalReturnPct: testResult.kpis.totalReturnPct,
             xirrPct: testResult.kpis.xirrPct || testResult.kpis.cagrPct,
@@ -428,17 +509,89 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
         stratId = res.data.strategy_id;
         setSelectedStrategyId(stratId);
       }
-      await http.post(`/strategies/${stratId}/activate`);
+      const fundingMode = allocationMode === 'monthly_amount' ? 'monthly_amount' : 'available_cash';
+      await http.post('/strategies/my-active', {
+        entry_id: activeEntryForSelected?.entry_id,
+        strategy_id: Number(stratId),
+        priority_order: Number(activatePriority || 1),
+        funding_mode: fundingMode,
+        monthly_budget: Number(monthlyAmount),
+        allow_selling: allowSellingMode
+      });
       setFeedback({
         type: 'success',
-        text: `⚡ Strategie "${strategyName || 'Aangepaste Strategie'}" is nu actief gekoppeld aan jouw portefeuille! De Strategie Assistent in Portfolio volgt vanaf nu deze regels en dit budget.`
+        text: `⚡ Strategie "${strategyName || 'Gekozen Strategie'}" is nu actief op Prioriteit #${activatePriority}! Eerdere meldingen blijven altijd bewaard.`
       });
-      fetchMyStrategies();
+      await fetchMyStrategies();
     } catch (err) {
       console.error('Fout bij activeren strategie:', err);
       setFeedback({ type: 'error', text: err.response?.data?.message || 'Fout bij activeren van strategie.' });
     } finally {
       setActivating(false);
+    }
+  };
+
+  // Actieve strategie verwijderen / stopzetten voor deze gebruiker (met bevestiging)
+  const requestDeactivateFromPortfolio = () => {
+    if (!activeEntryForSelected) return;
+    setBuilderConfirmModal({
+      isOpen: true,
+      mode: 'DEACTIVATE_ACTIVE',
+      title: `Actieve strategie "${strategyName}" stopzetten?`,
+      description: `Weet je zeker dat je "${strategyName}" (Prioriteit #${activeEntryForSelected.priority_order}) wilt verwijderen uit jouw actieve strategieën?`,
+      details: [
+        `Je ontvangt voor deze strategie geen nieuwe meldingen meer.`,
+        `Alle historische meldingen van deze strategie blijven bewaard in je overzicht.`,
+        `De strategie zelf blijft bewaard in de Strategie Builder.`
+      ]
+    });
+  };
+
+  const executeDeactivateFromPortfolio = async () => {
+    if (!activeEntryForSelected) return;
+    setBuilderConfirmModal(prev => ({ ...prev, isOpen: false }));
+    try {
+      await http.delete(`/strategies/my-active/${activeEntryForSelected.entry_id}`);
+      setFeedback({
+        type: 'success',
+        text: `🗑️ "${strategyName}" is verwijderd uit je actieve strategieën. Historische meldingen blijven bewaard.`
+      });
+      await fetchMyStrategies();
+    } catch (err) {
+      setFeedback({ type: 'error', text: err.response?.data?.message || 'Kon actieve strategie niet verwijderen.' });
+    }
+  };
+
+  // Custom strategie definitief verwijderen uit de database (met bevestiging)
+  const requestDeleteCustomStrategy = () => {
+    if (!currentSelectedStrategyObj || currentSelectedStrategyObj.is_system_default) return;
+    setBuilderConfirmModal({
+      isOpen: true,
+      mode: 'DELETE_STRATEGY',
+      title: `Strategie "${strategyName}" definitief verwijderen?`,
+      description: `Weet je zeker dat je de zelfgemaakte strategie "${strategyName}" definitief wilt verwijderen uit de Strategie Builder?`,
+      details: [
+        `Deze actie verwijdert de strategie uit de lijst.`,
+        `Oude meldingen die ooit door deze strategie zijn gegenereerd blijven bewaard.`
+      ]
+    });
+  };
+
+  const executeDeleteCustomStrategy = async () => {
+    if (!currentSelectedStrategyObj) return;
+    setBuilderConfirmModal(prev => ({ ...prev, isOpen: false }));
+    try {
+      if (activeEntryForSelected) {
+        await http.delete(`/strategies/my-active/${activeEntryForSelected.entry_id}`).catch(() => {});
+      }
+      await http.delete(`/strategies/${currentSelectedStrategyObj.strategy_id}`);
+      const deletedName = currentSelectedStrategyObj.name;
+      resetToNew('STOCKS');
+      setFeedback({ type: 'success', text: `🗑️ Strategie "${deletedName}" is definitief verwijderd.` });
+      await fetchMyStrategies();
+      if (onStrategySaved) onStrategySaved();
+    } catch (err) {
+      setFeedback({ type: 'error', text: err.response?.data?.message || 'Kon strategie niet verwijderen.' });
     }
   };
 
@@ -453,16 +606,23 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
                 <i className="ph-fill ph-wrench text-2xl"></i>
               </span>
               <div>
-                <h2 className="text-xl font-bold text-gray-900">Strategie Builder</h2>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h2 className="text-xl font-bold text-gray-900">Strategie Builder</h2>
+                  {activeEntryForSelected && (
+                    <span className="px-2.5 py-0.5 bg-amber-100 text-amber-900 border border-amber-300 rounded-full text-[11px] font-black">
+                      🏆 Actief op jouw Portfolio (Prioriteit #{activeEntryForSelected.priority_order})
+                    </span>
+                  )}
+                </div>
                 <p className="text-sm text-gray-500">
-                  Ontwerp, parameteriseer en test jouw eigen datagedreven kwartaal- en momentumstrategieën.
+                  Ontwerp, parameteriseer en test jouw eigen datagedreven kwartaal- en momentumstrategieën. Elke aanpassing of verwijdering vraagt eerst om bevestiging.
                 </p>
               </div>
             </div>
           </div>
 
           {/* Strategie Selectie Dropdown */}
-          <div className="flex items-center gap-2 w-full md:w-auto">
+          <div className="flex items-center gap-2 w-full md:w-auto flex-wrap">
             <select
               value={selectedStrategyId}
               onChange={(e) => {
@@ -477,20 +637,47 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
               className="px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500"
             >
               <option value="new">✨ + Nieuwe Strategie Maken</option>
-              {strategies.map(s => (
-                <option key={s.strategy_id} value={s.strategy_id}>
-                  {s.is_system_default ? '⭐ ' : ''}{s.name}
-                </option>
-              ))}
+              {strategies.map(s => {
+                const activeMatch = userActiveStrategies.find(a => Number(a.strategy_id) === Number(s.strategy_id));
+                return (
+                  <option key={s.strategy_id} value={s.strategy_id}>
+                    {activeMatch ? `[Actief #${activeMatch.priority_order}] ` : ''}{s.is_system_default ? '⭐ ' : ''}{s.name}
+                  </option>
+                );
+              })}
             </select>
 
             <button
-              onClick={resetToNew}
-              className="px-3 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs rounded-xl transition-all"
-              title="Reset naar een nieuw leeg template"
+              onClick={() => resetToNew(strategyType)}
+              className="px-3 py-2.5 bg-purple-50 hover:bg-purple-100 text-purple-800 border border-purple-200 font-bold text-xs rounded-xl transition-all"
+              title="Start een nieuwe lege strategie"
             >
-              Reset
+              + Nieuw
             </button>
+
+            {activeEntryForSelected && (
+              <button
+                type="button"
+                onClick={requestDeactivateFromPortfolio}
+                className="px-3 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold text-xs rounded-xl transition-all flex items-center gap-1"
+                title="Haal deze strategie uit jouw actieve strategieën (met bevestiging)"
+              >
+                <i className="ph-bold ph-plugs"></i>
+                <span>Actieve Strategie Verwijderen</span>
+              </button>
+            )}
+
+            {currentSelectedStrategyObj && !currentSelectedStrategyObj.is_system_default && (
+              <button
+                type="button"
+                onClick={requestDeleteCustomStrategy}
+                className="px-3 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold text-xs rounded-xl transition-all flex items-center gap-1"
+                title="Verwijder deze eigen strategie definitief (met bevestiging)"
+              >
+                <i className="ph-bold ph-trash"></i>
+                <span>Verwijder Strategie</span>
+              </button>
+            )}
           </div>
         </div>
 
@@ -504,21 +691,78 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
           </div>
         )}
 
-        {/* 2. Metadata (Naam, Beschrijving, Zichtbaarheid) */}
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-6">
-          <div className="md:col-span-2 space-y-4">
-            <div>
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
-                Strategienaam <span className="text-red-500">*</span>
-              </label>
-              <input
-                type="text"
-                placeholder="bv. Arne's 5/5 Kwaliteit &amp; Waardeverdeling..."
-                value={strategyName}
-                onChange={(e) => setStrategyName(e.target.value)}
-                className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:bg-white transition-all"
-              />
+        {/* 2. Metadata (Strategie Type, Naam, Beschrijving, Zichtbaarheid) */}
+        <div className="pt-6 space-y-4">
+          <div>
+            <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Welk type strategie wil je bouwen of aanpassen?
+            </label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  setStrategyType('STOCKS');
+                  if (selectedStrategyId === 'new') {
+                    setAllocationMode('cash_percent');
+                    setAllowSellingMode('full_strategy');
+                  }
+                }}
+                className={`p-3.5 rounded-xl border-2 text-left transition-all flex items-center gap-3 ${
+                  strategyType === 'STOCKS'
+                    ? 'border-indigo-600 bg-indigo-50/60 shadow-xs'
+                    : 'border-gray-200 hover:border-gray-300 bg-white'
+                }`}
+              >
+                <span className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center text-lg shrink-0">
+                  💎
+                </span>
+                <div>
+                  <div className="text-xs sm:text-sm font-black text-gray-900">Losse Aandelen Strategie</div>
+                  <div className="text-[11px] text-gray-500">Score 5/5 kwaliteitsaandelen, intrinsieke waarde &amp; waardeverdeling</div>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setStrategyType('ETF');
+                  if (selectedStrategyId === 'new') {
+                    setAllocationMode('monthly_amount');
+                    setMonthlyAmount(450);
+                    setAllowSellingMode('buy_only');
+                  }
+                }}
+                className={`p-3.5 rounded-xl border-2 text-left transition-all flex items-center gap-3 ${
+                  strategyType === 'ETF'
+                    ? 'border-emerald-600 bg-emerald-50/60 shadow-xs'
+                    : 'border-gray-200 hover:border-gray-300 bg-white'
+                }`}
+              >
+                <span className="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center text-lg shrink-0">
+                  📈
+                </span>
+                <div>
+                  <div className="text-xs sm:text-sm font-black text-gray-900">ETF DCA &amp; Dip-Buy Strategie</div>
+                  <div className="text-[11px] text-gray-500">Kern-ETF mandje met vaste maandpot &amp; MACD oversold koopmomenten</div>
+                </div>
+              </button>
             </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            <div className="md:col-span-2 space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+                  Strategienaam <span className="text-red-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder={strategyType === 'ETF' ? "bv. Arne ETF DCA & MACD Dip-Buy (€450/mnd)..." : "bv. Arne's 5/5 Kwaliteit & Waardeverdeling..."}
+                  value={strategyName}
+                  onChange={(e) => setStrategyName(e.target.value)}
+                  className="w-full px-3.5 py-2.5 bg-gray-50 border border-gray-200 rounded-xl text-sm font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-500 focus:bg-white transition-all"
+                />
+              </div>
 
             <div>
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
@@ -556,6 +800,7 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
                 Publiceer in Strategie Bibliotheek
               </span>
             </label>
+          </div>
           </div>
         </div>
 
@@ -751,6 +996,119 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
               </div>
             </div>
           </div>
+
+          {/* Verkoopvoorkeur: Moeten er ook aandelen verkocht worden? */}
+          <div className="mt-4 p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-2.5">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <span className="text-xs font-extrabold text-gray-900 flex items-center gap-1.5">
+                <i className="ph-fill ph-scales text-indigo-600 text-base"></i>
+                <span>Moeten er binnen deze strategie ook posities verkocht worden?</span>
+              </span>
+              <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-100 text-indigo-800">
+                Bepaalt of de Strategie Assistent verkoopmeldingen stuurt
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+              <button
+                type="button"
+                onClick={() => {
+                  setAllowSellingMode('full_strategy');
+                  setSellOnScoreDrop(true);
+                  setUseWaardeverdelingSell(true);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  allowSellingMode === 'full_strategy'
+                    ? 'border-indigo-600 bg-indigo-50/80 text-indigo-950 font-bold shadow-2xs'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <div className="font-extrabold">✅ Ja, volledige verkoop- &amp; snoeiregels</div>
+                <div className="text-[11px] text-gray-500 mt-0.5 font-normal">
+                  100% verkoop bij Score &lt; 5 én deelverkoop bij daling waardeverdeling.
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAllowSellingMode('score_drop_only');
+                  setSellOnScoreDrop(true);
+                  setUseWaardeverdelingSell(false);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  allowSellingMode === 'score_drop_only'
+                    ? 'border-amber-600 bg-amber-50/80 text-amber-950 font-bold shadow-2xs'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <div className="font-extrabold">🛡️ Enkel noodverkoop bij Score &lt; 5</div>
+                <div className="text-[11px] text-gray-500 mt-0.5 font-normal">
+                  Geen tussentijdse deelverkopen/snoei, enkel verkopen bij kwaliteitsverlies.
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setAllowSellingMode('buy_only');
+                  setSellOnScoreDrop(false);
+                  setUseWaardeverdelingSell(false);
+                }}
+                className={`p-3 rounded-xl border text-left transition-all ${
+                  allowSellingMode === 'buy_only'
+                    ? 'border-emerald-600 bg-emerald-50/80 text-emerald-950 font-bold shadow-2xs'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <div className="font-extrabold">🔒 Nee, nooit verkopen (100% Buy &amp; Hold)</div>
+                <div className="text-[11px] text-gray-500 mt-0.5 font-normal">
+                  Enkel aankoopmeldingen ontvangen; bestaande posities nooit verkopen.
+                </div>
+              </button>
+            </div>
+          </div>
+
+          {/* Specifieke ETF Mandje & Wegingen sectie wanneer ETF Strategie gekozen is */}
+          {strategyType === 'ETF' && (
+            <div className="mt-4 p-4 rounded-xl bg-emerald-50/60 border border-emerald-200 space-y-3">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="text-xs font-extrabold text-emerald-950 flex items-center gap-1.5">
+                  <i className="ph-fill ph-chart-pie-slice text-emerald-600 text-base"></i>
+                  <span>ETF DCA Mandje &amp; Doelwegingen (Totaal: {etfAllocations.reduce((s, e) => s + Number(e.weightPct || 0), 0)}%)</span>
+                </div>
+                <span className="text-[11px] font-bold text-emerald-800">
+                  Dagelijkse pot-opbouw: € {(Number(monthlyAmount || 450) / 30).toFixed(2)} / dag
+                </span>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+                {etfAllocations.map((etf, idx) => (
+                  <div key={etf.ticker} className="p-3 bg-white rounded-xl border border-emerald-200 space-y-1.5">
+                    <div className="flex items-center justify-between font-black text-gray-900">
+                      <span>{etf.ticker}</span>
+                      <span className="text-emerald-700">€ {((Number(monthlyAmount || 450) * (Number(etf.weightPct) / 100))).toFixed(0)}/mnd</span>
+                    </div>
+                    <div className="text-[10px] text-gray-500 truncate">{etf.name}</div>
+                    <div className="flex items-center gap-1.5 pt-1">
+                      <span className="text-[10px] font-bold text-gray-500">Weging (%):</span>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={etf.weightPct}
+                        onChange={(e) => {
+                          const next = [...etfAllocations];
+                          next[idx] = { ...next[idx], weightPct: Number(e.target.value) };
+                          setEtfAllocations(next);
+                        }}
+                        className="w-full px-2 py-1 border border-gray-200 rounded-lg font-bold text-gray-900 text-right"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1149,15 +1507,22 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
 
       {/* 6. Vaste Opslag, Activatie & Test Balk */}
       <div className="bg-white rounded-2xl p-4 border border-gray-200 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-3 sticky bottom-4 z-10 backdrop-blur-md bg-white/95">
-        <div className="text-xs text-gray-500 font-medium">
+        <div className="text-xs text-gray-500 font-medium flex items-center gap-2 flex-wrap">
           {selectedStrategyId !== 'new' ? (
-            <span>Bestaande strategie bewerken (ID #{selectedStrategyId})</span>
+            <>
+              <span>Bestaande strategie geselecteerd (ID #{selectedStrategyId})</span>
+              {activeEntryForSelected && (
+                <span className="px-2 py-0.5 bg-amber-100 text-amber-900 rounded-md font-bold text-[11px]">
+                  Actief op Prioriteit #{activeEntryForSelected.priority_order}
+                </span>
+              )}
+            </>
           ) : (
             <span>Nieuwe strategie klaar om opgeslagen of geactiveerd te worden</span>
           )}
         </div>
 
-        <div className="flex items-center gap-2.5 w-full sm:w-auto flex-wrap justify-end">
+        <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap justify-end">
           {onOpenBacktest && (
             <button
               onClick={onOpenBacktest}
@@ -1187,11 +1552,23 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
             )}
           </button>
 
+          {activeEntryForSelected && (
+            <button
+              type="button"
+              onClick={requestDeactivateFromPortfolio}
+              className="px-3.5 py-2.5 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 font-bold text-xs rounded-xl transition-all flex items-center gap-1.5"
+              title="Verwijder uit jouw actieve strategieën (met bevestiging)"
+            >
+              <i className="ph-bold ph-trash"></i>
+              <span>Actieve Strategie Verwijderen</span>
+            </button>
+          )}
+
           <button
             onClick={handleActivateOnPortfolio}
             disabled={activating}
             className="px-4 py-2.5 bg-purple-600 hover:bg-purple-700 active:scale-95 text-white font-bold text-xs rounded-xl shadow-xs transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
-            title="Koppel deze strategie direct aan je portefeuille zodat de assistent conform deze regels adviseert"
+            title="Koppel deze strategie aan je portefeuille met gekozen prioriteit (vraagt eerst bevestiging)"
           >
             {activating ? (
               <>
@@ -1206,6 +1583,19 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
             )}
           </button>
 
+          {selectedStrategyId !== 'new' && (
+            <button
+              type="button"
+              onClick={() => executeSaveStrategy(true)}
+              disabled={saving}
+              className="px-4 py-2.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 disabled:opacity-50"
+              title="Sla op als een nieuwe losstaande strategie zonder de huidige te overschrijven"
+            >
+              <i className="ph-bold ph-copy"></i>
+              <span>✨ Opslaan als Nieuwe Kopie</span>
+            </button>
+          )}
+
           <button
             onClick={handleSaveStrategy}
             disabled={saving}
@@ -1219,12 +1609,148 @@ const StrategyBuilderTab = ({ initialStrategyToEdit, onStrategySaved, onOpenBack
             ) : (
               <>
                 <i className="ph-bold ph-floppy-disk"></i>
-                💾 Opslaan
+                <span>{selectedStrategyId !== 'new' ? '💾 Aanpassen (met bevestiging)' : '💾 Nieuwe Strategie Opslaan'}</span>
               </>
             )}
           </button>
         </div>
       </div>
+
+      {/* VERPLICHTE BEVESTIGINGSMODAL VOOR OPSLAAN/AANPASSEN, ACTIVEREN EN VERWIJDEREN */}
+      {builderConfirmModal.isOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-fade-in">
+          <div className="bg-white rounded-3xl max-w-lg w-full p-6 border-2 border-gray-200 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <span className={`w-10 h-10 rounded-2xl flex items-center justify-center text-lg font-black shrink-0 ${
+                  builderConfirmModal.mode === 'DEACTIVATE_ACTIVE' || builderConfirmModal.mode === 'DELETE_STRATEGY'
+                    ? 'bg-red-100 text-red-700 border border-red-200'
+                    : 'bg-purple-100 text-purple-700 border border-purple-200'
+                }`}>
+                  {builderConfirmModal.mode === 'DEACTIVATE_ACTIVE' || builderConfirmModal.mode === 'DELETE_STRATEGY' ? '🗑️' : '🛡️'}
+                </span>
+                <div>
+                  <span className="text-[10px] font-black uppercase tracking-wider text-gray-400">
+                    Bevestiging Vereist
+                  </span>
+                  <h3 className="text-base font-black text-gray-900">
+                    {builderConfirmModal.title}
+                  </h3>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setBuilderConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                className="text-gray-400 hover:text-gray-700 font-bold text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-gray-700 leading-relaxed font-medium">
+              {builderConfirmModal.description}
+            </p>
+
+            {builderConfirmModal.details?.length > 0 && (
+              <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 space-y-1.5 text-xs text-gray-700">
+                {builderConfirmModal.details.map((line, idx) => (
+                  <div key={idx} className="flex items-start gap-2">
+                    <span className="text-purple-600 font-black">•</span>
+                    <span>{line}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Prioriteit-kiezer bij Activeren op Portfolio */}
+            {builderConfirmModal.mode === 'ACTIVATE' && (
+              <div className="p-3.5 rounded-2xl bg-purple-50 border border-purple-200 space-y-2 text-xs">
+                <label className="block font-black text-purple-950">
+                  Welke prioriteit krijgt deze strategie op je portefeuille?
+                </label>
+                <select
+                  value={activatePriority}
+                  onChange={(e) => setActivatePriority(Number(e.target.value))}
+                  className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-bold text-gray-900 focus:ring-2 focus:ring-purple-500 outline-none"
+                >
+                  {Array.from({ length: (activeEntryForSelected ? userActiveStrategies.length : userActiveStrategies.length + 1) }, (_, i) => i + 1).map(p => (
+                    <option key={p} value={p}>
+                      Prioriteit #{p} {p === 1 ? '(Hoogste prioriteit / Eerste recht op cash)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-purple-800">
+                  Huidige actieve strategieën op jouw portfolio: <strong>{userActiveStrategies.length}</strong>. Je kunt 1 strategie volgen, of meerdere (bijv. 2 aandelen-strategieën of 1 ETF + 1 aandelen).
+                </p>
+              </div>
+            )}
+
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setBuilderConfirmModal(prev => ({ ...prev, isOpen: false }))}
+                className="px-4 py-2.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-extrabold transition-all"
+              >
+                Annuleren
+              </button>
+
+              {builderConfirmModal.mode === 'UPDATE_EXISTING' && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => executeSaveStrategy(true)}
+                    className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5"
+                  >
+                    <i className="ph-bold ph-copy"></i>
+                    <span>✨ Opslaan als Nieuwe Kopie</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => executeSaveStrategy(false)}
+                    className="px-4 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5"
+                  >
+                    <i className="ph-bold ph-check"></i>
+                    <span>💾 Ja, Bestaande Overschrijven</span>
+                  </button>
+                </>
+              )}
+
+              {builderConfirmModal.mode === 'ACTIVATE' && (
+                <button
+                  type="button"
+                  onClick={executeActivateOnPortfolio}
+                  className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5"
+                >
+                  <i className="ph-bold ph-lightning"></i>
+                  <span>Ja, Activeer op Prioriteit #{activatePriority}</span>
+                </button>
+              )}
+
+              {builderConfirmModal.mode === 'DEACTIVATE_ACTIVE' && (
+                <button
+                  type="button"
+                  onClick={executeDeactivateFromPortfolio}
+                  className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5"
+                >
+                  <i className="ph-bold ph-trash"></i>
+                  <span>Ja, Actieve Strategie Verwijderen</span>
+                </button>
+              )}
+
+              {builderConfirmModal.mode === 'DELETE_STRATEGY' && (
+                <button
+                  type="button"
+                  onClick={executeDeleteCustomStrategy}
+                  className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-extrabold shadow-sm transition-all flex items-center gap-1.5"
+                >
+                  <i className="ph-bold ph-trash"></i>
+                  <span>Ja, Strategie Definitief Verwijderen</span>
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
