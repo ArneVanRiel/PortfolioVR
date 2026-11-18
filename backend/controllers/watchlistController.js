@@ -888,9 +888,16 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
       // ignore
     }
 
-    // Voer bij handmatige update ook SEC kwartaalcontrole en strategie-alert sync uit
+    // Voer bij handmatige update ook eToro API sync, SEC kwartaalcontrole en strategie-alert sync uit
     if (!isStartup) {
       try {
+        const brokerController = require('./brokerController');
+        if (brokerController.syncAllUsersEtoroData) {
+          if (res) {
+            res.write(JSON.stringify({ type: 'progress', message: "Synchroniseren van eToro API transacties & cash..." }) + '\n');
+          }
+          await brokerController.syncAllUsersEtoroData();
+        }
         const notificationController = require('./notificationController');
         if (res) {
           res.write(JSON.stringify({ type: 'progress', message: "Controleren op nieuwe SEC kwartaalcijfers & filings..." }) + '\n');
@@ -898,7 +905,7 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
         await notificationController.checkNewSecQuarters({ force: true });
         await notificationController.syncAllUsersStrategyAlerts(pool, { force: true });
       } catch (secErr) {
-        console.warn('[WatchlistUpdate] SEC controle overgeslagen:', secErr.message);
+        console.warn('[WatchlistUpdate] SEC/eToro controle overgeslagen:', secErr.message);
       }
     }
 

@@ -357,7 +357,8 @@ const TransactionsTab = ({
                 {currentTransactions.map((t, idx) => {
                   const isCash = ['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type);
                   const isImported = t.import_source && t.import_source !== 'manual';
-                  const isEtoro = t.import_source === 'etoro_api' || (t.broker_name && t.broker_name.toLowerCase().includes('etoro') && isImported);
+                  const isEtoroApi = t.import_source === 'etoro_api';
+                  const isEtoroStatement = t.import_source === 'etoro_statement' || (t.broker_name && t.broker_name.toLowerCase().includes('etoro') && isImported && !isEtoroApi);
                   const isDegiro = t.import_source === 'degiro_upload' || (t.broker_name && t.broker_name.toLowerCase().includes('degiro') && isImported);
 
                   return (
@@ -405,14 +406,24 @@ const TransactionsTab = ({
 
                       {/* Herkomst / Bron Badge (De Belegger stijl) */}
                       <td className="px-4 py-4 whitespace-nowrap">
-                        {isEtoro ? (
+                        {isEtoroApi ? (
                           <div className="flex flex-col">
                             <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md w-fit">
                               <i className="ph-bold ph-arrows-clockwise text-xs"></i>
                               eToro API
                             </span>
                             <span className="text-[10px] text-emerald-600/80 font-medium mt-0.5">
-                              via API koppeling
+                              via live API koppeling
+                            </span>
+                          </div>
+                        ) : isEtoroStatement ? (
+                          <div className="flex flex-col">
+                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-teal-800 bg-teal-50 border border-teal-200 px-2 py-0.5 rounded-md w-fit">
+                              <i className="ph-bold ph-file-xls text-xs"></i>
+                              eToro Afschrift
+                            </span>
+                            <span className="text-[10px] text-teal-700/80 font-medium mt-0.5">
+                              uit rekeningoverzicht
                             </span>
                           </div>
                         ) : isDegiro ? (

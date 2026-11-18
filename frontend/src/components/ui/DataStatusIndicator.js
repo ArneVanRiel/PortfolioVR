@@ -102,12 +102,13 @@ const DataStatusIndicator = () => {
   const handleManualSync = async () => {
     if (manualSyncing || status?.isSyncRunning) return;
     setManualSyncing(true);
-    const toastId = toast.loading('Bezig met bijwerken van koersen, wisselkoers, MACD & SEC data...');
+    const toastId = toast.loading('Bezig met bijwerken van eToro API, koersen, wisselkoers, MACD & SEC data...');
     try {
       await http.post('/watchlist/update-data');
       await fetchStatus();
       window.dispatchEvent(new Event('dataStatusUpdated'));
-      toast.success('Alle koersen & meldingen zijn bijgewerkt!', { id: toastId });
+      window.dispatchEvent(new Event('availableBalanceUpdated'));
+      toast.success('eToro API, koersen & meldingen zijn bijgewerkt!', { id: toastId });
     } catch (err) {
       toast.error('Fout bij synchroniseren van data.', { id: toastId });
     } finally {
@@ -235,10 +236,22 @@ const DataStatusIndicator = () => {
                 {formatDateOnly(status?.lastPortfolioValueDate)}
               </span>
             </div>
+
+            <div className="flex justify-between items-start bg-emerald-50/70 border border-emerald-200/80 p-2.5 rounded-xl">
+              <div>
+                <span className="font-semibold text-emerald-950 block">🔄 eToro API (Transacties &amp; Cash)</span>
+                <span className="text-[11px] text-emerald-800">
+                  Laatste auto-sync: {status?.lastEtoroSyncAt ? formatDateTime(status.lastEtoroSyncAt) : 'Nog niet gesynchroniseerd'}
+                </span>
+              </div>
+              <span className="font-bold text-emerald-800 whitespace-nowrap ml-2">
+                {status?.etoroCashUsd != null ? `🟢 $ ${status.etoroCashUsd.toFixed(2)}` : (status?.etoroSyncStatus === 'ok' ? '🟢 Actief' : '⚪ -')}
+              </span>
+            </div>
           </div>
 
           <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
-            <span>⚡ Snelheidscache: 3–5 min (auto-reset bij wijziging)</span>
+            <span>⚡ Auto-sync: elke 30 min (incl. eToro API)</span>
             <span>Volgende check: {formatCountdown(countdown)}</span>
           </div>
 
@@ -249,7 +262,7 @@ const DataStatusIndicator = () => {
             className="mt-3 w-full py-2 px-3 rounded-xl font-bold text-xs text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
           >
             <i className={`ph-bold ph-arrows-clockwise ${isSyncing ? 'animate-spin' : ''}`}></i>
-            {isSyncing ? 'Bezig met synchroniseren...' : 'Nu Prijzen & Meldingen Synchroniseren'}
+            {isSyncing ? 'Bezig met synchroniseren...' : 'Nu eToro, Prijzen & Meldingen Synchroniseren'}
           </button>
         </div>
       )}

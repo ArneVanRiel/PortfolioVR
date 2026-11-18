@@ -16,7 +16,7 @@ import StockStrategyTimeline from './StockStrategyTimeline';
 
 ChartJS.register(ArcElement, Tooltip, Legend);
 
-// Sparkline Component voor Kwartaal Waardeverdeling Trend
+// Sparkline Component voor Kwartaal Waardeverdeling Trend (Laatste 8 Kwartalen in chronologische volgorde)
 const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDropping, compact = false }) => {
   if (!history || history.length === 0) {
     if (currentWv !== undefined && currentWv !== null) {
@@ -25,21 +25,26 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDro
     return <span className="text-gray-400">-</span>;
   }
 
-  const values = history.map(h => Number(h.waardeVerdeling) || 0);
+  // Sorteer altijd strikt chronologisch (oudste links ➔ nieuwste kwartaal rechts) en pak de laatste 8 kwartalen
+  const sortedHistory = [...history]
+    .sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0))
+    .slice(-8);
+
+  const values = sortedHistory.map(h => Number(h.waardeVerdeling) || 0);
   const minVal = Math.min(...values);
   const maxVal = Math.max(...values);
   const min = Math.max(0, minVal * 0.85);
   const max = maxVal * 1.15 || 1;
   const range = max - min || 1;
   
-  const width = compact ? 90 : 130;
+  const width = compact ? 105 : 135;
   const height = compact ? 26 : 34;
   const padding = 3;
 
   const points = values.map((val, idx) => {
     const x = padding + (idx / Math.max(1, values.length - 1)) * (width - 2 * padding);
     const y = height - padding - ((val - min) / range) * (height - 2 * padding);
-    return { x, y, val, date: history[idx]?.date };
+    return { x, y, val, date: sortedHistory[idx]?.date };
   });
 
   const pathD = points.reduce((acc, p, idx) => (
@@ -48,6 +53,7 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDro
 
   const areaD = `${pathD} L ${points[points.length - 1].x.toFixed(1)} ${height} L ${points[0].x.toFixed(1)} ${height} Z`;
 
+  const isRising = prevWv !== null && prevWv !== undefined && Number(currentWv) > Number(prevWv);
   const strokeColor = isDropping ? '#ef4444' : '#10b981';
   const gradId = `wv-grad-${Math.random().toString(36).substring(2, 8)}`;
 
@@ -56,14 +62,18 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDro
       <div className="flex items-center justify-between gap-1.5 flex-wrap">
         <span className="text-[11px] font-bold text-gray-800">
           WV: <strong className={isDropping ? 'text-rose-600 font-black' : 'text-emerald-700 font-black'}>
-            {Number(currentWv || values[values.length - 1]).toFixed(1)}%
+            {Number(currentWv ?? values[values.length - 1]).toFixed(1)}%
           </strong>
         </span>
         {prevWv !== null && prevWv !== undefined && (
           <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md inline-flex items-center gap-1 ${
-            isDropping ? 'bg-rose-100 text-rose-800 border border-rose-200' : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+            isDropping
+              ? 'bg-rose-100 text-rose-800 border border-rose-200'
+              : isRising
+              ? 'bg-emerald-100 text-emerald-800 border border-emerald-200'
+              : 'bg-slate-100 text-slate-700 border border-slate-200'
           }`}>
-            {isDropping ? '📉' : '📈'} {wvDiff > 0 ? `+${wvDiff.toFixed(1)}%` : `${wvDiff?.toFixed(1)}%`} ({wvDiffPct > 0 ? `+${wvDiffPct.toFixed(1)}%` : `${wvDiffPct?.toFixed(1)}%`})
+            {isDropping ? '📉 Dalend' : isRising ? '📈 Stijgend' : '➖ Stabiel'} {wvDiff > 0 ? `+${wvDiff.toFixed(1)}%` : `${wvDiff?.toFixed(1)}%`}
           </span>
         )}
       </div>
@@ -94,11 +104,11 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, wvDiffPct, isDro
         </svg>
       </div>
       
-      {/* Historie kwartaal labels */}
-      {history.length > 1 && (
+      {/* Historie kwartaal labels (Laatste 8 kwartalen: oudste links -> nieuwste rechts) */}
+      {sortedHistory.length > 1 && (
         <div className="flex justify-between text-[9px] text-gray-400 font-semibold px-0.5">
-          <span>{history[0]?.date ? new Date(history[0].date).getFullYear() : ''}</span>
-          <span>{history[history.length - 1]?.date ? new Date(history[history.length - 1].date).toLocaleDateString('nl-BE', { month: 'short', year: '2-digit' }) : ''}</span>
+          <span>{sortedHistory[0]?.date ? new Date(sortedHistory[0].date).toLocaleDateString('nl-BE', { month: 'short', year: '2-digit' }) : ''}</span>
+          <span>➔ {sortedHistory[sortedHistory.length - 1]?.date ? new Date(sortedHistory[sortedHistory.length - 1].date).toLocaleDateString('nl-BE', { month: 'short', year: '2-digit' }) : ''}</span>
         </div>
       )}
     </div>
@@ -125,7 +135,7 @@ const StrategyAdvisorTab = () => {
 
   const [data, setData] = useState(() => {
     try {
-      const cached = localStorage.getItem(`cached_strategy_advisor_stocks_${uid}`);
+      const cached = localStorage.getItem(`cached_strategy_advisor_stocks_v4_${uid}`);
       return cached ? JSON.parse(cached) : null;
     } catch (e) {
       return null;
@@ -133,7 +143,7 @@ const StrategyAdvisorTab = () => {
   });
   const [loading, setLoading] = useState(() => {
     try {
-      return !localStorage.getItem(`cached_strategy_advisor_stocks_${uid}`);
+      return !localStorage.getItem(`cached_strategy_advisor_stocks_v4_${uid}`);
     } catch (e) {
       return true;
     }
@@ -144,6 +154,8 @@ const StrategyAdvisorTab = () => {
   const [alertLayoutMode, setAlertLayoutMode] = useState('COLUMNS'); // 'COLUMNS' (2-koloms groen/geel) | 'TIMELINE' (lijst)
   const [alertFilter, setAlertFilter] = useState('ALL'); // 'ALL' | 'ACTIONABLE' | 'CAUTION' | 'SELL' | 'ROTATION' | 'OLD_STRATEGY'
   const [matrixFilter, setMatrixFilter] = useState('ALL');
+  const [idealTableFilter, setIdealTableFilter] = useState('ALL'); // 'ALL' | 'WATCH_OR_BUY' | 'MACD_RED_TURNING' | 'UNDERVALUED' | 'RISING_WV'
+  const [idealTableSort, setIdealTableSort] = useState('WEIGHT'); // 'WEIGHT' | 'RADAR'
   const [showTimingRules, setShowTimingRules] = useState(false);
   const [strategyType, setStrategyType] = useState(() => (canUseStocks ? 'stocks' : 'etf')); // 'stocks' | 'etf'
   const [isCashWidgetOpen, setIsCashWidgetOpen] = useState(false);
@@ -215,7 +227,7 @@ const StrategyAdvisorTab = () => {
       const res = await http.get(`/portfolio/strategy-advisor?userId=${uid}&currency=EUR${force ? '&forceRefresh=true' : ''}`);
       setData(res.data);
       try {
-        localStorage.setItem(`cached_strategy_advisor_stocks_${uid}`, JSON.stringify(res.data));
+        localStorage.setItem(`cached_strategy_advisor_stocks_v4_${uid}`, JSON.stringify(res.data));
       } catch (e) {
         // localStorage quota
       }
@@ -2113,17 +2125,126 @@ const StrategyAdvisorTab = () => {
 
           </div>
 
-          {/* Ideale Portefeuille Doeltabel met Streefbedragen en Aantal Stuks */}
+          {/* Ideale Portefeuille Doeltabel + Koopkans-Radar (MACD Rood->Groen, Onderwaardering, Stijgende Waardeverdeling) */}
           <div className="bg-white rounded-2xl border border-gray-200/80 shadow-sm overflow-hidden">
-            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
-              <div>
-                <h3 className="text-base font-bold text-gray-900">
-                  Doelverdeling & Streefbedragen per Aandeel (Conform Waardeverdeling)
-                </h3>
-                <p className="text-xs text-gray-500">
-                  Exacte allocatie per positie inclusief kwartaaltrend van de Waardeverdeling.
-                </p>
+            <div className="p-5 border-b border-gray-100 space-y-4">
+              <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+                <div>
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-900 border border-indigo-200 mb-1">
+                    🎯 Doelverdeling &amp; 3-Pijler Koopkans-Radar
+                  </div>
+                  <h3 className="text-base sm:text-lg font-black text-gray-900">
+                    Doelverdeling &amp; Waar Zit een Koopkans Aan Te Komen?
+                  </h3>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    Controleer in één oogopslag per 5/5 aandeel: <strong>1. Is MACD rood geweest en draait hij naar groen?</strong> • <strong>2. Is het genoeg ondergewaardeerd (≤ 1.3x)?</strong> • <strong>3. Is er een stijgende waardeverdeling (laatste 8 kwartalen)?</strong>
+                  </p>
+                </div>
+
+                {/* Sortering Toggle */}
+                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl self-start lg:self-center shrink-0 text-xs font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setIdealTableSort('WEIGHT')}
+                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+                      idealTableSort === 'WEIGHT'
+                        ? 'bg-white text-indigo-800 shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <i className="ph-bold ph-chart-pie-slice"></i>
+                    <span>Op Doelgewicht (%)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIdealTableSort('RADAR')}
+                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+                      idealTableSort === 'RADAR'
+                        ? 'bg-white text-emerald-800 shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900'
+                    }`}
+                  >
+                    <i className="ph-bold ph-radar"></i>
+                    <span>Op Koopkans-Radar</span>
+                  </button>
+                </div>
               </div>
+
+              {/* Snel-filters voor de 3 Koopkans-pijlers */}
+              {(() => {
+                const watchOrBuyCount = idealPortfolio.filter(i =>
+                  ['BUY_NOW', 'WATCH_TURNING_GREEN', 'WATCH_IN_RED'].includes(i.opportunityRadar?.status)
+                ).length;
+                const macdTurningCount = idealPortfolio.filter(i =>
+                  i.macdStatus?.wasRedAndTurningGreen || i.macdStatus?.isGreenCrossover
+                ).length;
+                const undervaluedCount = idealPortfolio.filter(i =>
+                  i.valuationStatus ? i.valuationStatus.isUndervaluedEnough : (i.priceToIntrinsicRatio <= 1.3)
+                ).length;
+                const risingWvCount = idealPortfolio.filter(i =>
+                  i.wvTrendStatus ? i.wvTrendStatus.isRising : (!i.isWvDropping && i.wvDiff > 0)
+                ).length;
+
+                return (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableFilter('ALL')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all ${
+                        idealTableFilter === 'ALL'
+                          ? 'bg-slate-900 text-white shadow-xs'
+                          : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                      }`}
+                    >
+                      Alle 5/5 Aandelen ({idealPortfolio.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableFilter('WATCH_OR_BUY')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1 ${
+                        idealTableFilter === 'WATCH_OR_BUY'
+                          ? 'bg-amber-500 text-amber-950 shadow-xs'
+                          : 'bg-amber-50 text-amber-900 border border-amber-200 hover:bg-amber-100'
+                      }`}
+                    >
+                      <span>🔥 Opletten / Koopkans op Komst ({watchOrBuyCount})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableFilter('MACD_RED_TURNING')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1 ${
+                        idealTableFilter === 'MACD_RED_TURNING'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'bg-indigo-50 text-indigo-800 border border-indigo-200 hover:bg-indigo-100'
+                      }`}
+                    >
+                      <span>🔄 MACD: Rood ➔ Draait Groen ({macdTurningCount})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableFilter('UNDERVALUED')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1 ${
+                        idealTableFilter === 'UNDERVALUED'
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
+                      }`}
+                    >
+                      <span>🟢 Genoeg Ondergewaardeerd ≤ 1.3x ({undervaluedCount})</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableFilter('RISING_WV')}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1 ${
+                        idealTableFilter === 'RISING_WV'
+                          ? 'bg-teal-600 text-white shadow-xs'
+                          : 'bg-teal-50 text-teal-800 border border-teal-200 hover:bg-teal-100'
+                      }`}
+                    >
+                      <span>📈 Stijgende Waardeverdeling ({risingWvCount})</span>
+                    </button>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="overflow-x-auto">
@@ -2131,82 +2252,274 @@ const StrategyAdvisorTab = () => {
                 <thead className="bg-slate-50 text-gray-500 font-bold uppercase tracking-wider border-b border-gray-200">
                   <tr>
                     <th className="py-3 px-4">Aandeel</th>
-                    <th className="py-3 px-3 text-center">Score</th>
-                    <th className="py-3 px-3 text-center">Waardeverdeling Trend</th>
-                    <th className="py-3 px-3 text-right">Huidige Koers</th>
-                    <th className="py-3 px-3 text-right">Intrinsieke Waarde</th>
+                    <th className="py-3 px-3">🎯 Koopkans-Radar (Status)</th>
+                    <th className="py-3 px-3">1. MACD (Was Rood ➔ Groen?)</th>
+                    <th className="py-3 px-3">2. Genoeg Ondergewaardeerd?</th>
+                    <th className="py-3 px-3 text-center">3. Stijgende Waardeverdeling? (Laatste 8 Kw.)</th>
                     <th className="py-3 px-3 text-center">Doel %</th>
                     <th className="py-3 px-3 text-right">Doelbedrag (€)</th>
-                    <th className="py-3 px-3 text-right">Doel Stuks</th>
                     <th className="py-3 px-3 text-right">Huidig Bezit</th>
-                    <th className="py-3 px-4 text-center">Actie Verschil</th>
+                    <th className="py-3 px-3 text-center" title="Theoretisch verschil tussen 100% Doelbedrag en je huidige bezit">
+                      Verschil tot 100% Doel
+                    </th>
+                    <th className="py-3 px-4 text-left bg-emerald-50/70 text-emerald-950" title="Exacte ordergrootte conform de strategie als de MACD morgen een groen koopsignaal geeft (incl. waarderingsfactor, 0,1 stuks afronding en check op je vrije cash)">
+                      ⚡ Investeren bij Signaal Morgen
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
-                  {idealPortfolio.map((item) => (
-                    <tr key={item.stockId} className="hover:bg-slate-50/80 transition-colors">
-                      <td className="py-3 px-4 font-bold text-gray-900">
-                        {item.ticker} <span className="text-gray-400 font-normal text-[11px] block">{item.name}</span>
-                      </td>
-                      <td className="py-3 px-3 text-center">
-                        <span className="px-2 py-0.5 bg-amber-100 text-amber-900 rounded font-black text-xs">
-                          ⭐ {item.score}
-                        </span>
-                      </td>
-                      <td className="py-2 px-3 text-center min-w-[140px]">
-                        {hideFormulas ? (
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                            item.isWvDropping ? 'bg-rose-50 text-rose-700' : 'bg-emerald-50 text-emerald-700'
-                          }`}>
-                            {item.isWvDropping ? '📉 Dalende Trend' : '📈 Stabiel/Stijgend'}
-                          </span>
-                        ) : (
-                          <WvSparkline
-                            history={item.wvHistory || []}
-                            currentWv={item.waardeVerdeling}
-                            prevWv={item.prevWaardeVerdeling}
-                            wvDiff={item.wvDiff}
-                            wvDiffPct={item.wvDiffPct}
-                            isDropping={item.isWvDropping}
-                            compact={true}
-                          />
-                        )}
-                      </td>
-                      <td className="py-3 px-3 text-right font-bold text-gray-900">
-                        {formatCurrency(item.currentPrice)}
-                      </td>
-                      <td className="py-3 px-3 text-right font-bold text-emerald-700">
-                        {hideFormulas ? (
-                          <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-full">🔒 Beschermd</span>
-                        ) : (
-                          formatCurrency(item.intrinsicValue)
-                        )}
-                      </td>
-                      <td className="py-3 px-3 text-center font-extrabold text-indigo-700">
-                        {item.targetWeightPct}%
-                      </td>
-                      <td className="py-3 px-3 text-right font-extrabold text-gray-900 privacy-blur">
-                        {isIncognito ? '€ ••••••' : formatCurrency(item.targetValueEur)}
-                      </td>
-                      <td className="py-3 px-3 text-right font-bold text-gray-800">
-                        {item.targetShares} stuks
-                      </td>
-                      <td className="py-3 px-3 text-right text-gray-600 privacy-blur">
-                        {item.currentShares > 0 ? `${item.currentShares} stuks (${item.currentWeightPct}%)` : '-'}
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        {item.diffValueEur > 50 ? (
-                          <span className="px-2 py-1 bg-emerald-100 text-emerald-800 rounded-full font-bold text-xs">
-                            + Koop {item.diffShares} stuks ({formatCurrency(item.diffValueEur)})
-                          </span>
-                        ) : (
-                          <span className="px-2 py-1 bg-gray-100 text-gray-700 rounded-full font-bold text-xs">
-                            Op doelniveau
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {idealPortfolio
+                    .filter((item) => {
+                      if (idealTableFilter === 'WATCH_OR_BUY') {
+                        return ['BUY_NOW', 'WATCH_TURNING_GREEN', 'WATCH_IN_RED'].includes(item.opportunityRadar?.status);
+                      }
+                      if (idealTableFilter === 'MACD_RED_TURNING') {
+                        return item.macdStatus?.wasRedAndTurningGreen || item.macdStatus?.isGreenCrossover;
+                      }
+                      if (idealTableFilter === 'UNDERVALUED') {
+                        return item.valuationStatus ? item.valuationStatus.isUndervaluedEnough : (item.priceToIntrinsicRatio <= 1.3);
+                      }
+                      if (idealTableFilter === 'RISING_WV') {
+                        return item.wvTrendStatus ? item.wvTrendStatus.isRising : (!item.isWvDropping && item.wvDiff > 0);
+                      }
+                      return true;
+                    })
+                    .sort((a, b) => {
+                      if (idealTableSort === 'RADAR') {
+                        const rankA = a.opportunityRadar?.priorityRank ?? 5;
+                        const rankB = b.opportunityRadar?.priorityRank ?? 5;
+                        if (rankA !== rankB) return rankA - rankB;
+                        const recA = a.macdStatus?.recoveryPct ?? 0;
+                        const recB = b.macdStatus?.recoveryPct ?? 0;
+                        if (recB !== recA) return recB - recA;
+                      }
+                      return (b.targetWeightPct || 0) - (a.targetWeightPct || 0);
+                    })
+                    .map((item) => {
+                      const radarStatus = item.opportunityRadar?.status || 'WAIT_FOR_DIP';
+                      const macd = item.macdStatus || {};
+                      const isUndervaluedEnough = item.valuationStatus
+                        ? item.valuationStatus.isUndervaluedEnough
+                        : (item.priceToIntrinsicRatio !== null && item.priceToIntrinsicRatio <= 1.3);
+                      const isDeeplyUndervalued = item.valuationStatus
+                        ? item.valuationStatus.isDeeplyUndervalued
+                        : (item.priceToIntrinsicRatio !== null && item.priceToIntrinsicRatio <= 1.0);
+                      const isWvRising = item.wvTrendStatus
+                        ? item.wvTrendStatus.isRising
+                        : (!item.isWvDropping && item.wvDiff > 0);
+
+                      const rowBgClass =
+                        radarStatus === 'BUY_NOW'
+                          ? 'bg-emerald-50/40 hover:bg-emerald-50/80'
+                          : radarStatus === 'WATCH_TURNING_GREEN'
+                          ? 'bg-amber-50/45 hover:bg-amber-50/80'
+                          : 'hover:bg-slate-50/80';
+
+                      return (
+                        <tr key={item.stockId} className={`transition-colors ${rowBgClass}`}>
+                          {/* 1. Aandeel & Score */}
+                          <td className="py-3 px-4 font-bold text-gray-900">
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-sm font-black text-gray-900">{item.ticker}</span>
+                              <span className="px-1.5 py-0.5 bg-amber-100 text-amber-900 rounded font-black text-[10px]">
+                                ⭐ {item.score}/5
+                              </span>
+                            </div>
+                            <span className="text-gray-400 font-normal text-[11px] block truncate max-w-[150px]" title={item.name}>
+                              {item.name}
+                            </span>
+                          </td>
+
+                          {/* 2. Gecombineerde Koopkans-Radar */}
+                          <td className="py-3 px-3 min-w-[195px]">
+                            <div className="space-y-1">
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-black border ${
+                                radarStatus === 'BUY_NOW'
+                                  ? 'bg-emerald-100 text-emerald-950 border-emerald-300'
+                                  : radarStatus === 'WATCH_TURNING_GREEN'
+                                  ? 'bg-amber-100 text-amber-950 border-amber-300 shadow-2xs'
+                                  : radarStatus === 'WATCH_IN_RED'
+                                  ? 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                                  : radarStatus === 'BLOCKED'
+                                  ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                  : 'bg-slate-100 text-slate-700 border-slate-200'
+                              }`}>
+                                {item.opportunityRadar?.badge || '⏳ Wacht op Signaal'}
+                              </span>
+                              {item.opportunityRadar?.reason && (
+                                <p className="text-[10px] text-gray-500 leading-tight max-w-[215px]">
+                                  {item.opportunityRadar.reason}
+                                </p>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 3. Pijler 1: MACD Status ("Is MACD rood geweest en kan het groen worden?") */}
+                          <td className="py-3 px-3 min-w-[190px]">
+                            <div className="space-y-1.5">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-extrabold border ${
+                                macd.isGreenCrossover
+                                  ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                                  : macd.wasRedAndTurningGreen
+                                  ? 'bg-amber-100 text-amber-950 border-amber-300'
+                                  : macd.isRed
+                                  ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                  : 'bg-blue-50 text-blue-800 border-blue-200'
+                              }`}>
+                                {macd.badge || '⚪ Geen MACD'}
+                              </span>
+
+                              {/* Visuele voortgangsbalk richting groene crossover wanneer MACD in het rood zit */}
+                              {macd.isRed && (
+                                <div className="space-y-0.5">
+                                  <div className="flex items-center justify-between text-[10px] font-bold text-gray-600">
+                                    <span>{macd.wasRedAndTurningGreen ? 'Draait naar groen:' : 'In rode fase:'}</span>
+                                    <span className={macd.wasRedAndTurningGreen ? 'text-amber-800 font-black' : 'text-rose-700'}>
+                                      {macd.recoveryPct || 0}% richting crossover
+                                    </span>
+                                  </div>
+                                  <div className="w-full h-1.5 bg-gray-200 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full transition-all ${
+                                        macd.wasRedAndTurningGreen ? 'bg-gradient-to-r from-amber-500 to-emerald-500' : 'bg-rose-400'
+                                      }`}
+                                      style={{ width: `${Math.max(8, Math.min(100, macd.recoveryPct || 0))}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              )}
+
+                              {macd.detail && (
+                                <span className="text-[10px] text-gray-500 block leading-tight">
+                                  {macd.detail}
+                                </span>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 4. Pijler 2: Genoeg Ondergewaardeerd? (Koers vs Intrinsiek <= 1.3x) */}
+                          <td className="py-3 px-3 min-w-[175px]">
+                            <div className="space-y-1">
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-extrabold border ${
+                                isDeeplyUndervalued
+                                  ? 'bg-emerald-100 text-emerald-900 border-emerald-300'
+                                  : isUndervaluedEnough
+                                  ? 'bg-teal-50 text-teal-900 border-teal-200'
+                                  : 'bg-rose-50 text-rose-800 border-rose-200'
+                              }`}>
+                                {hideFormulas
+                                  ? (isUndervaluedEnough ? '🟢 Koopwaardig' : '🔴 Te Duur (Overgewaardeerd)')
+                                  : (item.valuationStatus?.badge || (isUndervaluedEnough ? `🟢 Ja (${item.priceToIntrinsicRatio?.toFixed(2)}x ≤ 1.3x)` : `🔴 Nee (${item.priceToIntrinsicRatio?.toFixed(2)}x > 1.3x)`))}
+                              </span>
+
+                              <div className="text-[11px] text-gray-700 flex items-center gap-1.5 flex-wrap">
+                                <span>Koers: <strong>{formatCurrency(item.currentPrice)}</strong></span>
+                                {!hideFormulas && item.intrinsicValue && (
+                                  <>
+                                    <span className="text-gray-400">/</span>
+                                    <span>Intr.: <strong className="text-emerald-700">{formatCurrency(item.intrinsicValue)}</strong></span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 5. Pijler 3: Stijgende Waardeverdeling? (Gecorrigeerde Sparkline van de LAATSTE 8 Kwartalen) */}
+                          <td className="py-2.5 px-3 text-center min-w-[165px]">
+                            {hideFormulas ? (
+                              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                                item.isWvDropping ? 'bg-rose-50 text-rose-700' : isWvRising ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-700'
+                              }`}>
+                                {item.isWvDropping ? '🔴 Dalende Trend' : isWvRising ? '🟢 Stijgende Trend' : '🟢 Stabiele Trend'}
+                              </span>
+                            ) : (
+                              <WvSparkline
+                                history={item.wvHistory || []}
+                                currentWv={item.waardeVerdeling}
+                                prevWv={item.prevWaardeVerdeling}
+                                wvDiff={item.wvDiff}
+                                wvDiffPct={item.wvDiffPct}
+                                isDropping={item.isWvDropping}
+                                compact={true}
+                              />
+                            )}
+                          </td>
+
+                          {/* 6. Doel % */}
+                          <td className="py-3 px-3 text-center">
+                            <span className="font-extrabold text-indigo-700 text-xs">{item.targetWeightPct}%</span>
+                            <span className="text-[10px] text-gray-400 block">{item.targetShares} stuks</span>
+                          </td>
+
+                          {/* 7. Doelbedrag (€) */}
+                          <td className="py-3 px-3 text-right font-extrabold text-gray-900 privacy-blur">
+                            {isIncognito ? '€ ••••••' : formatCurrency(item.targetValueEur)}
+                          </td>
+
+                          {/* 8. Huidig Bezit */}
+                          <td className="py-3 px-3 text-right text-gray-600 privacy-blur">
+                            {item.currentShares > 0 ? (
+                              <div>
+                                <span className="font-bold text-gray-900">{item.currentShares} stuks</span>
+                                <span className="text-[10px] text-gray-500 block">({item.currentWeightPct}%)</span>
+                              </div>
+                            ) : (
+                              <span className="text-gray-400">0 stuks</span>
+                            )}
+                          </td>
+
+                          {/* 9. Verschil tot 100% Doel (Theoretische achterstand tot ideaal gewicht) */}
+                          <td className="py-3 px-3 text-center">
+                            {item.diffValueEur > 50 ? (
+                              <div className="space-y-0.5">
+                                <span className="px-2 py-0.5 bg-slate-100 text-slate-800 border border-slate-200 rounded-lg font-bold text-[11px] inline-block">
+                                  + {item.diffShares} stuks
+                                </span>
+                                <span className="text-[10px] text-gray-500 block font-semibold privacy-blur">
+                                  ({isIncognito ? '€ •••' : formatCurrency(item.diffValueEur)} tot doel)
+                                </span>
+                              </div>
+                            ) : (
+                              <span className="px-2 py-0.5 bg-indigo-50 text-indigo-800 border border-indigo-200 rounded-lg font-bold text-[11px] inline-block">
+                                ✓ Op doelniveau
+                              </span>
+                            )}
+                          </td>
+
+                          {/* 10. Exact Orderbedrag & Stuks als het Koopsignaal MORGEN valt (Conform Strategie) */}
+                          <td className="py-3 px-4 min-w-[205px] bg-emerald-50/20">
+                            {item.tomorrowOrder ? (
+                              <div className="space-y-1">
+                                <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-xl text-[11px] font-black border privacy-blur ${
+                                  item.tomorrowOrder.canBuyTomorrow
+                                    ? item.tomorrowOrder.fundingStatus === 'DIRECT_CASH'
+                                      ? 'bg-emerald-100 text-emerald-950 border-emerald-300 shadow-2xs'
+                                      : 'bg-amber-100 text-amber-950 border-amber-300'
+                                    : item.tomorrowOrder.fundingStatus === 'TARGET_REACHED'
+                                    ? 'bg-indigo-50 text-indigo-800 border-indigo-200'
+                                    : 'bg-rose-50 text-rose-800 border-rose-200'
+                                }`}>
+                                  {isIncognito && item.tomorrowOrder.canBuyTomorrow
+                                    ? `Koop ${item.tomorrowOrder.shares} stuks (€ •••)`
+                                    : item.tomorrowOrder.badge}
+                                </span>
+                                {item.tomorrowOrder.detail && (
+                                  <span className="text-[10px] text-gray-600 block leading-tight">
+                                    {item.tomorrowOrder.detail}
+                                  </span>
+                                )}
+                              </div>
+                            ) : item.diffValueEur > 50 && isUndervaluedEnough && !item.isWvDropping ? (
+                              <span className="px-2.5 py-1 bg-emerald-100 text-emerald-900 border border-emerald-300 rounded-xl font-black text-[11px] inline-block">
+                                Koop {item.diffShares} stuks ({formatCurrency(item.diffValueEur)})
+                              </span>
+                            ) : (
+                              <span className="text-[11px] text-gray-400 font-semibold">-</span>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })}
                 </tbody>
               </table>
             </div>

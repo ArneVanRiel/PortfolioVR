@@ -2655,7 +2655,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         console.warn('Kon PF_Strategies / PF_UserStrategyHistory niet uitlezen voor portfolioController:', err.message);
     }
 
-    const cacheKey = `adv_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}_${stocksFundingMode}_${stocksMonthlyBudget}_${stocksAllowSelling}_${strategyHistoryList.length}`;
+    const cacheKey = `adv_v4_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}_${stocksFundingMode}_${stocksMonthlyBudget}_${stocksAllowSelling}_${strategyHistoryList.length}`;
     if (!forceRefresh) {
         const cached = advisorDataCache.get(cacheKey);
         if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
@@ -2745,19 +2745,19 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             GROUP BY stock_id, period_end_date;
         `;
 
-        // 3. pricesQuery voor 200 SMA (strikt losse aandelen en DATEADD -365)
+        // 3. pricesQuery voor 200 SMA & MACD(30,90,9) (strikt losse aandelen en DATEADD -500 / 280 handelsdagen)
         const pricesQuery = `
             WITH RecentPrices AS (
                 SELECT p.aandeel_id, p.closing_price, p.date,
                        ROW_NUMBER() OVER(PARTITION BY p.aandeel_id ORDER BY p.date DESC) as rn
                 FROM DailyClosingPrices p
                 JOIN Stocks s ON p.aandeel_id = s.aandeel_id
-                WHERE p.date >= DATEADD(day, -365, GETDATE())
+                WHERE p.date >= DATEADD(day, -500, GETDATE())
                   AND (s.asset_type_id != 2 OR s.asset_type_id IS NULL)
             )
             SELECT aandeel_id, closing_price, date
             FROM RecentPrices
-            WHERE rn <= 200
+            WHERE rn <= 280
             ORDER BY aandeel_id, date ASC;
         `;
 
@@ -2907,6 +2907,169 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             }
             pricesByStock.get(row.aandeel_id).push(row);
         }
+
+        // Helper: haal de LAATSTE N kwartalen van Waardeverdeling op in chronologische volgorde (oud -> nieuw, links -> rechts)
+        // Let op: calcsHistoryByStock staat gesorteerd op period_end_date DESC (index 0 = nieuwste kwartaal),
+        // dus .slice(0, count).reverse() pakt exact de meest recente kwartalen en zet het nieuwste kwartaal rechts!
+        const getRecentChronologicalWvHistory = (stockId, count = 8) => {
+            const list = calcsHistoryByStock.get(stockId) || [];
+            return list.slice(0, count).reverse();
+        };
+
+        // Helper: bereken EMA serie (conform backtestController MACD(30,90,9))
+        const calcEmaSeriesForMacd = (data, period) => {
+            if (!data || data.length < period) return Array(data ? data.length : 0).fill(NaN);
+            const k = 2 / (period + 1);
+            const emaArray = Array(data.length).fill(NaN);
+            const initialSma = data.slice(0, period).reduce((sum, val) => sum + val, 0) / period;
+            emaArray[period - 1] = initialSma;
+            let prevEma = initialSma;
+            for (let i = period; i < data.length; i++) {
+                const cur = data[i] * k + prevEma * (1 - k);
+                emaArray[i] = cur;
+                prevEma = cur;
+            }
+            return emaArray;
+        };
+
+        // Helper: bereken live MACD(30,90,9) status per aandeel ("Is MACD rood geweest en kan het groen worden?")
+        const calculateStockMacdStatus = (stockId) => {
+            const history = pricesByStock.get(stockId) || [];
+            if (history.length < 100) {
+                return {
+                    statusKey: 'UNKNOWN',
+                    isRed: false,
+                    wasRedAndTurningGreen: false,
+                    isGreenCrossover: false,
+                    badge: '⚪ Onvoldoende Koersdata',
+                    detail: 'Minder dan 100 handelsdagen beschikbaar'
+                };
+            }
+
+            const pricesOnly = history.map(p => parseFloat(p.closing_price) || 0);
+            const fastEma = calcEmaSeriesForMacd(pricesOnly, 30);
+            const slowEma = calcEmaSeriesForMacd(pricesOnly, 90);
+            const macdLines = pricesOnly.map((_, i) => (
+                !isNaN(fastEma[i]) && !isNaN(slowEma[i]) ? fastEma[i] - slowEma[i] : NaN
+            ));
+            const validStart = macdLines.findIndex(v => !isNaN(v));
+            if (validStart === -1 || (macdLines.length - validStart) < 12) {
+                return {
+                    statusKey: 'UNKNOWN',
+                    isRed: false,
+                    wasRedAndTurningGreen: false,
+                    isGreenCrossover: false,
+                    badge: '⚪ Onvoldoende MACD Data',
+                    detail: 'Te weinig datapunten voor signaallijn'
+                };
+            }
+
+            const validMacd = macdLines.slice(validStart);
+            const validSignal = calcEmaSeriesForMacd(validMacd, 9);
+            const signalLines = Array(validStart).fill(NaN).concat(validSignal);
+
+            const n = pricesOnly.length - 1;
+            const macdNow = macdLines[n];
+            const sigNow = signalLines[n];
+            const histNow = macdNow - sigNow;
+            const histPrev1 = macdLines[n - 1] - signalLines[n - 1];
+            const histPrev2 = macdLines[n - 2] - signalLines[n - 2];
+            const histPrev3 = macdLines[n - 3] - signalLines[n - 3];
+
+            if (isNaN(histNow) || isNaN(histPrev1)) {
+                return {
+                    statusKey: 'UNKNOWN',
+                    isRed: false,
+                    wasRedAndTurningGreen: false,
+                    isGreenCrossover: false,
+                    badge: '⚪ Geen MACD',
+                    detail: '-'
+                };
+            }
+
+            // Tel hoeveel dagen de MACD in het rood zit (of zat vóór een recente crossover)
+            let daysInRed = 0;
+            for (let k = n; k >= Math.max(validStart + 9, n - 90); k--) {
+                const h = macdLines[k] - signalLines[k];
+                if (h < 0) daysInRed++;
+                else if (k < n) break;
+            }
+
+            // Zoek diepste rode punt van de afgelopen 25 handelsdagen om herstel-% richting groen te meten
+            let minHistRecent = histNow;
+            for (let k = Math.max(validStart + 9, n - 25); k <= n; k++) {
+                const h = macdLines[k] - signalLines[k];
+                if (!isNaN(h) && h < minHistRecent) minHistRecent = h;
+            }
+            const recoveryPct = (histNow < 0 && minHistRecent < 0)
+                ? Math.max(0, Math.min(99, Math.round(((histNow - minHistRecent) / Math.abs(minHistRecent)) * 100)))
+                : (histNow >= 0 ? 100 : 0);
+
+            // Check of er in de laatste 5 handelsdagen een crossover van Rood (<0) naar Groen (>=0) plaatsvond
+            let recentCrossoverDaysAgo = null;
+            if (histNow >= 0) {
+                for (let back = 0; back <= 5; back++) {
+                    const idx = n - back;
+                    if (idx > validStart + 9) {
+                        const hCur = macdLines[idx] - signalLines[idx];
+                        const hPrev = macdLines[idx - 1] - signalLines[idx - 1];
+                        if (hCur >= 0 && hPrev < 0) {
+                            recentCrossoverDaysAgo = back;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            const isRed = histNow < 0;
+            const isTurningUpInRed = isRed && histNow > histPrev1;
+            const isSustainedTurnInRed = isRed && histNow > histPrev1 && (histPrev1 >= histPrev2 || recoveryPct >= 25);
+
+            let statusKey = 'GREEN_TREND';
+            let badge = '🔵 MACD Groen (Loopt al)';
+            let detail = `MACD (${macdNow.toFixed(2)}) boven Signaal (${sigNow.toFixed(2)})`;
+
+            if (recentCrossoverDaysAgo !== null) {
+                statusKey = 'GREEN_CROSSOVER';
+                badge = '🟢 Net Groen Gekruist! (Koopsignaal)';
+                detail = recentCrossoverDaysAgo === 0
+                    ? 'Vandaag van rood naar groen gekruist!'
+                    : `${recentCrossoverDaysAgo} handelsdag(en) geleden van rood naar groen gekruist`;
+            } else if (isSustainedTurnInRed) {
+                statusKey = 'RED_TURNING_GREEN';
+                badge = `🔥 Was Rood ➔ Draait naar Groen (${recoveryPct}%)`;
+                detail = `Al ${daysInRed}d rood, histogram stijgt nu richting crossover (${recoveryPct}% hersteld vanaf bodem)`;
+            } else if (isTurningUpInRed) {
+                statusKey = 'RED_TURNING_GREEN';
+                badge = `👀 Rood ➔ Eerste Ommekeer (${recoveryPct}%)`;
+                detail = `Al ${daysInRed}d rood, MACD krult vandaag omhoog richting signaallijn`;
+            } else if (isRed) {
+                statusKey = 'RED_FALLING';
+                badge = `🔴 MACD Rood (${daysInRed}d • Nog Dalend)`;
+                detail = `MACD zit in rode fase maar daalt nog; wacht op bodem en ommekeer omhoog`;
+            } else if (histNow < histPrev1 && histPrev1 < histPrev2) {
+                statusKey = 'GREEN_COOLING';
+                badge = '🔵 MACD Groen ( zwakt af richting Rood)';
+                detail = 'Nog boven signaallijn, maar momentum neemt af';
+            }
+
+            return {
+                statusKey,
+                isRed,
+                wasRedAndTurningGreen: statusKey === 'RED_TURNING_GREEN',
+                isGreenCrossover: statusKey === 'GREEN_CROSSOVER',
+                macdLine: parseFloat(macdNow.toFixed(3)),
+                signalLine: parseFloat(sigNow.toFixed(3)),
+                histogram: parseFloat(histNow.toFixed(3)),
+                prevHistogram: parseFloat(histPrev1.toFixed(3)),
+                prev2Histogram: !isNaN(histPrev2) ? parseFloat(histPrev2.toFixed(3)) : null,
+                prev3Histogram: !isNaN(histPrev3) ? parseFloat(histPrev3.toFixed(3)) : null,
+                recoveryPct,
+                daysInRed,
+                badge,
+                detail
+            };
+        };
 
         // Helper: bereken 200 SMA
         const calculateSma200 = (stockId) => {
@@ -3094,7 +3257,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 wvDiff: prevWaardeVerdeling !== null ? parseFloat((waardeVerdeling - prevWaardeVerdeling).toFixed(2)) : 0,
                 wvDiffPct: (prevWaardeVerdeling !== null && prevWaardeVerdeling > 0) ? parseFloat((((waardeVerdeling - prevWaardeVerdeling) / prevWaardeVerdeling) * 100).toFixed(1)) : 0,
                 isWvDropping,
-                wvHistory: (calcsHistoryByStock.get(h.aandeel_id) || []).slice(-8),
+                wvHistory: getRecentChronologicalWvHistory(h.aandeel_id, 8),
                 wvDropFraction,
                 wvDropPct,
                 periodEndDate: stockDetails?.period_end_date ? (stockDetails.period_end_date instanceof Date ? stockDetails.period_end_date.toISOString().split('T')[0] : String(stockDetails.period_end_date).split('T')[0]) : null,
@@ -3143,7 +3306,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     prevWaardeVerdeling: s.prev_waarde_verdeling ?? null,
                     wvDiff: s.prev_waarde_verdeling !== null ? parseFloat((waardeVerdeling - s.prev_waarde_verdeling).toFixed(2)) : 0,
                     wvDiffPct: (s.prev_waarde_verdeling !== null && s.prev_waarde_verdeling > 0) ? parseFloat((((waardeVerdeling - s.prev_waarde_verdeling) / s.prev_waarde_verdeling) * 100).toFixed(1)) : 0,
-                    wvHistory: (calcsHistoryByStock.get(s.aandeel_id) || []).slice(-8),
+                    wvHistory: getRecentChronologicalWvHistory(s.aandeel_id, 8),
                     currentPrice: currentPriceConverted,
                     intrinsicValue: intrinsicValueConverted,
                     priceToIntrinsicRatio,
@@ -3215,6 +3378,193 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             const prevWv = stockDetails?.prev_waarde_verdeling ?? null;
             const wvDiff = prevWv !== null ? parseFloat((s.waardeVerdeling - prevWv).toFixed(2)) : 0;
             const wvDiffPct = (prevWv !== null && prevWv > 0) ? parseFloat((((s.waardeVerdeling - prevWv) / prevWv) * 100).toFixed(1)) : 0;
+            const isWvDropping = prevWv !== null && s.waardeVerdeling < prevWv;
+            const isWvRising = prevWv !== null && s.waardeVerdeling > prevWv;
+            const isWvOk = !isWvDropping;
+
+            // Pijler 1: MACD status ("Is MACD rood geweest en kan het groen worden?")
+            const macdStatus = calculateStockMacdStatus(s.stockId);
+
+            // Pijler 2: Onderwaardering ("Is het genoeg ondergewaardeerd?")
+            const ratio = s.priceToIntrinsicRatio;
+            const isUndervaluedEnough = ratio !== null && ratio !== undefined && ratio <= maxPriceToIntrinsic;
+            const isDeeplyUndervalued = ratio !== null && ratio !== undefined && ratio <= 1.0;
+            const valuationStatus = {
+                isUndervaluedEnough,
+                isDeeplyUndervalued,
+                ratio: ratio ? parseFloat(ratio.toFixed(2)) : null,
+                maxAllowedRatio: maxPriceToIntrinsic,
+                badge: isDeeplyUndervalued
+                    ? `🟢 Sterk Ondergewaardeerd (${ratio.toFixed(2)}x)`
+                    : isUndervaluedEnough
+                    ? `🟢 Koopwaardig (${ratio.toFixed(2)}x ≤ ${maxPriceToIntrinsic}x)`
+                    : `🔴 Te Duur (${ratio ? ratio.toFixed(2) : '-'}x > ${maxPriceToIntrinsic}x)`,
+                detail: isUndervaluedEnough
+                    ? (s.discountPct >= 0
+                        ? `${s.discountPct.toFixed(1)}% onder intrinsieke waarde`
+                        : `Binnen strategielimiet van ${maxPriceToIntrinsic}x intrinsiek`)
+                    : `Boven de maximale koopgrens van ${maxPriceToIntrinsic}x intrinsiek`
+            };
+
+            // Pijler 3: Stijgende Waardeverdeling ("Is er een stijgende waardeverdeling?")
+            const wvTrendStatus = {
+                isRising: isWvRising,
+                isStable: !isWvRising && !isWvDropping,
+                isDropping: isWvDropping,
+                isOkForBuy: isWvOk,
+                badge: isWvRising
+                    ? `🟢 Stijgend (+${wvDiff.toFixed(1)}%)`
+                    : isWvDropping
+                    ? `🔴 Dalend (${wvDiff.toFixed(1)}%)`
+                    : `🟢 Stabiel (0.0%)`
+            };
+
+            // Gecombineerde Koopkans-Radar ("Waar zit een koopkans aan te komen en moet ik op beginnen letten?")
+            let opportunityRadar = {
+                status: 'WAIT_FOR_DIP',
+                priorityRank: 4,
+                badge: '⏳ Wacht op MACD Dip',
+                reason: 'Fundamenteel koopwaardig, maar MACD loopt al in het groen'
+            };
+
+            if (!isWvOk && !isUndervaluedEnough) {
+                opportunityRadar = {
+                    status: 'BLOCKED',
+                    priorityRank: 5,
+                    badge: '⛔ Geen Koop (Te Duur & Dalende WV)',
+                    reason: `Noteert > ${maxPriceToIntrinsic}x intrinsiek én dalende waardeverdeling`
+                };
+            } else if (!isUndervaluedEnough) {
+                opportunityRadar = {
+                    status: 'BLOCKED',
+                    priorityRank: 5,
+                    badge: `⛔ Te Duur (> ${maxPriceToIntrinsic}x)`,
+                    reason: macdStatus.wasRedAndTurningGreen
+                        ? `MACD draait naar groen, maar koers (${ratio?.toFixed(2)}x) is te hoog (> ${maxPriceToIntrinsic}x)`
+                        : `Wacht op lagere koers (≤ ${maxPriceToIntrinsic}x intrinsiek)`
+                };
+            } else if (!isWvOk) {
+                opportunityRadar = {
+                    status: 'BLOCKED',
+                    priorityRank: 5,
+                    badge: '⛔ Dalende Waardeverdeling',
+                    reason: `Waardeverdeling daalde recent (${wvDiff.toFixed(1)}%); strategie koopt niet bij daling`
+                };
+            } else if (macdStatus.isGreenCrossover) {
+                opportunityRadar = {
+                    status: 'BUY_NOW',
+                    priorityRank: 1,
+                    badge: '🟢 NU KOOPKANS! (3/3 Groen)',
+                    reason: 'Ondergewaardeerd + Stijgende/Stabiele WV + MACD net groen gekruist!'
+                };
+            } else if (macdStatus.wasRedAndTurningGreen) {
+                opportunityRadar = {
+                    status: 'WATCH_TURNING_GREEN',
+                    priorityRank: 2,
+                    badge: '🔥 OPLETTEN: Koopkans op Komst!',
+                    reason: `Ondergewaardeerd (${ratio?.toFixed(2)}x) + Stijgende WV + MACD was rood en draait nu richting groen (${macdStatus.recoveryPct}%)!`
+                };
+            } else if (macdStatus.isRed) {
+                opportunityRadar = {
+                    status: 'WATCH_IN_RED',
+                    priorityRank: 3,
+                    badge: '👀 Op Watchlist (MACD in Rood)',
+                    reason: `Waardering (${ratio?.toFixed(2)}x) & WV staan klaar! Wacht tot rode MACD (${macdStatus.daysInRed}d) omhoog krult`
+                };
+            }
+
+            // Bereken exact wat je MORGEN moet investeren als het koopsignaal morgen valt (conform strategie-formule!)
+            let tomorrowOrder = {
+                canBuyTomorrow: false,
+                shares: 0,
+                amountEur: 0,
+                valuationFactor: 1.0,
+                fundingStatus: 'BLOCKED',
+                badge: '🛑 € 0 (Geen aankoop)',
+                detail: ''
+            };
+
+            if (!isUndervaluedEnough) {
+                tomorrowOrder = {
+                    canBuyTomorrow: false,
+                    shares: 0,
+                    amountEur: 0,
+                    valuationFactor: 0,
+                    fundingStatus: 'BLOCKED_OVERVALUED',
+                    badge: `🛑 € 0 (Te duur > ${maxPriceToIntrinsic}x)`,
+                    detail: `Strategie koopt niet boven ${maxPriceToIntrinsic}x intrinsiek`
+                };
+            } else if (!isWvOk) {
+                tomorrowOrder = {
+                    canBuyTomorrow: false,
+                    shares: 0,
+                    amountEur: 0,
+                    valuationFactor: 0,
+                    fundingStatus: 'BLOCKED_WV_DROP',
+                    badge: '🛑 € 0 (Dalende WV)',
+                    detail: 'Strategie koopt niet bij dalende waardeverdeling'
+                };
+            } else {
+                const baseNeededEur = Math.max(0, targetValueEur - currentValueEur);
+                const valuationFactor = (s.intrinsicValue && s.intrinsicValue > 0 && s.currentPrice > 0)
+                    ? Math.max(0.4, Math.min(1.5, s.intrinsicValue / s.currentPrice))
+                    : 1.0;
+
+                let simAmountEur = baseNeededEur > 0
+                    ? (baseNeededEur * valuationFactor)
+                    : (targetValueEur * 0.5 * valuationFactor);
+
+                if (currentValueEur + simAmountEur > targetValueEur * 1.3) {
+                    simAmountEur = Math.max(0, targetValueEur * 1.3 - currentValueEur);
+                }
+
+                if (simAmountEur < minOrderSkipThreshold) {
+                    tomorrowOrder = {
+                        canBuyTomorrow: false,
+                        shares: 0,
+                        amountEur: 0,
+                        valuationFactor: parseFloat(valuationFactor.toFixed(2)),
+                        fundingStatus: 'TARGET_REACHED',
+                        badge: '🎯 € 0 (Streefdoel bereikt)',
+                        detail: `Order < €${minOrderSkipThreshold.toFixed(0)} drempel`
+                    };
+                } else {
+                    if (simAmountEur < minOrderAmount) {
+                        simAmountEur = minOrderAmount;
+                    }
+                    const simShares = s.currentPrice > 0
+                        ? (allowFractionalShares
+                            ? Math.round((simAmountEur / s.currentPrice) * 10) / 10
+                            : Math.floor(simAmountEur / s.currentPrice))
+                        : 0;
+                    const finalSimAmountEur = parseFloat((simShares * s.currentPrice).toFixed(2));
+
+                    if (simShares <= 0 || finalSimAmountEur < minOrderSkipThreshold) {
+                        tomorrowOrder = {
+                            canBuyTomorrow: false,
+                            shares: 0,
+                            amountEur: 0,
+                            valuationFactor: parseFloat(valuationFactor.toFixed(2)),
+                            fundingStatus: 'TARGET_REACHED',
+                            badge: '🎯 € 0 (Streefdoel bereikt)',
+                            detail: 'Reeds voldoende stuks in bezit'
+                        };
+                    } else {
+                        const hasDirectCash = stocksAvailableCash >= finalSimAmountEur;
+                        tomorrowOrder = {
+                            canBuyTomorrow: true,
+                            shares: parseFloat(simShares.toFixed(2)),
+                            amountEur: finalSimAmountEur,
+                            valuationFactor: parseFloat(valuationFactor.toFixed(2)),
+                            fundingStatus: hasDirectCash ? 'DIRECT_CASH' : 'ROTATION_OR_PARTIAL',
+                            badge: `Koop ${parseFloat(simShares.toFixed(2))} stuks (€ ${finalSimAmountEur.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`,
+                            detail: hasDirectCash
+                                ? `🟢 Direct uit vrije cash (€${stocksAvailableCash.toFixed(0)} vrij • Weging ${valuationFactor.toFixed(2)}x)`
+                                : `⚠️ Vrije cash is €${stocksAvailableCash.toFixed(0)} (tekort €${(finalSimAmountEur - stocksAvailableCash).toFixed(0)} via rotatie/bijstorting)`
+                        };
+                    }
+                }
+            }
 
             return {
                 stockId: s.stockId,
@@ -3237,8 +3587,14 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 prevWaardeVerdeling: prevWv,
                 wvDiff,
                 wvDiffPct,
-                isWvDropping: prevWv !== null && s.waardeVerdeling < prevWv,
-                wvHistory: (calcsHistoryByStock.get(s.stockId) || []).slice(-8)
+                isWvDropping,
+                isWvRising,
+                wvHistory: getRecentChronologicalWvHistory(s.stockId, 8),
+                macdStatus,
+                valuationStatus,
+                wvTrendStatus,
+                opportunityRadar,
+                tomorrowOrder
             };
         });
 
@@ -4174,7 +4530,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     prevWaardeVerdeling: stockDetails?.prev_waarde_verdeling ?? null,
                     wvDiff,
                     wvDiffPct,
-                    wvHistory: (calcsHistoryByStock.get(rawAlert.aandeel_id) || []).slice(-8),
+                    wvHistory: getRecentChronologicalWvHistory(rawAlert.aandeel_id, 8),
                     priceToIntrinsicRatio: priceToIntrinsic ? parseFloat(priceToIntrinsic.toFixed(2)) : null,
                     signalLineValue: rawAlert.signal_line_value,
                     priceAtAlert: alertPrice,
@@ -5275,18 +5631,24 @@ const getEtfStrategyData = async (req, res) => {
 
 const getDataStatus = async (req, res) => {
     try {
+        const userId = getEffectiveUserId(req);
         const pool = await sql.connect(config);
-        const result = await pool.request().query(`
-            SELECT 
-                (SELECT MAX(last_updated_at) FROM MACDValues) as last_macd_update,
-                (SELECT MAX(date) FROM DailyClosingPrices) as last_price_date,
-                (SELECT MAX(last_updated_at) FROM DailyClosingPrices) as last_price_sync_at,
-                (SELECT MAX(updated_at) FROM stock_calculations) as last_calc_update,
-                (SELECT MAX(date) FROM DailyExchangeRates WHERE currency_pair = 'EURUSD') as last_fx_date,
-                (SELECT MAX(last_updated_at) FROM DailyExchangeRates WHERE currency_pair = 'EURUSD') as last_fx_sync_at,
-                (SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' ORDER BY date DESC) as last_fx_rate,
-                (SELECT MAX(date) FROM DailyPortfolioValue) as last_portfolio_value_date
-        `);
+        const result = await pool.request()
+            .input('userId', sql.Int, userId)
+            .query(`
+                SELECT 
+                    (SELECT MAX(last_updated_at) FROM MACDValues) as last_macd_update,
+                    (SELECT MAX(date) FROM DailyClosingPrices) as last_price_date,
+                    (SELECT MAX(last_updated_at) FROM DailyClosingPrices) as last_price_sync_at,
+                    (SELECT MAX(updated_at) FROM stock_calculations) as last_calc_update,
+                    (SELECT MAX(date) FROM DailyExchangeRates WHERE currency_pair = 'EURUSD') as last_fx_date,
+                    (SELECT MAX(last_updated_at) FROM DailyExchangeRates WHERE currency_pair = 'EURUSD') as last_fx_sync_at,
+                    (SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' ORDER BY date DESC) as last_fx_rate,
+                    (SELECT MAX(date) FROM DailyPortfolioValue) as last_portfolio_value_date,
+                    (SELECT TOP 1 last_sync_date FROM UserBrokerCredentials WHERE user_id = @userId AND LOWER(broker_name) = 'etoro') as last_etoro_sync_at,
+                    (SELECT TOP 1 sync_status FROM UserBrokerCredentials WHERE user_id = @userId AND LOWER(broker_name) = 'etoro') as etoro_sync_status,
+                    (SELECT TOP 1 cash_balance FROM UserBrokerCredentials WHERE user_id = @userId AND LOWER(broker_name) = 'etoro') as etoro_cash_usd
+            `);
         const row = result.recordset[0] || {};
         const todayStr = new Date().toISOString().split('T')[0];
         const lastMacdUpdate = row.last_macd_update ? new Date(row.last_macd_update) : null;
@@ -5296,6 +5658,7 @@ const getDataStatus = async (req, res) => {
         const lastFxDate = row.last_fx_date ? (row.last_fx_date instanceof Date ? row.last_fx_date.toISOString().split('T')[0] : String(row.last_fx_date).split('T')[0]) : null;
         const lastFxSyncAt = row.last_fx_sync_at ? new Date(row.last_fx_sync_at) : null;
         const lastPortfolioValueDate = row.last_portfolio_value_date ? (row.last_portfolio_value_date instanceof Date ? row.last_portfolio_value_date.toISOString().split('T')[0] : String(row.last_portfolio_value_date).split('T')[0]) : null;
+        const lastEtoroSyncAt = row.last_etoro_sync_at ? new Date(row.last_etoro_sync_at) : null;
 
         const latestSyncTimestamp = lastPriceSyncAt && lastMacdUpdate
             ? (lastPriceSyncAt > lastMacdUpdate ? lastPriceSyncAt : lastMacdUpdate)
@@ -5331,6 +5694,9 @@ const getDataStatus = async (req, res) => {
             lastFxSyncAt,
             lastFxRate: row.last_fx_rate ? Number(row.last_fx_rate) : null,
             lastPortfolioValueDate,
+            lastEtoroSyncAt,
+            etoroSyncStatus: row.etoro_sync_status || null,
+            etoroCashUsd: row.etoro_cash_usd !== null && row.etoro_cash_usd !== undefined ? Number(row.etoro_cash_usd) : null,
             formattedLastUpdate: latestSyncTimestamp
                 ? latestSyncTimestamp.toLocaleString('nl-BE', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
                 : (lastPriceDate || 'Onbekend')
@@ -5400,5 +5766,6 @@ module.exports = {
   calculateEtfStrategyInternal,
   getDataStatus,
   clearAdvisorCache,
+  clearPortfolioCache,
   getBaselinePrices2025
 };

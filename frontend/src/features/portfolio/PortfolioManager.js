@@ -1124,6 +1124,7 @@ const PortfolioManager = () => {
                             taxes: 0,
                             currency: 'USD',
                             exchange_rate: 1,
+                            import_source: 'etoro_statement',
                             _brokerName: 'Etoro'
                         });
                     });

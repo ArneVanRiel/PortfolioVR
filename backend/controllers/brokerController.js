@@ -248,128 +248,328 @@ const disconnectBroker = async (req, res) => {
     }
 };
 
-const syncEtoroData = async (req, res) => {
-    try {
-        if (req.user?.role === 'demo') {
-            return res.status(403).json({ message: 'Demo-account kan niet synchroniseren.' });
-        }
-        const userId = getEffectiveUserId(req);
-        const pool = await sql.connect(config);
+const syncEtoroDataInternal = async (userId = 1) => {
+    const pool = await sql.connect(config);
 
-        // Haal credentials op uit database
-        const credRes = await pool.request()
-            .input('user_id', sql.Int, userId)
-            .input('broker_name', sql.NVarChar, 'eToro')
-            .query(`SELECT api_key, user_key, cash_balance FROM UserBrokerCredentials WHERE user_id = @user_id AND broker_name = @broker_name`);
+    // Haal credentials op uit database
+    const credRes = await pool.request()
+        .input('user_id', sql.Int, userId)
+        .input('broker_name', sql.NVarChar, 'eToro')
+        .query(`SELECT api_key, user_key, cash_balance FROM UserBrokerCredentials WHERE user_id = @user_id AND broker_name = @broker_name`);
 
-        let dbApiKey = credRes.recordset.length > 0 ? credRes.recordset[0].api_key : '';
-        let dbUserKey = credRes.recordset.length > 0 ? credRes.recordset[0].user_key : '';
+    let dbApiKey = credRes.recordset.length > 0 ? credRes.recordset[0].api_key : '';
+    let dbUserKey = credRes.recordset.length > 0 ? credRes.recordset[0].user_key : '';
 
-        // Fallback naar .env variabelen uitsluitend voor User 1 (Arne)
-        let envKey = Number(userId) === 1 ? (process.env.ETORO_KEY || process.env.ETORO_API_KEY || '') : '';
-        let envUserKey = Number(userId) === 1 ? (process.env.ETORO_USER_KEY || '') : '';
+    // Fallback naar .env variabelen uitsluitend voor User 1 (Arne)
+    let envKey = Number(userId) === 1
+        ? (process.env['x-api-key'] || process.env.ETORO_KEY || process.env.ETORO_API_KEY || '')
+        : '';
+    let envUserKey = Number(userId) === 1
+        ? (process.env['x-user-key'] || process.env.ETORO_USER_KEY || '')
+        : '';
 
-        let rawApiKey = (dbApiKey || envKey || '').trim();
-        let rawUserKey = (dbUserKey || envUserKey || '').trim();
+    let rawApiKey = (dbApiKey || envKey || '').trim();
+    let rawUserKey = (dbUserKey || envUserKey || '').trim();
 
-        if (!rawApiKey && !rawUserKey) {
-            return res.status(400).json({ message: 'Geen eToro API sleutels geconfigureerd. Voer je eToro API sleutels in of upload je eToro Rekeningoverzicht.' });
-        }
-
-        // Intelligente extractie als de sleutel een base64 JSON token is (eToro formaat)
-        let resolvedApiKey = rawApiKey;
-        let resolvedUserKey = rawUserKey;
-
-        const tryDecodeToken = (token) => {
-            if (!token) return null;
-            try {
-                // Vervang eventuele safe base64 tekens
-                let b64 = token.replace(/_/g, '/').replace(/-/g, '+');
-                while (b64.length % 4) b64 += '=';
-                const jsonStr = Buffer.from(b64, 'base64').toString('utf8');
-                if (jsonStr.startsWith('{') && jsonStr.endsWith('}')) {
-                    return JSON.parse(jsonStr);
-                }
-            } catch (e) {
-                // geen base64 json
-            }
-            return null;
+    if (!rawApiKey && !rawUserKey) {
+        return {
+            status: 'not_configured',
+            message: 'Geen eToro API sleutels geconfigureerd. Voer je eToro API sleutels in of upload je eToro Rekeningoverzicht.'
         };
+    }
 
-        const decoded = tryDecodeToken(rawApiKey) || tryDecodeToken(rawUserKey);
-        if (decoded) {
-            if (decoded.ci) resolvedApiKey = decoded.ci;
-            if (decoded.ek) resolvedUserKey = decoded.ek;
-        }
-
-        // 1. Probeer eToro API aan te roepen
-        let apiSuccess = false;
-        let fetchedCash = null;
-        let fetchedPositions = [];
-        let apiErrorMsg = null;
+    // BELANGRIJK: eToro's public-api vereist de ONGEWIJZIGDE x-api-key en x-user-key (base64 token eyJ...fQ__).
+    // Als de gebruiker per ongeluk api_key en user_key omgewisseld heeft ingevuld, wissel ze automatisch goed:
+    let resolvedApiKey = rawApiKey;
+    let resolvedUserKey = rawUserKey;
+    if (rawApiKey.startsWith('eyJ') && !rawUserKey.startsWith('eyJ')) {
+        resolvedUserKey = rawApiKey;
+        resolvedApiKey = rawUserKey;
+    }
 
         const crypto = require('crypto');
-        const reqId = crypto.randomUUID ? crypto.randomUUID() : 'req-' + Date.now();
-
-        const headers = {
+        const makeHeaders = () => ({
             'x-api-key': resolvedApiKey,
             'x-user-key': resolvedUserKey,
-            'x-request-id': reqId,
-            'Ocp-Apim-Subscription-Key': resolvedApiKey,
-            'user-key': resolvedUserKey,
-            'Authorization': `Bearer ${rawApiKey}`,
+            'x-request-id': crypto.randomUUID ? crypto.randomUUID() : ('req-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8)),
             'User-Agent': 'PortfolioVR/1.0',
             'Accept': 'application/json'
-        };
+        });
 
-        // 1. Probeer officiële eToro public-api PnL endpoint voor Cash
-        try {
-            console.log('[eToro Sync] Aanroepen https://public-api.etoro.com/api/v1/trading/info/real/pnl...');
-            const pnlRes = await axios.get('https://public-api.etoro.com/api/v1/trading/info/real/pnl', { headers, timeout: 8000 });
-            if (pnlRes.data) {
-                apiSuccess = true;
-                console.log('[eToro Sync] PnL response ontvangen:', pnlRes.data);
-                if (pnlRes.data.credit !== undefined) fetchedCash = parseFloat(pnlRes.data.credit);
-                else if (pnlRes.data.realPnl !== undefined && pnlRes.data.realPnl.credit !== undefined) fetchedCash = parseFloat(pnlRes.data.realPnl.credit);
-                else if (pnlRes.data.availableCash !== undefined) fetchedCash = parseFloat(pnlRes.data.availableCash);
-                else if (pnlRes.data.cash !== undefined) fetchedCash = parseFloat(pnlRes.data.cash);
-            }
-        } catch (errPnl) {
-            console.warn('[eToro Sync] PnL call gefaald:', errPnl.response?.status, errPnl.response?.data || errPnl.message);
-            apiErrorMsg = errPnl.response?.data?.message || errPnl.message;
-        }
+        let apiSuccess = false;
+        let fetchedCash = null;
+        let openPositions = [];
+        let closedPositions = [];
+        let apiErrorMsg = null;
 
-        // 2. Probeer Portfolio endpoint
+        // 1. Haal live Portfolio & Cash op via officiële eToro public-api
         try {
-            console.log('[eToro Sync] Aanroepen https://public-api.etoro.com/api/v1/trading/info/aggregate-portfolio...');
-            const portRes = await axios.get('https://public-api.etoro.com/api/v1/trading/info/aggregate-portfolio', { headers, timeout: 8000 });
+            console.log('[eToro Sync] Aanroepen https://public-api.etoro.com/api/v1/trading/info/portfolio...');
+            const portRes = await axios.get('https://public-api.etoro.com/api/v1/trading/info/portfolio', {
+                headers: makeHeaders(),
+                timeout: 10000
+            });
             if (portRes.data) {
                 apiSuccess = true;
-                console.log('[eToro Sync] Aggregate portfolio ontvangen:', portRes.data);
-                if (portRes.data.positions && Array.isArray(portRes.data.positions)) {
-                    fetchedPositions = portRes.data.positions;
-                } else if (portRes.data.AggregatedPositions && Array.isArray(portRes.data.AggregatedPositions)) {
-                    fetchedPositions = portRes.data.AggregatedPositions;
+                const cp = portRes.data.clientPortfolio || portRes.data;
+                if (cp.credit !== undefined && cp.credit !== null) {
+                    fetchedCash = parseFloat(cp.credit);
                 }
-                if (fetchedCash === null && portRes.data.cash !== undefined) {
-                    fetchedCash = parseFloat(portRes.data.cash);
+                if (Array.isArray(cp.positions)) {
+                    openPositions = cp.positions;
                 }
             }
         } catch (errPort) {
             console.warn('[eToro Sync] Portfolio call gefaald:', errPort.response?.status, errPort.response?.data || errPort.message);
+            apiErrorMsg = errPort.response?.data?.errorMessage || errPort.response?.data?.message || errPort.message;
         }
 
-        // 3. Fallback endpoints indien public-api faalt
-        if (!apiSuccess) {
+        // 2. Fallback / aanvulling via Aggregate Portfolio & Real PnL
+        if (fetchedCash === null || !apiSuccess) {
             try {
-                const altRes = await axios.get('https://open-api.etoro.com/api/v1/user/portfolio', { headers, timeout: 5000 });
-                if (altRes.data) {
+                const aggRes = await axios.get('https://public-api.etoro.com/api/v1/trading/info/aggregate-portfolio', {
+                    headers: makeHeaders(),
+                    timeout: 10000
+                });
+                if (aggRes.data) {
                     apiSuccess = true;
-                    if (altRes.data.cash !== undefined) fetchedCash = parseFloat(altRes.data.cash);
-                    if (Array.isArray(altRes.data.positions)) fetchedPositions = altRes.data.positions;
+                    if (aggRes.data.accountTotals?.accountAvailableCash !== undefined) {
+                        fetchedCash = parseFloat(aggRes.data.accountTotals.accountAvailableCash);
+                    }
                 }
-            } catch (errAlt) {
-                // negeer
+            } catch (errAgg) {
+                console.warn('[eToro Sync] Aggregate portfolio call gefaald:', errAgg.response?.status, errAgg.response?.data || errAgg.message);
+            }
+        }
+
+        // 3. Haal gesloten posities (verkopen & historische trades) op via /trading/info/trade/history
+        if (apiSuccess) {
+            try {
+                console.log('[eToro Sync] Aanroepen https://public-api.etoro.com/api/v1/trading/info/trade/history...');
+                const histRes = await axios.get('https://public-api.etoro.com/api/v1/trading/info/trade/history?minDate=2020-01-01', {
+                    headers: makeHeaders(),
+                    timeout: 10000
+                });
+                if (Array.isArray(histRes.data)) {
+                    closedPositions = histRes.data;
+                }
+            } catch (errHist) {
+                console.warn('[eToro Sync] Trade history call gefaald:', errHist.response?.status, errHist.response?.data || errHist.message);
+            }
+        }
+
+        // 4. Synchroniseer open én gesloten posities naar PF_transactions zodat het grootboek synchroon loopt
+        let newTradesInserted = [];
+        if (apiSuccess && (openPositions.length > 0 || closedPositions.length > 0)) {
+            try {
+                // Haal eToro instrument metadata op (mapping van instrumentID -> Ticker & Naam)
+                const instMap = new Map();
+                try {
+                    const metaRes = await axios.get('https://api.etorostatic.com/sapi/instrumentsmetadata/V1.1/instruments', { timeout: 10000 });
+                    const list = metaRes.data?.InstrumentDisplayDatas || [];
+                    for (const inst of list) {
+                        instMap.set(Number(inst.InstrumentID), {
+                            symbol: String(inst.SymbolFull || '').trim().toUpperCase(),
+                            name: String(inst.InstrumentDisplayName || inst.SymbolFull || '').trim(),
+                            typeId: Number(inst.InstrumentTypeID)
+                        });
+                    }
+                } catch (metaErr) {
+                    const fallbackMeta = await axios.get('https://public-api.etoro.com/api/v1/market-data/instruments', {
+                        headers: makeHeaders(),
+                        timeout: 10000
+                    });
+                    const list = fallbackMeta.data?.instrumentDisplayDatas || [];
+                    for (const inst of list) {
+                        instMap.set(Number(inst.instrumentID), {
+                            symbol: String(inst.symbolFull || inst.instrumentDisplayName || '').trim().toUpperCase(),
+                            name: String(inst.instrumentDisplayName || '').trim(),
+                            typeId: Number(inst.instrumentTypeID)
+                        });
+                    }
+                }
+
+                // Haal bestaande aandelen en transacties van deze gebruiker op
+                const [stocksRes, existingTxRes] = await Promise.all([
+                    pool.request().query(`SELECT aandeel_id, ticker_symbol, name FROM Stocks`),
+                    pool.request()
+                        .input('user_id', sql.Int, userId)
+                        .query(`
+                            SELECT t.id, t.aandeel_id, UPPER(s.ticker_symbol) AS ticker_symbol, t.transaction_type,
+                                   t.quantity, t.price, t.purchase_time, t.broker_id, t.import_source
+                            FROM PF_transactions t
+                            LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+                            WHERE t.user_id = @user_id
+                        `)
+                ]);
+
+                const stockByTicker = new Map();
+                for (const st of stocksRes.recordset) {
+                    if (st.ticker_symbol) {
+                        stockByTicker.set(String(st.ticker_symbol).trim().toUpperCase(), st.aandeel_id);
+                    }
+                }
+
+                const existingTxs = existingTxRes.recordset || [];
+
+                const ensureStockId = async (ticker, displayName, isEtf = false) => {
+                    const cleanTicker = String(ticker || '').trim().toUpperCase();
+                    if (!cleanTicker) return null;
+                    if (stockByTicker.has(cleanTicker)) return stockByTicker.get(cleanTicker);
+                    // Maak aandeel aan in Stocks indien nog niet aanwezig
+                    const ins = await pool.request()
+                        .input('ticker', sql.NVarChar, cleanTicker)
+                        .input('name', sql.NVarChar, displayName || cleanTicker)
+                        .input('asset_type_id', sql.Int, isEtf ? 2 : 1)
+                        .input('stock_exchange_id', sql.Int, 1)
+                        .query(`
+                            INSERT INTO Stocks (ticker_symbol, name, asset_type_id, stock_exchange_id, inWatchlist, inIdealePortfolio)
+                            OUTPUT INSERTED.aandeel_id
+                            VALUES (@ticker, @name, @asset_type_id, @stock_exchange_id, 0, 0)
+                        `);
+                    const newId = ins.recordset?.[0]?.aandeel_id || null;
+                    if (newId) stockByTicker.set(cleanTicker, newId);
+                    return newId;
+                };
+
+                const hasMatchingTx = (ticker, type, candidateQtys, price, isoDateStr) => {
+                    const dayStr = new Date(isoDateStr).toISOString().split('T')[0];
+                    return existingTxs.some(t => {
+                        if (!t.purchase_time) return false;
+                        const tDay = new Date(t.purchase_time).toISOString().split('T')[0];
+                        if (t.ticker_symbol !== ticker || t.transaction_type !== type || tDay !== dayStr) return false;
+                        const priceDiff = Math.abs(Number(t.price) - Number(price));
+                        if (priceDiff > 0.5) return false;
+                        return candidateQtys.some(q => Math.abs(Number(t.quantity) - Number(q)) < 0.005);
+                    });
+                };
+
+                const insertEtoroApiTx = async (ticker, name, type, qty, price, dateStr, fees = 0, isEtf = false) => {
+                    const aandeelId = await ensureStockId(ticker, name, isEtf);
+                    if (!aandeelId) return;
+                    const purchaseTime = new Date(dateStr);
+                    await pool.request()
+                        .input('user_id', sql.Int, userId)
+                        .input('aandeel_id', sql.Int, aandeelId)
+                        .input('broker_id', sql.Int, 1)
+                        .input('transaction_type', sql.VarChar, type)
+                        .input('quantity', sql.Decimal(18, 5), Number(qty))
+                        .input('currency', sql.VarChar, 'USD')
+                        .input('price', sql.Decimal(18, 4), Number(price))
+                        .input('purchase_time', sql.DateTime, purchaseTime)
+                        .input('fees', sql.Decimal(18, 4), Math.abs(Number(fees) || 0))
+                        .input('taxes', sql.Decimal(18, 4), 0)
+                        .input('exchange_rate', sql.Decimal(18, 6), 1)
+                        .input('import_source', sql.NVarChar, 'etoro_api')
+                        .query(`
+                            INSERT INTO PF_transactions (
+                                user_id, aandeel_id, broker_id, transaction_type, quantity,
+                                currency, price, purchase_time, fees, taxes, exchange_rate,
+                                import_source, created_at, updated_at
+                            )
+                            VALUES (
+                                @user_id, @aandeel_id, @broker_id, @transaction_type, @quantity,
+                                @currency, @price, @purchase_time, @fees, @taxes, @exchange_rate,
+                                @import_source, GETDATE(), GETDATE()
+                            )
+                        `);
+                    existingTxs.push({
+                        aandeel_id: aandeelId,
+                        ticker_symbol: ticker,
+                        transaction_type: type,
+                        quantity: Number(qty),
+                        price: Number(price),
+                        purchase_time: purchaseTime,
+                        broker_id: 1,
+                        import_source: 'etoro_api'
+                    });
+                    newTradesInserted.push({
+                        ticker,
+                        name,
+                        type,
+                        quantity: Number(qty),
+                        price: Number(price),
+                        date: purchaseTime.toISOString()
+                    });
+                };
+
+                // A. Verwerk alle open posities uit /trading/info/portfolio (BUY op openDateTime)
+                for (const pos of openPositions) {
+                    const info = instMap.get(Number(pos.instrumentID));
+                    if (!info || !info.symbol) continue;
+                    const ticker = info.symbol;
+                    const origUnits = Number(pos.initialUnits || pos.units || 0);
+                    const curUnits = Number(pos.units || 0);
+                    const openRate = Number(pos.openRate || 0);
+                    if (origUnits <= 0 || openRate <= 0 || !pos.openDateTime) continue;
+
+                    // Check of deze BUY (met initialUnits of resterende units) al in PF_transactions staat
+                    if (!hasMatchingTx(ticker, 'BUY', [origUnits, curUnits], openRate, pos.openDateTime)) {
+                        await insertEtoroApiTx(
+                            ticker,
+                            info.name,
+                            'BUY',
+                            origUnits,
+                            openRate,
+                            pos.openDateTime,
+                            pos.totalExternalFees || 0,
+                            info.typeId === 6
+                        );
+                    }
+                }
+
+                // B. Verwerk alle gesloten posities uit /trading/info/trade/history (SELL op closeTimestamp + eventueel BUY op openTimestamp)
+                for (const closed of closedPositions) {
+                    const info = instMap.get(Number(closed.instrumentId));
+                    if (!info || !info.symbol) continue;
+                    const ticker = info.symbol;
+                    const units = Number(closed.units || 0);
+                    const closeRate = Number(closed.closeRate || 0);
+                    const openRate = Number(closed.openRate || 0);
+
+                    // 1. Controleer of er op de openTimestamp al een BUY voor dit aandeel op deze koers bestaat (ook bij deelverkoop van een grotere positie)
+                    if (units > 0 && openRate > 0 && closed.openTimestamp) {
+                        const openDayStr = new Date(closed.openTimestamp).toISOString().split('T')[0];
+                        const anyBuyOnOpenDayAtRate = existingTxs.some(t => {
+                            if (!t.purchase_time) return false;
+                            const tDay = new Date(t.purchase_time).toISOString().split('T')[0];
+                            return t.ticker_symbol === ticker &&
+                                   t.transaction_type === 'BUY' &&
+                                   tDay === openDayStr &&
+                                   Math.abs(Number(t.price) - openRate) <= 0.5;
+                        });
+                        if (!anyBuyOnOpenDayAtRate) {
+                            await insertEtoroApiTx(
+                                ticker,
+                                info.name,
+                                'BUY',
+                                units,
+                                openRate,
+                                closed.openTimestamp,
+                                0,
+                                info.typeId === 6
+                            );
+                        }
+                    }
+
+                    // 2. Controleer of de SELL op closeTimestamp al in PF_transactions staat
+                    if (units > 0 && closeRate > 0 && closed.closeTimestamp) {
+                        if (!hasMatchingTx(ticker, 'SELL', [units], closeRate, closed.closeTimestamp)) {
+                            await insertEtoroApiTx(
+                                ticker,
+                                info.name,
+                                'SELL',
+                                units,
+                                closeRate,
+                                closed.closeTimestamp,
+                                closed.fees || 0,
+                                info.typeId === 6
+                            );
+                        }
+                    }
+                }
+            } catch (txSyncErr) {
+                console.error('[eToro Sync] Fout bij synchroniseren van posities naar PF_transactions:', txSyncErr);
             }
         }
 
@@ -409,25 +609,84 @@ const syncEtoroData = async (req, res) => {
 
         if (!apiSuccess) {
             const detailMsg = apiErrorMsg ? ` (eToro antwoord: ${apiErrorMsg})` : '';
-            return res.json({
+            return {
                 message: `eToro API autorisatie mislukt${detailMsg}. Controleer of je API-sleutel en User key exact overeenkomen met de eToro instellingen, of upload je eToro Rekeningoverzicht (.xlsx).`,
                 syncedAt: new Date().toISOString(),
                 status: 'warning',
                 positionsCount: 0,
                 newTradesCount: 0,
                 apiDetail: apiErrorMsg
-            });
+            };
         }
 
-        res.json({
-            message: `eToro data succesvol gesynchroniseerd! ${fetchedPositions.length} posities en $${fetchedCash ?? 0} cash bijgewerkt.`,
+        if (newTradesInserted.length > 0) {
+            try {
+                const { clearPortfolioCache, clearAdvisorCache } = require('./portfolioController');
+                if (clearPortfolioCache) clearPortfolioCache(userId);
+                if (clearAdvisorCache) clearAdvisorCache();
+            } catch (cacheErr) {
+                // ignore
+            }
+        }
+
+        const newTxMsg = newTradesInserted.length > 0
+            ? ` ${newTradesInserted.length} nieuwe transactie(s) toegevoegd aan je grootboek (${newTradesInserted.map(t => `${t.type} ${t.quantity} ${t.ticker}`).join(', ')})!`
+            : ' Alle transacties waren al up-to-date in je grootboek.';
+
+        return {
+            message: `eToro API succesvol gesynchroniseerd! ${openPositions.length} open posities gecontroleerd, $${(fetchedCash ?? 0).toFixed(2)} cash bijgewerkt.${newTxMsg}`,
             syncedAt: new Date().toISOString(),
             status: 'ok',
-            positionsCount: fetchedPositions.length,
+            positionsCount: openPositions.length,
+            closedPositionsCount: closedPositions.length,
             cashBalance: fetchedCash,
-            newTradesCount: fetchedPositions.length
-        });
+            newTradesCount: newTradesInserted.length,
+            newTrades: newTradesInserted
+        };
+};
 
+// Synchroniseer eToro API automatisch voor alle gekoppelde gebruikers (achtergrond-scheduler & Data-Sync)
+const syncAllUsersEtoroData = async () => {
+    try {
+        const pool = await sql.connect(config);
+        const usersRes = await pool.request().query(`
+            SELECT DISTINCT user_id
+            FROM UserBrokerCredentials
+            WHERE LOWER(broker_name) = 'etoro'
+              AND (LEN(ISNULL(api_key, '')) > 5 OR LEN(ISNULL(user_key, '')) > 5)
+        `);
+        const userIds = new Set((usersRes.recordset || []).map(r => Number(r.user_id)));
+        if (process.env['x-api-key'] || process.env.ETORO_KEY || process.env.ETORO_API_KEY) {
+            userIds.add(1);
+        }
+
+        const results = [];
+        for (const uid of userIds) {
+            try {
+                const r = await syncEtoroDataInternal(uid);
+                results.push({ userId: uid, ...r });
+            } catch (uErr) {
+                console.warn(`[eToro Auto-Sync] Fout voor user ${uid}:`, uErr.message);
+            }
+        }
+        return results;
+    } catch (err) {
+        console.warn('[eToro Auto-Sync] Fout bij ophalen gekoppelde eToro gebruikers:', err.message);
+        return [];
+    }
+};
+
+const syncEtoroData = async (req, res) => {
+    try {
+        if (req.user?.role === 'demo') {
+            return res.status(403).json({ message: 'Demo-account kan niet synchroniseren.' });
+        }
+        const userId = getEffectiveUserId(req);
+        const result = await syncEtoroDataInternal(userId);
+        if (result.status === 'not_configured') {
+            return res.status(400).json({ message: result.message });
+        }
+        return res.json(result);
     } catch (err) {
         console.error('Fout bij sync eToro:', err);
         res.status(500).json({ message: 'Fout bij communicatie met eToro API: ' + err.message });
@@ -517,5 +776,7 @@ module.exports = {
     saveBrokerSettings,
     disconnectBroker,
     syncEtoroData,
+    syncEtoroDataInternal,
+    syncAllUsersEtoroData,
     getLedgerMetadata
 };

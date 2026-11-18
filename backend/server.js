@@ -34,17 +34,21 @@ connectToDatabase().then(() => {
     try {
       const watchlistController = require('./controllers/watchlistController');
       const notificationController = require('./controllers/notificationController');
+      const brokerController = require('./controllers/brokerController');
       const now = new Date();
-      const hour = now.getHours();
       
       // Controleer status
-      console.log(`[Auto-Sync Check ${now.toLocaleTimeString('nl-BE')}] Bezig met controleren data-status...`);
-      // Voer periodieke update uit op de achtergrond
+      console.log(`[Auto-Sync Check ${now.toLocaleTimeString('nl-BE')}] Bezig met controleren data-status & eToro API...`);
+      // 1. Synchroniseer eerst automatisch eToro API posities, verkopen & cash naar het grootboek
+      if (brokerController.syncAllUsersEtoroData) {
+        await brokerController.syncAllUsersEtoroData();
+      }
+      // 2. Voer periodieke prijs-, wisselkoers-, MACD- en SEC-update uit op de achtergrond
       await watchlistController.updateAndProcessStocks(null, null, true);
       await notificationController.checkNewSecQuarters();
       const pool = await sql.connect();
       await notificationController.syncAllUsersStrategyAlerts(pool, { force: true });
-      console.log('[Auto-Sync] Data, SEC checks & persoonlijke strategie-alerts voor alle gebruikers succesvol uitgevoerd.');
+      console.log('[Auto-Sync] eToro API, Data, SEC checks & persoonlijke strategie-alerts voor alle gebruikers succesvol uitgevoerd.');
     } catch (schedErr) {
       console.warn('[Auto-Sync Notice] Interne achtergrond-update overgeslagen of mislukt:', schedErr.message);
     }
@@ -81,6 +85,12 @@ app.all('/public/cron/update-data', async (req, res, next) => {
 
     // Voer de updates in de achtergrond uit
     (async () => {
+      const brokerController = require('./controllers/brokerController');
+      console.log('[Cron Background] Starten met eToro API transactie- & cash-synchronisatie...');
+      if (brokerController.syncAllUsersEtoroData) {
+        await brokerController.syncAllUsersEtoroData();
+      }
+
       console.log('[Cron Background] Starten met wisselkoersen, closing prices en alerts...');
       await watchlistController.updateAndProcessStocks(null, null, true);
       
