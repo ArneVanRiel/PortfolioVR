@@ -1278,9 +1278,9 @@ const getPortfolioReturns = async (req, res) => {
 
 const getCurrentPortfolioHoldings = async (req, res) => {
   const userId = getEffectiveUserId(req);
-  const { period, customStartDate, customEndDate, currency } = req.query;
+  const { period, customStartDate, customEndDate, currency, asOfDate } = req.query;
   const isEur = currency === 'EUR' || !currency ? 1 : 0;
-  const cacheKey = `holdings_${userId}_${period || 'All'}_${customStartDate || ''}_${customEndDate || ''}_${isEur}`;
+  const cacheKey = `holdings_v2_${userId}_${period || 'All'}_${customStartDate || ''}_${customEndDate || ''}_${asOfDate || ''}_${isEur}`;
 
   const cached = portfolioValuesCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
@@ -1297,17 +1297,22 @@ const getCurrentPortfolioHoldings = async (req, res) => {
   }
 
   const computePromise = (async () => {
-    const { endDate } = parseDateRange(period, customStartDate, customEndDate);
+    let { endDate } = parseDateRange(period, customStartDate, customEndDate);
+    if (asOfDate && /^\d{4}-\d{2}-\d{2}$/.test(String(asOfDate).trim())) {
+      endDate = new Date(`${String(asOfDate).trim()}T23:59:59.999Z`);
+    }
     const pool = await sql.connect(config);
 
-    // Bereken het actuele bezit op basis van alle transacties en zoek alleen voor de aangehouden aandelen de laatste slotkoers op
+    // 1. Haal holdings op
     const query = `
       WITH Holdings AS (
         SELECT
           t.aandeel_id,
           SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS total_quantity,
           SUM(CASE WHEN t.currency = 'EUR' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_eur,
-          SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_usd
+          SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_usd,
+          SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'EUR' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS div_eur,
+          SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'USD' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS div_usd
         FROM PF_transactions t
         WHERE t.user_id = @userId
         AND t.purchase_time <= @endDate
@@ -1323,6 +1328,7 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         s.name,
         at.type_name AS asset_type,
         h.total_quantity AS quantity,
+        ISNULL(er.rate, 1.13) AS fx_rate,
         -- Detecteer native valuta
         CASE 
           WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
@@ -1368,6 +1374,12 @@ const getCurrentPortfolioHoldings = async (req, res) => {
           ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd)
         END AS total_invested,
 
+        -- Cumulatieve dividenden geconverteerd naar gevraagde valuta
+        CASE 
+          WHEN @isEur = 1 THEN (h.div_eur + (h.div_usd / ISNULL(er.rate, 1.13)))
+          ELSE ((h.div_eur * ISNULL(er.rate, 1.13)) + h.div_usd)
+        END AS cumulative_dividends,
+
         -- Gemiddelde aankoopprijs in gevraagde valuta
         CASE 
           WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13))) / NULLIF(h.total_quantity, 0)
@@ -1410,13 +1422,98 @@ const getCurrentPortfolioHoldings = async (req, res) => {
         SELECT rate FROM LatestFX
       ) er;
       `;
-    const result = await pool.request()
+
+    // 2. Haal ook de per-broker uitsplitsing op tot @endDate
+    const brokerBreakdownQuery = `
+      SELECT
+        t.aandeel_id,
+        ISNULL(b.name, 'Onbekend') AS broker_name,
+        t.broker_id,
+        SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS broker_quantity,
+        SUM(CASE WHEN t.currency = 'EUR' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS broker_invested_eur,
+        SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS broker_invested_usd,
+        SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'EUR' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS broker_div_eur,
+        SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'USD' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS broker_div_usd
+      FROM PF_transactions t
+      LEFT JOIN Brokers b ON t.broker_id = b.broker_id
+      WHERE t.user_id = @userId
+        AND t.aandeel_id IS NOT NULL
+        AND t.purchase_time <= @endDate
+      GROUP BY t.aandeel_id, t.broker_id, b.name
+      HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
+    `;
+
+    const [result, brokerResult] = await Promise.all([
+      pool.request()
         .input('userId', sql.Int, userId)
         .input('endDate', sql.DateTime, endDate)
         .input('isEur', sql.Bit, isEur)
-        .query(query);
-    portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: result.recordset });
-    return result.recordset;
+        .query(query),
+      pool.request()
+        .input('userId', sql.Int, userId)
+        .input('endDate', sql.DateTime, endDate)
+        .query(brokerBreakdownQuery)
+    ]);
+
+    const brokerByStockMap = new Map();
+    for (const br of (brokerResult.recordset || [])) {
+      if (!brokerByStockMap.has(br.aandeel_id)) brokerByStockMap.set(br.aandeel_id, []);
+      brokerByStockMap.get(br.aandeel_id).push(br);
+    }
+
+    const totalPortfolioVal = (result.recordset || []).reduce((acc, r) => acc + Number(r.value || 0), 0);
+
+    const enrichedHoldings = (result.recordset || []).map(row => {
+      const fx = Number(row.fx_rate || 1.13);
+      const price = Number(row.price || 0);
+      const val = Number(row.value || 0);
+      const inv = Number(row.total_invested || 0);
+      const gain = Number(row.gainLoss || 0);
+      const gainPct = inv > 0 ? (gain / inv) * 100 : 0;
+      const weight = totalPortfolioVal > 0 ? (val / totalPortfolioVal) * 100 : 0;
+
+      const rawBrokers = brokerByStockMap.get(row.aandeel_id) || [];
+      const brokers = rawBrokers.map(b => {
+        const bQty = Number(b.broker_quantity || 0);
+        const bInv = isEur
+          ? (Number(b.broker_invested_eur || 0) + (Number(b.broker_invested_usd || 0) / fx))
+          : ((Number(b.broker_invested_eur || 0) * fx) + Number(b.broker_invested_usd || 0));
+        const bDiv = isEur
+          ? (Number(b.broker_div_eur || 0) + (Number(b.broker_div_usd || 0) / fx))
+          : ((Number(b.broker_div_eur || 0) * fx) + Number(b.broker_div_usd || 0));
+        const bVal = bQty * price;
+        const bGain = bVal - bInv;
+        const bGainPct = bInv > 0 ? (bGain / bInv) * 100 : 0;
+        return {
+          broker_id: b.broker_id,
+          broker_name: String(b.broker_name || 'Onbekend').trim(),
+          quantity: Number(bQty.toFixed(5)),
+          value: Number(bVal.toFixed(2)),
+          total_invested: Number(bInv.toFixed(2)),
+          average_price: bQty > 0 ? Number((bInv / bQty).toFixed(2)) : 0,
+          cumulative_dividends: Number(bDiv.toFixed(2)),
+          gainLoss: Number(bGain.toFixed(2)),
+          gainLossPercent: Number(bGainPct.toFixed(2))
+        };
+      }).sort((a, b) => b.value - a.value);
+
+      const primaryBroker = brokers.length > 0
+        ? brokers.map(b => b.broker_name).join(' + ')
+        : 'Onbekend';
+
+      return {
+        ...row,
+        gainLossPercent: Number(gainPct.toFixed(2)),
+        irr: Number(gainPct.toFixed(2)),
+        weight: Number(weight.toFixed(2)),
+        primary_broker: primaryBroker,
+        broker_name: brokers.length === 1 ? brokers[0].broker_name : primaryBroker,
+        brokers
+      };
+    });
+
+    portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: enrichedHoldings });
+    return enrichedHoldings;
   })();
 
   portfolioInFlightRequests.set(cacheKey, computePromise);
@@ -1428,6 +1525,307 @@ const getCurrentPortfolioHoldings = async (req, res) => {
     return res.status(500).json({ message: 'Serverfout bij ophalen van actuele holdings.' });
   } finally {
     portfolioInFlightRequests.delete(cacheKey);
+  }
+};
+
+// NIEUW: Historische Portfolio Tijdmachine voor het echte gebruikers-portfolio (dag-voor-dag / transactiedag snapshots met broker-uitsplitsing)
+const getPortfolioHistoryTimeline = async (req, res) => {
+  const userId = getEffectiveUserId(req);
+  const { currency } = req.query;
+  const isEur = currency === 'EUR' || !currency ? true : false;
+  const cacheKey = `history_timeline_v1_${userId}_${isEur ? 'EUR' : 'USD'}`;
+
+  const cached = portfolioValuesCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp < CACHE_TTL_MS)) {
+    return res.status(200).json(cached.data);
+  }
+
+  try {
+    const pool = await sql.connect(config);
+
+    // 1. Haal alle transacties van de gebruiker chronologisch op
+    const txRes = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT 
+          t.id, t.aandeel_id, t.broker_id, t.transaction_type, t.quantity, t.price, t.currency,
+          ISNULL(t.fees, 0) AS fees, ISNULL(t.taxes, 0) AS taxes, t.purchase_time,
+          s.ticker_symbol AS ticker, s.name AS stock_name,
+          ISNULL(at.type_name, 'Stocks') AS asset_type,
+          ISNULL(b.name, 'Onbekend') AS broker_name
+        FROM PF_transactions t
+        LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+        LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+        LEFT JOIN Brokers b ON t.broker_id = b.broker_id
+        WHERE t.user_id = @userId AND t.aandeel_id IS NOT NULL
+        ORDER BY t.purchase_time ASC, t.id ASC
+      `);
+
+    const transactions = txRes.recordset || [];
+    if (transactions.length === 0) {
+      return res.status(200).json({ timeline: [], availableBrokers: [], availableYears: [] });
+    }
+
+    const stockIds = [...new Set(transactions.map(t => Number(t.aandeel_id)).filter(Boolean))];
+    const firstDateStr = new Date(transactions[0].purchase_time).toISOString().split('T')[0];
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    // 2. Haal slotkoersen en EUR/USD wisselkoersen op
+    const [pricesRes, fxRes] = await Promise.all([
+      pool.request()
+        .input('firstDate', sql.Date, new Date(firstDateStr))
+        .query(`
+          SELECT aandeel_id, CAST(date AS DATE) AS date, closing_price
+          FROM DailyClosingPrices
+          WHERE aandeel_id IN (${stockIds.join(',')})
+            AND date >= DATEADD(day, -10, @firstDate)
+          ORDER BY date ASC
+        `),
+      pool.request().query(`
+        SELECT CAST(date AS DATE) AS date, rate
+        FROM DailyExchangeRates
+        WHERE currency_pair = 'EURUSD'
+        ORDER BY date ASC
+      `)
+    ]);
+
+    const fxMap = {};
+    let lastKnownFx = 1.10;
+    for (const r of (fxRes.recordset || [])) {
+      const dStr = new Date(r.date).toISOString().split('T')[0];
+      fxMap[dStr] = Number(r.rate || 1.10);
+    }
+
+    const pricesByDateMap = {};
+    const allDatesSet = new Set();
+    const lastKnownPriceByStock = {};
+    const stockMeta = {};
+
+    for (const t of transactions) {
+      const sid = Number(t.aandeel_id);
+      const ticker = String(t.ticker || '').trim();
+      const assetType = String(t.asset_type || 'Stocks').trim();
+      const isNativeEur = ticker.endsWith('.DE') || ticker.endsWith('.AS') || ticker.endsWith('.BR') || ticker.endsWith('.PA') || assetType.toUpperCase() === 'ETF' || t.currency === 'EUR';
+      if (!stockMeta[sid]) {
+        stockMeta[sid] = {
+          aandeel_id: sid,
+          ticker,
+          name: t.stock_name || ticker,
+          asset_type: assetType,
+          isNativeEur
+        };
+      }
+      const dStr = new Date(t.purchase_time).toISOString().split('T')[0];
+      allDatesSet.add(dStr);
+    }
+
+    for (const p of (pricesRes.recordset || [])) {
+      const dStr = new Date(p.date).toISOString().split('T')[0];
+      if (dStr < firstDateStr) {
+        lastKnownPriceByStock[p.aandeel_id] = Number(p.closing_price || 0);
+      } else {
+        allDatesSet.add(dStr);
+        if (!pricesByDateMap[dStr]) pricesByDateMap[dStr] = {};
+        pricesByDateMap[dStr][p.aandeel_id] = Number(p.closing_price || 0);
+      }
+    }
+    allDatesSet.add(todayStr);
+
+    const sortedDates = Array.from(allDatesSet).sort();
+
+    // State per stock & per broker: Map<stockId, Map<brokerName, { qty, invEur, invUsd, divEur, divUsd }>>
+    const stateByStock = new Map();
+    const availableBrokersSet = new Set();
+    let txIdx = 0;
+
+    const timeline = [];
+
+    for (let dIdx = 0; dIdx < sortedDates.length; dIdx++) {
+      const dateStr = sortedDates[dIdx];
+      if (fxMap[dateStr] !== undefined) {
+        lastKnownFx = fxMap[dateStr];
+      }
+      const fx = lastKnownFx || 1.10;
+
+      // Update slotkoersen van deze dag
+      const dayPrices = pricesByDateMap[dateStr];
+      if (dayPrices) {
+        for (const [sidStr, pr] of Object.entries(dayPrices)) {
+          lastKnownPriceByStock[sidStr] = pr;
+        }
+      }
+
+      const tradesOnDate = [];
+      while (txIdx < transactions.length) {
+        const tx = transactions[txIdx];
+        const txDateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+        if (txDateStr > dateStr) break;
+
+        const sid = Number(tx.aandeel_id);
+        const brokerName = String(tx.broker_name || 'Onbekend').trim();
+        availableBrokersSet.add(brokerName);
+
+        if (!stateByStock.has(sid)) stateByStock.set(sid, new Map());
+        const brokerMap = stateByStock.get(sid);
+        if (!brokerMap.has(brokerName)) {
+          brokerMap.set(brokerName, { qty: 0, invEur: 0, invUsd: 0, divEur: 0, divUsd: 0 });
+        }
+        const bState = brokerMap.get(brokerName);
+
+        const qty = Number(tx.quantity || 0);
+        const price = Number(tx.price || 0);
+        if (!lastKnownPriceByStock[sid]) lastKnownPriceByStock[sid] = price;
+
+        if (tx.transaction_type === 'BUY') {
+          bState.qty += qty;
+          if (tx.currency === 'EUR') bState.invEur += qty * price;
+          else bState.invUsd += qty * price;
+        } else if (tx.transaction_type === 'SELL') {
+          // Verminder inleg proportioneel of met verkoopbedrag conform getCurrentPortfolioHoldings
+          bState.qty = Math.max(0, bState.qty - qty);
+          if (tx.currency === 'EUR') bState.invEur = Math.max(0, bState.invEur - (qty * price));
+          else bState.invUsd = Math.max(0, bState.invUsd - (qty * price));
+        } else if (tx.transaction_type === 'DIVIDEND') {
+          const divNet = Math.max(0, (qty * price) - Number(tx.taxes || 0));
+          if (tx.currency === 'EUR') bState.divEur += divNet;
+          else bState.divUsd += divNet;
+        }
+
+        if (txDateStr === dateStr) {
+          tradesOnDate.push({
+            type: tx.transaction_type,
+            ticker: tx.ticker,
+            name: tx.stock_name || tx.ticker,
+            quantity: Number(qty.toFixed(4)),
+            price: Number(price.toFixed(2)),
+            currency: tx.currency,
+            broker_name: brokerName
+          });
+        }
+        txIdx++;
+      }
+
+      const hadTradeToday = tradesOnDate.length > 0;
+      const isLastDay = dIdx === sortedDates.length - 1;
+      // Neem elke transactiedag, elke 5de handelsdag (~wekelijks) en de laatste dag op in de slider
+      if (!hadTradeToday && !isLastDay && dIdx % 5 !== 0) {
+        continue;
+      }
+
+      const snapshotHoldings = [];
+      let dayTotalVal = 0;
+      let dayTotalInv = 0;
+      let dayTotalDiv = 0;
+
+      for (const [sid, brokerMap] of stateByStock.entries()) {
+        const meta = stockMeta[sid];
+        if (!meta) continue;
+        const rawPrice = Number(lastKnownPriceByStock[sid] || 0);
+        const priceInTarget = isEur
+          ? (meta.isNativeEur ? rawPrice : rawPrice / fx)
+          : (meta.isNativeEur ? rawPrice * fx : rawPrice);
+
+        let stockQty = 0;
+        let stockInv = 0;
+        let stockDiv = 0;
+        const brokersList = [];
+
+        for (const [bName, bState] of brokerMap.entries()) {
+          const bDiv = isEur
+            ? (bState.divEur + (bState.divUsd / fx))
+            : ((bState.divEur * fx) + bState.divUsd);
+          stockDiv += bDiv;
+
+          if (bState.qty <= 0.0001) continue;
+          const bInv = isEur
+            ? (bState.invEur + (bState.invUsd / fx))
+            : ((bState.invEur * fx) + bState.invUsd);
+          const bVal = bState.qty * priceInTarget;
+          const bGain = bVal - bInv;
+          const bGainPct = bInv > 0 ? (bGain / bInv) * 100 : 0;
+
+          stockQty += bState.qty;
+          stockInv += bInv;
+
+          brokersList.push({
+            broker_name: bName,
+            quantity: Number(bState.qty.toFixed(5)),
+            value: Number(bVal.toFixed(2)),
+            total_invested: Number(bInv.toFixed(2)),
+            average_price: bState.qty > 0 ? Number((bInv / bState.qty).toFixed(2)) : 0,
+            cumulative_dividends: Number(bDiv.toFixed(2)),
+            gainLoss: Number(bGain.toFixed(2)),
+            gainLossPercent: Number(bGainPct.toFixed(2))
+          });
+        }
+
+        dayTotalDiv += stockDiv;
+        if (stockQty <= 0.0001) continue;
+
+        brokersList.sort((a, b) => b.value - a.value);
+        const stockVal = stockQty * priceInTarget;
+        const stockGain = stockVal - stockInv;
+        const stockGainPct = stockInv > 0 ? (stockGain / stockInv) * 100 : 0;
+        const primaryBroker = brokersList.map(b => b.broker_name).join(' + ');
+
+        dayTotalVal += stockVal;
+        dayTotalInv += stockInv;
+
+        snapshotHoldings.push({
+          aandeel_id: sid,
+          ticker: meta.ticker,
+          name: meta.name,
+          asset_type: meta.asset_type,
+          quantity: Number(stockQty.toFixed(5)),
+          price: Number(priceInTarget.toFixed(2)),
+          value: Number(stockVal.toFixed(2)),
+          total_invested: Number(stockInv.toFixed(2)),
+          average_price: stockQty > 0 ? Number((stockInv / stockQty).toFixed(2)) : 0,
+          cumulative_dividends: Number(stockDiv.toFixed(2)),
+          gainLoss: Number(stockGain.toFixed(2)),
+          gainLossPercent: Number(stockGainPct.toFixed(2)),
+          irr: Number(stockGainPct.toFixed(2)),
+          primary_broker: primaryBroker,
+          broker_name: brokersList.length === 1 ? brokersList[0].broker_name : primaryBroker,
+          brokers: brokersList
+        });
+      }
+
+      // Bereken gewicht % per holding en sorteer op waarde DESC
+      snapshotHoldings.forEach(h => {
+        h.weight = dayTotalVal > 0 ? Number(((h.value / dayTotalVal) * 100).toFixed(2)) : 0;
+      });
+      snapshotHoldings.sort((a, b) => b.value - a.value);
+
+      const dayGain = dayTotalVal - dayTotalInv;
+      const dayGainPct = dayTotalInv > 0 ? (dayGain / dayTotalInv) * 100 : 0;
+
+      timeline.push({
+        date: dateStr,
+        isToday: isLastDay,
+        hadTrade: hadTradeToday,
+        tradesOnDate,
+        totalValue: Number(dayTotalVal.toFixed(2)),
+        totalInvested: Number(dayTotalInv.toFixed(2)),
+        totalGainLoss: Number(dayGain.toFixed(2)),
+        totalGainLossPct: Number(dayGainPct.toFixed(2)),
+        cumulativeDividends: Number(dayTotalDiv.toFixed(2)),
+        holdings: snapshotHoldings
+      });
+    }
+
+    const availableYears = Array.from(new Set(timeline.map(pt => pt.date.substring(0, 4))));
+    const responsePayload = {
+      timeline,
+      availableBrokers: Array.from(availableBrokersSet),
+      availableYears
+    };
+
+    portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: responsePayload });
+    return res.status(200).json(responsePayload);
+  } catch (error) {
+    console.error('Fout bij opbouwen historische portfolio tijdlijn:', error);
+    return res.status(500).json({ message: 'Serverfout bij opbouwen historische portfolio tijdlijn.' });
   }
 };
 
@@ -2655,7 +3053,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         console.warn('Kon PF_Strategies / PF_UserStrategyHistory niet uitlezen voor portfolioController:', err.message);
     }
 
-    const cacheKey = `adv_v4_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}_${stocksFundingMode}_${stocksMonthlyBudget}_${stocksAllowSelling}_${strategyHistoryList.length}`;
+    const cacheKey = `adv_v5_${userId}_${currency}_${maxPriceToIntrinsic}_${takeProfitRatio}_${maxDebtRatio}_${allowFractionalShares ? 1 : 0}_${minOrderAmount}_${minOrderSkipThreshold}_${activeStrategyRecord?.strategy_id || 0}_${stocksFundingMode}_${stocksMonthlyBudget}_${stocksAllowSelling}_${strategyHistoryList.length}`;
     if (!forceRefresh) {
         const cached = advisorDataCache.get(cacheKey);
         if (cached && (Date.now() - cached.timestamp < ADVISOR_CACHE_TTL_MS)) {
@@ -2776,9 +3174,11 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
         // 5. userTxQuery voor alle transacties van losse aandelen (GEEN ETF's)
         const userTxQuery = `
-            SELECT t.id, t.aandeel_id, s.ticker_symbol, s.name, t.transaction_type, t.quantity, t.price, t.purchase_time
+            SELECT t.id, t.aandeel_id, s.ticker_symbol, s.name, t.transaction_type, t.quantity, t.price, t.purchase_time,
+                   ISNULL(b.name, 'Onbekend') AS broker_name
             FROM PF_transactions t
             JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+            LEFT JOIN Brokers b ON t.broker_id = b.broker_id
             WHERE t.user_id = @userId 
               AND (t.transaction_type = 'BUY' OR t.transaction_type = 'SELL')
               AND (s.asset_type_id != 2 OR s.asset_type_id IS NULL)
@@ -3139,11 +3539,39 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         let totalPortfolioCost = 0;
         const evaluatedHoldings = [];
 
+        // Bereken broker-uitsplitsing per aandeel uit userTxResult
+        const brokerQtyByStock = new Map();
+        for (const tx of (userTxResult.recordset || [])) {
+            const sid = tx.aandeel_id;
+            const bName = String(tx.broker_name || 'Onbekend').trim();
+            if (!brokerQtyByStock.has(sid)) brokerQtyByStock.set(sid, new Map());
+            const bMap = brokerQtyByStock.get(sid);
+            const curQty = bMap.get(bName) || 0;
+            if (tx.transaction_type === 'BUY') bMap.set(bName, curQty + Number(tx.quantity || 0));
+            else if (tx.transaction_type === 'SELL') bMap.set(bName, Math.max(0, curQty - Number(tx.quantity || 0)));
+        }
+
         for (const h of rawHoldings) {
             const currentPriceConverted = toDisplayCurrency(h.current_price_raw, h.ticker, h.asset_type);
             const avgBuyPriceConverted = toDisplayCurrency(h.avg_buy_price_raw, h.ticker, h.asset_type);
             const holdingValue = h.quantity * currentPriceConverted;
             const holdingCost = h.quantity * avgBuyPriceConverted;
+
+            const bMap = brokerQtyByStock.get(h.aandeel_id) || new Map();
+            const holdingBrokers = [];
+            for (const [bName, bQty] of bMap.entries()) {
+                if (bQty > 0.0001) {
+                    holdingBrokers.push({
+                        broker_name: bName,
+                        quantity: Number(bQty.toFixed(5)),
+                        holdingValue: Number((bQty * currentPriceConverted).toFixed(2))
+                    });
+                }
+            }
+            holdingBrokers.sort((a, b) => b.holdingValue - a.holdingValue);
+            const primaryBroker = holdingBrokers.length > 0
+                ? holdingBrokers.map(b => b.broker_name).join(' + ')
+                : 'Onbekend';
 
             totalPortfolioValue += holdingValue;
             totalPortfolioCost += holdingCost;
@@ -3266,7 +3694,9 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 actionLabel,
                 actionSeverity,
                 actionReason,
-                isAligned
+                isAligned,
+                primaryBroker,
+                brokers: holdingBrokers
             });
         }
 
@@ -3360,6 +3790,11 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
         const topIdealStocks = idealUniverse;
         const totalIdealWaardeverdeling = topIdealStocks.reduce((sum, s) => sum + (parseFloat(s.waardeVerdeling) > 0 ? parseFloat(s.waardeVerdeling) : 1), 0);
+        // BELANGRIJK (100% gelijk aan Backtest): Totale aandelenvermogen = Belegde aandelenwaarde + Vrije Aandelen-Cash!
+        // Zo wordt je vrije cash volledig meegenomen in de ideale doelbedragen en blijft er geen cash ongebruikt staan.
+        const totalDeployableStocksCapital = (totalPortfolioValue + stocksAvailableCash) > 0
+            ? (totalPortfolioValue + stocksAvailableCash)
+            : 1000;
         
         const idealPortfolio = topIdealStocks.map(s => {
             const stockWv = (parseFloat(s.waardeVerdeling) > 0 ? parseFloat(s.waardeVerdeling) : 1);
@@ -3367,11 +3802,11 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 ? ((stockWv / totalIdealWaardeverdeling) * 100) 
                 : (100 / topIdealStocks.length);
 
-            const targetValueEur = totalPortfolioValue > 0 ? (totalPortfolioValue * (targetWeightPct / 100)) : 1000;
+            const targetValueEur = totalDeployableStocksCapital * (targetWeightPct / 100);
             const targetShares = s.currentPrice > 0 ? (targetValueEur / s.currentPrice) : 0;
             const currentHolding = evaluatedHoldings.find(h => h.stockId === s.stockId);
-            const currentWeightPct = currentHolding ? currentHolding.weightPct : 0;
             const currentValueEur = currentHolding ? currentHolding.holdingValue : 0;
+            const currentWeightPct = totalDeployableStocksCapital > 0 ? ((currentValueEur / totalDeployableStocksCapital) * 100) : 0;
             const currentShares = currentHolding ? currentHolding.quantity : 0;
 
             const stockDetails = allStocks.find(st => st.aandeel_id === s.stockId);
@@ -3505,28 +3940,18 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     detail: 'Strategie koopt niet bij dalende waardeverdeling'
                 };
             } else {
-                const baseNeededEur = Math.max(0, targetValueEur - currentValueEur);
-                const valuationFactor = (s.intrinsicValue && s.intrinsicValue > 0 && s.currentPrice > 0)
-                    ? Math.max(0.4, Math.min(1.5, s.intrinsicValue / s.currentPrice))
-                    : 1.0;
-
-                let simAmountEur = baseNeededEur > 0
-                    ? (baseNeededEur * valuationFactor)
-                    : (targetValueEur * 0.5 * valuationFactor);
-
-                if (currentValueEur + simAmountEur > targetValueEur * 1.3) {
-                    simAmountEur = Math.max(0, targetValueEur * 1.3 - currentValueEur);
-                }
+                // 100% IDENTIEK AAN BACKTEST: Benodigde aankoop = Doelbedrag (op basis van Aandelen + Vrije Cash) min Huidig Bezit
+                let simAmountEur = Math.max(0, targetValueEur - currentValueEur);
 
                 if (simAmountEur < minOrderSkipThreshold) {
                     tomorrowOrder = {
                         canBuyTomorrow: false,
                         shares: 0,
                         amountEur: 0,
-                        valuationFactor: parseFloat(valuationFactor.toFixed(2)),
+                        valuationFactor: 1.0,
                         fundingStatus: 'TARGET_REACHED',
                         badge: '🎯 € 0 (Streefdoel bereikt)',
-                        detail: `Order < €${minOrderSkipThreshold.toFixed(0)} drempel`
+                        detail: `Tekort (€${simAmountEur.toFixed(0)}) < €${minOrderSkipThreshold.toFixed(0)} minimum drempel`
                     };
                 } else {
                     if (simAmountEur < minOrderAmount) {
@@ -3544,7 +3969,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                             canBuyTomorrow: false,
                             shares: 0,
                             amountEur: 0,
-                            valuationFactor: parseFloat(valuationFactor.toFixed(2)),
+                            valuationFactor: 1.0,
                             fundingStatus: 'TARGET_REACHED',
                             badge: '🎯 € 0 (Streefdoel bereikt)',
                             detail: 'Reeds voldoende stuks in bezit'
@@ -3555,12 +3980,12 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                             canBuyTomorrow: true,
                             shares: parseFloat(simShares.toFixed(2)),
                             amountEur: finalSimAmountEur,
-                            valuationFactor: parseFloat(valuationFactor.toFixed(2)),
+                            valuationFactor: 1.0,
                             fundingStatus: hasDirectCash ? 'DIRECT_CASH' : 'ROTATION_OR_PARTIAL',
                             badge: `Koop ${parseFloat(simShares.toFixed(2))} stuks (€ ${finalSimAmountEur.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})`,
                             detail: hasDirectCash
-                                ? `🟢 Direct uit vrije cash (€${stocksAvailableCash.toFixed(0)} vrij • Weging ${valuationFactor.toFixed(2)}x)`
-                                : `⚠️ Vrije cash is €${stocksAvailableCash.toFixed(0)} (tekort €${(finalSimAmountEur - stocksAvailableCash).toFixed(0)} via rotatie/bijstorting)`
+                                ? `🟢 Direct uit vrije cash (€${stocksAvailableCash.toFixed(0)} vrij • Conform Backtest)`
+                                : `⚠️ Vrije cash is €${stocksAvailableCash.toFixed(0)} (tekort €${(finalSimAmountEur - stocksAvailableCash).toFixed(0)} via snoei van zwakkere positie)`
                         };
                     }
                 }
@@ -4067,18 +4492,8 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                             currentOwnedEur = sharesOwned * alertPriceConverted;
 
                             const baseNeededEur = Math.max(0, targetEur - currentOwnedEur);
-                            const intrinsicVal = idealItem.intrinsicValue;
-                            const valuationFactor = (intrinsicVal && intrinsicVal > 0 && alertPriceConverted > 0)
-                                ? Math.max(0.4, Math.min(1.5, intrinsicVal / alertPriceConverted))
-                                : 1.0;
-
-                            actionAmountEur = baseNeededEur > 0 ? (baseNeededEur * valuationFactor) : (targetEur * 0.5 * valuationFactor);
-                            if (actionAmountEur < minOrderAmount && alert.trade_amount > 0) {
-                                actionAmountEur = toDisplayCurrency(alert.trade_amount, alert.ticker_symbol, stockDetails?.asset_type) * valuationFactor;
-                            }
-                            if (currentOwnedEur + actionAmountEur > targetEur * 1.3) {
-                                actionAmountEur = Math.max(0, targetEur * 1.3 - currentOwnedEur);
-                            }
+                            // 100% IDENTIEK AAN BACKTEST: Aanvullen tot het ideale doelbedrag (op Aandelen + Vrije Cash)
+                            actionAmountEur = baseNeededEur;
 
                             if (actionAmountEur < minOrderSkipThreshold) {
                                 actionAmountEur = 0;
@@ -4427,17 +4842,8 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
                     const targetEur = idealItem.targetValueEur;
                     const baseNeededEur = Math.max(0, targetEur - currentOwnedEurAtAlertDate);
-                    const valuationFactor = (intrinsicVal && intrinsicVal > 0 && alertPrice > 0)
-                        ? Math.max(0.4, Math.min(1.5, intrinsicVal / alertPrice))
-                        : 1.0;
-
-                    actionAmountEur = baseNeededEur > 0 ? (baseNeededEur * valuationFactor) : (targetEur * 0.5 * valuationFactor);
-                    if (actionAmountEur < minOrderAmount && rawAlert.trade_amount > 0) {
-                        actionAmountEur = toDisplayCurrency(rawAlert.trade_amount, ticker, stockDetails?.asset_type) * valuationFactor;
-                    }
-                    if (currentOwnedEurAtAlertDate + actionAmountEur > targetEur * 1.3) {
-                        actionAmountEur = Math.max(0, targetEur * 1.3 - currentOwnedEurAtAlertDate);
-                    }
+                    // 100% IDENTIEK AAN BACKTEST: Aanvullen tot het ideale doelbedrag (op Aandelen + Vrije Cash)
+                    actionAmountEur = baseNeededEur;
 
                     if (actionAmountEur < minOrderSkipThreshold) {
                         actionAmountEur = 0;
@@ -4476,20 +4882,48 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                         } else {
                             const shortfallEur = actionAmountEur - stocksAvailableCash;
                             let coveredEur = 0;
-                            const potentialSellCandidates = [
-                                ...takeProfitHoldings.filter(h => h.ticker !== ticker),
-                                ...mandatorySellHoldings.filter(h => h.ticker !== ticker)
-                            ];
+                            const buyCandidateWv = idealItem.waardeVerdeling || 0;
+
+                            // 100% IDENTIEK AAN BACKTEST SNOEI-LOGICA:
+                            // Snoei UITSLUITEND in de SLECHTSTE aandelen (Score < 5, dalende WV, of lagere WV dan de nieuwe koopkans).
+                            // Goede aandelen met Score 5, stabiele/stijgende WV én hogere/gelijke WV worden NOOIT gesnoeid!
+                            const potentialSellCandidates = evaluatedHoldings
+                                .filter(h =>
+                                    h.ticker !== ticker &&
+                                    h.assetType !== 'ETF' &&
+                                    (h.score < 5 || h.isWvDropping || (h.waardeVerdeling || 0) < buyCandidateWv)
+                                )
+                                .sort((a, b) => {
+                                    if (a.score !== b.score) return a.score - b.score;
+                                    if (Boolean(a.isWvDropping) !== Boolean(b.isWvDropping)) return a.isWvDropping ? -1 : 1;
+                                    if (Math.abs((a.waardeVerdeling || 0) - (b.waardeVerdeling || 0)) > 0.01) {
+                                        return (a.waardeVerdeling || 0) - (b.waardeVerdeling || 0);
+                                    }
+                                    return (b.priceToIntrinsicRatio || 0) - (a.priceToIntrinsicRatio || 0);
+                                });
 
                             for (const cand of potentialSellCandidates) {
                                 if (coveredEur >= shortfallEur) break;
-                                const neededFromCand = Math.min(cand.holdingValue, shortfallEur - coveredEur);
+                                const maxAllowedFromCand = cand.score < 5
+                                    ? cand.holdingValue
+                                    : cand.isWvDropping
+                                    ? cand.holdingValue * Math.max(0.15, cand.wvDropFraction || 0.25)
+                                    : cand.holdingValue * 0.35;
+                                const neededFromCand = Math.min(maxAllowedFromCand, shortfallEur - coveredEur);
+                                if (neededFromCand < minOrderSkipThreshold) continue;
                                 const candShares = cand.currentPrice > 0 ? (allowFractionalShares ? Math.round((neededFromCand / cand.currentPrice) * 10) / 10 : Math.floor(neededFromCand / cand.currentPrice)) : 0;
-                                
+                                if (candShares <= 0) continue;
+
+                                const pruneReason = cand.score < 5
+                                    ? `Slechtste Kwaliteit (Score ${cand.score}/5 < 5/5 -> 100% verkoop)`
+                                    : cand.isWvDropping
+                                    ? `Dalende Waardeverdeling (${cand.prevWaardeVerdeling?.toFixed(1)}% ➔ ${cand.waardeVerdeling?.toFixed(1)}%)`
+                                    : `Lagere Waardeverdeling (WV ${(cand.waardeVerdeling || 0).toFixed(1)}% vs ${ticker} WV ${buyCandidateWv.toFixed(1)}%)`;
+
                                 linkedSales.push({
                                     ticker: cand.ticker,
                                     name: cand.name,
-                                    reason: cand.actionType === 'TAKE_PROFIT' ? 'Winst Verzilveren (Overgewaardeerd)' : 'Verplichte Verkoop (Score < 5 of Daling Waardeverdeling)',
+                                    reason: pruneReason,
                                     sharesToSell: parseFloat(candShares.toFixed(2)),
                                     amountToSellEur: parseFloat((candShares * cand.currentPrice).toFixed(2)),
                                     currentPrice: cand.currentPrice
@@ -4499,9 +4933,9 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
                             fundingSource = {
                                 status: 'ROTATION_REQUIRED',
-                                badge: '⚠️ Cash Vrijmaken via Verkoop',
+                                badge: '⚠️ Cash Vrijmaken via Snoei Slechtste Posities',
                                 shortfallEur: parseFloat(shortfallEur.toFixed(2)),
-                                message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(0)} beschikbaar na ETF-reservering). Voer onderstaande verkoop uit om €${actionAmountEur.toFixed(0)} vrij te maken:`
+                                message: `Onvoldoende vrije cash (€${stocksAvailableCash.toFixed(0)} beschikbaar na ETF-reservering). Snoei uitsluitend in zwakkere posities (Score < 5, dalende WV of lagere WV) om €${actionAmountEur.toFixed(0)} vrij te maken:`
                             };
                         }
                     }
@@ -4817,6 +5251,7 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
         const responseData = {
             currency,
             totalPortfolioValue,
+            totalDeployableStocksCapital: parseFloat(totalDeployableStocksCapital.toFixed(2)),
             totalPortfolioCost,
             totalProfit: totalPortfolioValue - totalPortfolioCost,
             totalProfitPct: totalPortfolioCost > 0 ? ((totalPortfolioValue - totalPortfolioCost) / totalPortfolioCost) * 100 : 0,
@@ -5750,6 +6185,7 @@ module.exports = {
   calculateReturns,
   getPortfolioReturns,
   getCurrentPortfolioHoldings,
+  getPortfolioHistoryTimeline,
   getTransactions,
   addTransaction,
   updateTransaction,

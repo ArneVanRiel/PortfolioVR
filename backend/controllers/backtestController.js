@@ -1223,18 +1223,22 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         if (usePortfolioRelativeWeight && totalScore5WvToday > 0) {
           const relPct = wv / totalScore5WvToday;
           const maxSingleWeight = maxPositions > 0 ? Math.max(0.12, 1.2 / Number(maxPositions)) : 0.25;
-          targetAlloc = currentTotalVal * Math.min(maxSingleWeight, relPct * 2.0);
+          // Zuiver proportioneel doelbedrag conform de Doelverdeling (geen 2.0x overschrijding meer)
+          targetAlloc = currentTotalVal * Math.min(maxSingleWeight, relPct);
         } else {
-          targetAlloc = currentTotalVal * Math.min(0.25, (wv / 100) * 1.5);
+          targetAlloc = currentTotalVal * Math.min(0.25, (wv / 100));
         }
 
-        const currentHoldingCost = positions.get(stockId)?.cost || 0;
-        const neededAlloc = Math.max(0, targetAlloc - currentHoldingCost);
+        const existingPosForTarget = positions.get(stockId);
+        const currentHoldingVal = existingPosForTarget ? (existingPosForTarget.shares * price) : 0;
+        const neededAlloc = Math.max(0, targetAlloc - currentHoldingVal);
 
         const minBuyThreshold = allowFractionalShares ? Number(minOrderSkipThreshold) : price;
-        if (neededAlloc < minBuyThreshold && cash < minBuyThreshold) continue;
+        if (neededAlloc < minBuyThreshold) continue;
 
         // OPTIE 1: ACTIEVE HERBALANCERING / SNOEIEN WANNEER CASH ONVOLDOENDE IS VOOR STREEFALLOCATIE
+        // BELANGRIJK: Snoei UITSLUITEND in de SLECHTSTE aandelen (Score < 5, dalende WV, of lagere WV dan de nieuwe koopkans).
+        // Goede aandelen met Score 5, stijgende WV én hogere/gelijke WV (pWv >= wv) worden NOOIT gesnoeid!
         if (enableActiveRebalance && cash < Math.max(minBuyThreshold, neededAlloc)) {
           const prunablePositions = [];
           for (const [pStockId, pPos] of positions.entries()) {
@@ -1243,15 +1247,20 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             const pPrice = pInfo.priceMap.get(dStr) || pInfo.lastKnownPrice;
             if (!pPrice || pPrice <= 0) continue;
 
-            const { curr: pCurr } = getCalc(pInfo.cList, dStr);
+            const { curr: pCurr, prev: pPrev } = getCalc(pInfo.cList, dStr);
             const pScore = pCurr ? (pCurr.selectiecriteria ?? 0) : 0;
             const pWv = pCurr ? pCurr.waarde_verdeling : 0;
+            const pPrevWv = pPrev ? pPrev.waarde_verdeling : null;
+            const pIsWvDropping = pPrevWv !== null && pWv < pPrevWv;
+            const pIntrinsic = pCurr ? (pCurr.intrinsieke_waarde || 0) : 0;
+            const pValuationRatio = pIntrinsic > 0 ? (pPrice / pIntrinsic) : 1.0;
             const pHoldingVal = pPos.shares * pPrice;
             const pRelPct = totalScore5WvToday > 0 ? (pWv / totalScore5WvToday) : (pWv / 100);
             const pMaxWeight = maxPositions > 0 ? Math.max(0.12, 1.2 / Number(maxPositions)) : 0.25;
-            const pIdealVal = currentTotalVal * Math.min(pMaxWeight, pRelPct * 2.0);
+            const pIdealVal = currentTotalVal * Math.min(pMaxWeight, pRelPct);
 
-            if (pScore < 5 || pHoldingVal > pIdealVal * 1.05 || pWv < wv) {
+            // Alleen snoeibaar als het aandeel SLECHTER is: Score < 5, dalende WV, of strikt lagere WV dan de nieuwe koopkans
+            if (pScore < 5 || pIsWvDropping || pWv < wv) {
               prunablePositions.push({
                 pStockId,
                 pPos,
@@ -1259,24 +1268,32 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
                 pPrice,
                 pScore,
                 pWv,
+                pPrevWv,
+                pIsWvDropping,
+                pValuationRatio,
                 pHoldingVal,
                 pIdealVal,
-                excessValue: Math.max(0, pHoldingVal - pIdealVal),
-                isOverweight: pHoldingVal > pIdealVal * 1.05
+                excessValue: Math.max(0, pHoldingVal - pIdealVal)
               });
             }
           }
 
+          // Sorteer strikt van SLECHTSTE naar MINDER SLECHT:
+          // 1. Laagste Score eerst (Score < 5)
+          // 2. Dalende Waardeverdeling eerst
+          // 3. Laagste Waardeverdeling (pWv) eerst
+          // 4. Hoogste waardering (duurste koers t.o.v. intrinsieke waarde) eerst
           prunablePositions.sort((a, b) => {
             if (a.pScore !== b.pScore) return a.pScore - b.pScore;
-            if (a.excessValue !== b.excessValue) return b.excessValue - a.excessValue;
-            return a.pWv - b.pWv;
+            if (a.pIsWvDropping !== b.pIsWvDropping) return a.pIsWvDropping ? -1 : 1;
+            if (Math.abs(a.pWv - b.pWv) > 0.01) return a.pWv - b.pWv;
+            return b.pValuationRatio - a.pValuationRatio;
           });
 
           for (const pruneItem of prunablePositions) {
             if (cash >= neededAlloc && cash >= minBuyThreshold) break;
 
-            const { pStockId, pPos, pInfo, pPrice, pScore, pWv, pHoldingVal, pIdealVal, excessValue, isOverweight } = pruneItem;
+            const { pStockId, pPos, pInfo, pPrice, pScore, pWv, pPrevWv, pIsWvDropping } = pruneItem;
             if (!positions.has(pStockId) || pPos.shares <= 0) continue;
 
             const cashShortage = Math.max(minBuyThreshold, neededAlloc) - cash;
@@ -1284,17 +1301,15 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
 
             if (pScore < 5) {
               sharesToPrune = pPos.shares;
-            } else if (excessValue > 0) {
-              if (allowFractionalShares) {
-                let targetPruneEur = Math.min(cashShortage, excessValue);
-                if (targetPruneEur < Number(minOrderSkipThreshold)) {
-                  sharesToPrune = 0;
-                } else {
-                  if (targetPruneEur < Number(minOrderAmount)) targetPruneEur = Number(minOrderAmount);
-                  sharesToPrune = Math.min(pPos.shares, Math.round((targetPruneEur / pPrice) * 10) / 10);
-                }
-              } else {
-                sharesToPrune = Math.min(pPos.shares, Math.ceil(Math.min(cashShortage, excessValue) / pPrice));
+            } else if (pIsWvDropping && pPrevWv > 0) {
+              const dropFrac = Math.min(1, Math.max(0.15, (pPrevWv - pWv) / pPrevWv));
+              const maxDropEur = pPos.shares * pPrice * dropFrac;
+              let targetPruneEur = Math.min(cashShortage, maxDropEur);
+              if (targetPruneEur >= Number(minOrderSkipThreshold)) {
+                if (targetPruneEur < Number(minOrderAmount)) targetPruneEur = Number(minOrderAmount);
+                sharesToPrune = allowFractionalShares
+                  ? Math.min(pPos.shares, Math.round((targetPruneEur / pPrice) * 10) / 10)
+                  : Math.min(pPos.shares, Math.ceil(targetPruneEur / pPrice));
               }
             } else if (pWv < wv) {
               if (allowFractionalShares) {
@@ -1639,9 +1654,37 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       const strategyProfit = finalDayTotal - initialCapital;
       const strategyReturnPct = ((finalDayTotal - initialCapital) / initialCapital) * 100;
 
-      if (i % 2 === 0 || i === allDates.length - 1) {
+      const hadTradeToday =
+        (buyOrders.length > 0 && buyOrders[buyOrders.length - 1].date === dStr) ||
+        (trades.length > 0 && trades[trades.length - 1].exitDate === dStr);
+
+      if (hadTradeToday || i % 2 === 0 || i === allDates.length - 1) {
+        const snapshotHoldings = Array.from(positions.entries()).map(([sId, p]) => {
+          const sInf = stockData.get(sId);
+          const curP = sInf.lastKnownPrice || p.entryPrice;
+          const val = Math.round(p.shares * curP * 100) / 100;
+          const costVal = Math.round(p.cost * 100) / 100;
+          const { curr: pCurr } = getCalc(sInf.cList, dStr);
+          const pWv = pCurr ? pCurr.waarde_verdeling : (p.entryWv || 0);
+          return {
+            ticker: sInf.ticker_symbol,
+            name: sInf.name,
+            shares: Math.round(p.shares * 100) / 100,
+            price: Math.round(curP * 100) / 100,
+            entryPrice: Math.round(p.entryPrice * 100) / 100,
+            entryDate: p.entryDate,
+            value: val,
+            cost: costVal,
+            profit: Math.round((val - costVal) * 100) / 100,
+            returnPct: costVal > 0 ? Math.round(((val - costVal) / costVal) * 1000) / 10 : 0,
+            weightPct: finalDayTotal > 0 ? Math.round((val / finalDayTotal) * 1000) / 10 : 0,
+            wv: Math.round((pWv || 0) * 10) / 10
+          };
+        }).sort((a, b) => b.value - a.value);
+
         equityCurve.push({
           date: dStr,
+          hadTrade: hadTradeToday,
           strategyValue: Math.round(finalDayTotal * 100) / 100,
           strategyProfit: Math.round(strategyProfit * 100) / 100,
           strategyReturnPct: Math.round(strategyReturnPct * 100) / 100,
@@ -1656,7 +1699,8 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
 
           cash: Math.round(cash * 100) / 100,
           invested: Math.round(finalDayInvested * 100) / 100,
-          activePositionsCount: positions.size
+          activePositionsCount: positions.size,
+          holdings: snapshotHoldings
         });
       }
     }

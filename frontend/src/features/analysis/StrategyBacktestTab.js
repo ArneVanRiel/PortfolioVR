@@ -8,18 +8,20 @@ import {
   LinearScale,
   PointElement,
   LineElement,
+  ArcElement,
   Title,
   Tooltip,
   Legend,
   Filler
 } from 'chart.js';
-import { Line } from 'react-chartjs-2';
+import { Line, Doughnut } from 'react-chartjs-2';
 
 ChartJS.register(
   CategoryScale,
   LinearScale,
   PointElement,
   LineElement,
+  ArcElement,
   Title,
   Tooltip,
   Legend,
@@ -826,6 +828,15 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
   const [portfolioResult, setPortfolioResult] = useState(null);
   const [timeRange, setTimeRange] = useState('ALL'); // '1Y' | '3Y' | '5Y' | 'ALL'
   const [tradeFilter, setTradeFilter] = useState('ALL'); // 'ALL' | 'WINS' | 'LOSSES' | 'PARTIAL' | 'REBALANCE' | 'STOP_LOSS' | 'VALUATION' | 'OPEN'
+  const [sliderIndex, setSliderIndex] = useState(0);
+  const [showValuationExplanation, setShowValuationExplanation] = useState(false);
+
+  // Zet slider standaard op de meest recente dag zodra dynamicResult binnenkomt
+  useEffect(() => {
+    if (dynamicResult?.equityCurve?.length > 0) {
+      setSliderIndex(dynamicResult.equityCurve.length - 1);
+    }
+  }, [dynamicResult]);
 
   // Update targetStock als selectedStock verandert
   useEffect(() => {
@@ -1792,13 +1803,28 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
 
               {/* Waarderingsfilter (Koers vs Intrinsieke Waarde) */}
               <div className="flex items-center justify-between gap-2 p-2 bg-teal-50/50 rounded-xl border border-teal-200">
-                <span className="text-xs font-semibold text-teal-950 whitespace-nowrap">🏷️ Max. Waardering:</span>
+                <div className="flex items-center gap-1.5">
+                  <span className="text-xs font-semibold text-teal-950 whitespace-nowrap">🏷️ Max. Waardering:</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowValuationExplanation(prev => !prev)}
+                    className={`px-1.5 py-0.5 rounded-md text-[10px] font-black transition-all border ${
+                      showValuationExplanation
+                        ? 'bg-amber-500 text-amber-950 border-amber-600'
+                        : 'bg-amber-100 text-amber-900 border-amber-300 hover:bg-amber-200'
+                    }`}
+                    title="Uitleg: Waarom levert 1,3x over 10 jaar meer op dan 1,0x of 0,75x (-25% korting)?"
+                  >
+                    💡 Waarom 1,3x?
+                  </button>
+                </div>
                 <select
                   value={maxPriceToIntrinsicRatio}
                   onChange={(e) => { setMaxPriceToIntrinsicRatio(Number(e.target.value)); setActivePreset('custom'); }}
                   className="px-2 py-1 bg-white border border-teal-300 rounded-lg text-xs font-bold text-teal-900 focus:outline-none focus:ring-2 focus:ring-teal-500"
                 >
                   <option value={0}>Uit (Geen limiet)</option>
+                  <option value={0.75}>0.75x (🛡️ -25% Korting)</option>
                   <option value={1.0}>1.0x (💎 Korting)</option>
                   <option value={1.2}>1.2x (Max +20%)</option>
                   <option value={1.3}>1.3x (🌟 Super-Kwaliteit)</option>
@@ -1820,6 +1846,50 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
                   <option value={3.0}>3.0x Intrinsiek</option>
                 </select>
               </div>
+
+              {/* Uitklapbare Uitleg: Waarom levert 1,3x over 10 jaar meer op dan 1,0x of 0,75x (-25% korting)? */}
+              {showValuationExplanation && (
+                <div className="sm:col-span-2 p-4 rounded-2xl bg-gradient-to-br from-amber-50 via-white to-teal-50/60 border-2 border-amber-300 space-y-3 text-xs animate-fade-in">
+                  <div className="flex items-start justify-between gap-2 border-b border-amber-200/80 pb-2">
+                    <div>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-200 text-amber-950 mb-1">
+                        📚 DCF &amp; Backtest Inzicht
+                      </span>
+                      <h4 className="text-sm font-black text-gray-900">
+                        Waarom levert 1,3x (Super-Kwaliteit) op 10 jaar méér op dan 1,0x of 0,75x (-25% korting)?
+                      </h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowValuationExplanation(false)}
+                      className="text-gray-500 hover:text-gray-800 font-bold"
+                    >
+                      ✕
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-[11px] leading-relaxed text-gray-700">
+                    <div className="p-3 rounded-xl bg-white border border-amber-200 space-y-1">
+                      <div className="font-black text-amber-950">1. Ingebouwde 15% DCF-veiligheidsmarge</div>
+                      <p>
+                        Onze DCF-formule berekent de intrinsieke waarde met een strenge <strong>disconteringsvoet van 15% per jaar</strong> (en 2% eindgroei), tegenover 8%–10% bij standaard analisten. Daardoor ligt onze berekende <em>Intrinsieke Waarde</em> van nature al <strong>30% tot 45% lager</strong> dan een standaard DCF. Zelfs op <strong>1,0x tot 1,3x</strong> koop je dus al met een flinke veiligheidsmarge.
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border border-indigo-200 space-y-1">
+                      <div className="font-black text-indigo-950">2. Waar de oude 0,75x (-25% korting) vandaan kwam</div>
+                      <p>
+                        In het Dashboard-overzicht werkte <strong>0,75 × Intrinsieke Waarde (-25% koopmarge)</strong> als een <strong>schaalfactor (koopmargefactor)</strong> en groene markering: onder 0,75x kreeg het koopbedrag een bonus-multiplier (<code>|ratio - 1| + 1</code>), terwijl boven 0,75x het orderbedrag werd afgeremd met <code>1 / ratio</code>. Het was toen geen harde koopblokkade.
+                      </p>
+                    </div>
+                    <div className="p-3 rounded-xl bg-white border border-emerald-200 space-y-1">
+                      <div className="font-black text-emerald-950">3. Minder Cash Drag bij 5/5 Topkwaliteit</div>
+                      <p>
+                        Bedrijven die aan alle <strong>5/5 criteria</strong> voldoen (10 jaar onafgebroken positieve én stijgende FCF, ROE ≥ 15%, lage schulden) zakken tijdens een normale MACD-bodemdip meestal naar <strong>1,05x tot 1,28x</strong> van onze strenge 15%-DCF. Een harde limiet op <strong>1,0x of 0,75x</strong> weigert die topkansen en laat veel kapitaal jarenlang onbelegd in cash (0% rendement), terwijl <strong>1,3x</strong> voluit mee-compoundt en tóch beschermt tegen echte overwaardering (&gt; 1,3x).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Stop-Loss Verliesstop */}
               <div className="flex items-center justify-between gap-2 p-2 bg-rose-50/50 rounded-xl border border-rose-200">
@@ -2286,6 +2356,369 @@ const StrategyBacktestTab = ({ selectedStock, stocks = [] }) => {
               )}
             </div>
           </div>
+
+          {/* 🕰️ HISTORISCHE PORTFOLIO TIJDMACHINE: INTERACTIEVE SLIDER + LIVE DONUT + POSITIES OP ELKE DAG IN HET VERLEDEN */}
+          {Array.isArray(dynamicResult.equityCurve) && dynamicResult.equityCurve.length > 0 && (() => {
+            const curve = dynamicResult.equityCurve;
+            const safeIdx = Math.min(Math.max(0, sliderIndex), curve.length - 1);
+            const selectedPoint = curve[safeIdx] || curve[curve.length - 1];
+            const holdingsAtDate = Array.isArray(selectedPoint?.holdings) ? selectedPoint.holdings : [];
+            const totalValAtDate = Math.max(1, Number(selectedPoint?.portfolioValue || 0));
+            const cashAtDate = Math.max(0, Number(selectedPoint?.cash || 0));
+            const investedAtDate = Math.max(0, Number(selectedPoint?.invested || 0));
+            const cashWeightPct = Number(((cashAtDate / totalValAtDate) * 100).toFixed(1));
+
+            const DONUT_PALETTE = [
+              '#3b82f6', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899',
+              '#06b6d4', '#14b8a6', '#f97316', '#6366f1', '#84cc16',
+              '#a855f7', '#d946ef', '#0ea5e9', '#22c55e', '#eab308'
+            ];
+
+            const donutLabels = holdingsAtDate.map(h => `${h.ticker} (${h.weightPct}%)`);
+            const donutValues = holdingsAtDate.map(h => h.value);
+            const donutColors = holdingsAtDate.map((_, i) => DONUT_PALETTE[i % DONUT_PALETTE.length]);
+
+            if (cashAtDate > 1 || holdingsAtDate.length === 0) {
+              donutLabels.push(`💶 Vrije Cash (${cashWeightPct}%)`);
+              donutValues.push(cashAtDate);
+              donutColors.push('#94a3b8');
+            }
+
+            const historicalDonutData = {
+              labels: donutLabels,
+              datasets: [{
+                data: donutValues,
+                backgroundColor: donutColors,
+                borderColor: '#ffffff',
+                borderWidth: 2,
+                hoverOffset: 6
+              }]
+            };
+
+            const historicalDonutOptions = {
+              responsive: true,
+              maintainAspectRatio: false,
+              cutout: '64%',
+              plugins: {
+                legend: {
+                  position: 'right',
+                  labels: {
+                    usePointStyle: true,
+                    boxWidth: 9,
+                    padding: 11,
+                    font: { size: 11, weight: '700' }
+                  }
+                },
+                tooltip: {
+                  backgroundColor: 'rgba(15, 23, 42, 0.94)',
+                  padding: 10,
+                  cornerRadius: 10,
+                  callbacks: {
+                    label: (ctx) => {
+                      const val = Number(ctx.raw || 0);
+                      const pct = ((val / totalValAtDate) * 100).toFixed(1);
+                      return ` ${ctx.label.split(' (')[0]}: € ${val.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${pct}% van totaal kapitaal)`;
+                    }
+                  }
+                }
+              }
+            };
+
+            // Zoek beschikbare jaren voor snelknoppen
+            const uniqueYears = Array.from(new Set(curve.map(pt => pt.date?.substring(0, 4)).filter(Boolean)));
+
+            const jumpToPrevTrade = () => {
+              for (let i = safeIdx - 1; i >= 0; i--) {
+                if (curve[i].hadTrade) {
+                  setSliderIndex(i);
+                  return;
+                }
+              }
+              setSliderIndex(Math.max(0, safeIdx - 1));
+            };
+
+            const jumpToNextTrade = () => {
+              for (let i = safeIdx + 1; i < curve.length; i++) {
+                if (curve[i].hadTrade) {
+                  setSliderIndex(i);
+                  return;
+                }
+              }
+              setSliderIndex(Math.min(curve.length - 1, safeIdx + 1));
+            };
+
+            const jumpToYear = (yr) => {
+              // Spring naar de laatste handelsdag van dat kalenderjaar (of laatste punt)
+              let lastIdxForYear = -1;
+              for (let i = 0; i < curve.length; i++) {
+                if (curve[i].date?.startsWith(yr)) {
+                  lastIdxForYear = i;
+                }
+              }
+              if (lastIdxForYear >= 0) setSliderIndex(lastIdxForYear);
+            };
+
+            // Zoek of er op deze exacte datum trades zijn uitgevoerd
+            const selectedDateStr = selectedPoint?.date;
+            const buysOnDate = (dynamicResult.buyOrders || []).filter(b => b.date === selectedDateStr);
+            const sellsOnDate = (dynamicResult.trades || []).filter(t => t.exitDate === selectedDateStr);
+
+            return (
+              <div className="bg-white rounded-2xl p-6 border-2 border-indigo-200/80 shadow-sm space-y-5">
+                {/* Header & Snelknoppen */}
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-gray-100 pb-4">
+                  <div>
+                    <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-900 border border-indigo-200 mb-1">
+                      🕰️ Historische Portfolio Tijdmachine &amp; Donut Verdeling
+                    </div>
+                    <h3 className="text-base sm:text-lg font-black text-gray-900 flex items-center gap-2">
+                      <span>Bekijk Backtest-Portefeuille &amp; Donut op Elke Dag in het Verleden</span>
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Beweeg de tijdlijn-slider om dag-voor-dag te zien welke aandelen in portefeuille zaten, hoeveel vrije cash er stond en hoe de donut-verdeling (op totaal kapitaal = aandelen + cash) zich aanpaste.
+                    </p>
+                  </div>
+
+                  {/* Navigatieknoppen: Start / Vorige Trade / Volgende Trade / Eind */}
+                  <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setSliderIndex(0)}
+                      disabled={safeIdx === 0}
+                      className="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-extrabold disabled:opacity-40 transition-all"
+                    >
+                      ⏮ Start
+                    </button>
+                    <button
+                      type="button"
+                      onClick={jumpToPrevTrade}
+                      disabled={safeIdx === 0}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-extrabold disabled:opacity-40 transition-all"
+                    >
+                      ◀ Vorige Transactiedag
+                    </button>
+                    <button
+                      type="button"
+                      onClick={jumpToNextTrade}
+                      disabled={safeIdx === curve.length - 1}
+                      className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-extrabold disabled:opacity-40 transition-all"
+                    >
+                      Volgende Transactiedag ▶
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSliderIndex(curve.length - 1)}
+                      disabled={safeIdx === curve.length - 1}
+                      className="px-2.5 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-extrabold disabled:opacity-40 transition-all"
+                    >
+                      Heden ⏭
+                    </button>
+                  </div>
+                </div>
+
+                {/* Interactieve Datum-Slider Balk */}
+                <div className="p-4 rounded-2xl bg-gradient-to-r from-slate-50 via-indigo-50/50 to-emerald-50/40 border border-indigo-100 space-y-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <span className="px-3 py-1 rounded-xl bg-indigo-600 text-white font-black text-sm shadow-xs">
+                        📅 {selectedPoint?.date ? new Date(selectedPoint.date).toLocaleDateString('nl-BE', { day: '2-digit', month: 'short', year: 'numeric' }) : '-'}
+                      </span>
+                      {selectedPoint?.hadTrade && (
+                        <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 text-xs font-black">
+                          ⚡ Transactiedag ({buysOnDate.length} koop / {sellsOnDate.length} verkoop)
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <span className="px-2.5 py-1 rounded-lg bg-white border border-gray-200 font-bold text-gray-700">
+                        Totaal Kapitaal: <strong className="text-gray-950">€ {totalValAtDate.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>
+                      </span>
+                      <span className="px-2.5 py-1 rounded-lg bg-white border border-emerald-200 font-bold text-emerald-900">
+                        Belegd in Aandelen ({holdingsAtDate.length}): <strong>€ {investedAtDate.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({(100 - cashWeightPct).toFixed(1)}%)</strong>
+                      </span>
+                      <span className="px-2.5 py-1 rounded-lg bg-white border border-slate-300 font-bold text-slate-700">
+                        💶 Vrije Cash: <strong>€ {cashAtDate.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ({cashWeightPct}%)</strong>
+                      </span>
+                      <span className={`px-2.5 py-1 rounded-lg font-extrabold ${
+                        (selectedPoint?.strategyReturnPct || 0) >= 0 ? 'bg-emerald-100 text-emerald-900' : 'bg-rose-100 text-rose-900'
+                      }`}>
+                        {(selectedPoint?.strategyReturnPct || 0) >= 0 ? '+' : ''}{(selectedPoint?.strategyReturnPct || 0).toFixed(1)}% Cumulatief
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Range Slider */}
+                  <div className="space-y-1.5">
+                    <input
+                      type="range"
+                      min={0}
+                      max={curve.length - 1}
+                      value={safeIdx}
+                      onChange={(e) => setSliderIndex(Number(e.target.value))}
+                      className="w-full h-2.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                    />
+                    <div className="flex items-center justify-between text-[11px] font-bold text-gray-500">
+                      <span>{curve[0]?.date}</span>
+                      <span>Punt {safeIdx + 1} van {curve.length}</span>
+                      <span>{curve[curve.length - 1]?.date}</span>
+                    </div>
+                  </div>
+
+                  {/* Jaar-Snelkiezers */}
+                  {uniqueYears.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                      <span className="text-[11px] font-bold text-gray-500 mr-1">Spring naar jaar:</span>
+                      {uniqueYears.map(yr => {
+                        const isSelectedYear = selectedPoint?.date?.startsWith(yr);
+                        return (
+                          <button
+                            key={yr}
+                            type="button"
+                            onClick={() => jumpToYear(yr)}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-extrabold transition-all ${
+                              isSelectedYear
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-white hover:bg-indigo-50 text-gray-700 border border-gray-200'
+                            }`}
+                          >
+                            {yr}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Transacties die exact op deze geselecteerde dag plaatsvonden */}
+                {(buysOnDate.length > 0 || sellsOnDate.length > 0) && (
+                  <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200 space-y-2">
+                    <div className="text-xs font-black text-amber-950 flex items-center gap-1.5">
+                      <span>⚡ Uitgevoerde transacties op {selectedDateStr}:</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {buysOnDate.map((b, i) => (
+                        <span key={`buy-${i}`} className="px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-950 border border-emerald-300 text-xs font-bold">
+                          🟢 KOOP {b.shares}x <strong>{b.ticker}</strong> @ €{Number(b.price).toFixed(2)} (€{Number(b.amount).toLocaleString('nl-NL', { maximumFractionDigits: 0 })})
+                        </span>
+                      ))}
+                      {sellsOnDate.map((s, i) => (
+                        <span key={`sell-${i}`} className="px-2.5 py-1 rounded-lg bg-rose-100 text-rose-950 border border-rose-300 text-xs font-bold">
+                          🔴 VERKOOP {s.sharesSold ?? s.shares}x <strong>{s.ticker}</strong> @ €{Number(s.exitPrice).toFixed(2)} ({s.exitReason})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* 2-Koloms Weergave: Links Live Donut op Gekozen Dag, Rechts Positietabel op Gekozen Dag */}
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  {/* Linker Kolom: Donut Grafiek (5 cols) */}
+                  <div className="lg:col-span-5 bg-slate-50/70 rounded-2xl p-4 border border-gray-200/80 flex flex-col justify-between">
+                    <div className="flex items-center justify-between pb-2 border-b border-gray-200/70">
+                      <div>
+                        <h4 className="text-sm font-black text-gray-900">
+                          🍩 Donut Verdeling op {selectedPoint?.date}
+                        </h4>
+                        <p className="text-[11px] text-gray-500">
+                          Gewicht % berekend op Totaal Kapitaal (Aandelen + Vrije Cash)
+                        </p>
+                      </div>
+                      <span className="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-900 text-xs font-black">
+                        {holdingsAtDate.length} aandelen
+                      </span>
+                    </div>
+
+                    <div className="h-72 my-3 relative">
+                      <Doughnut data={historicalDonutData} options={historicalDonutOptions} />
+                    </div>
+
+                    <div className="p-2.5 bg-white rounded-xl border border-gray-200/80 text-xs flex items-center justify-between">
+                      <span className="text-gray-600 font-semibold">Grootste positie op deze dag:</span>
+                      <span className="font-black text-indigo-800">
+                        {holdingsAtDate.length > 0
+                          ? `${holdingsAtDate[0].ticker} (${holdingsAtDate[0].weightPct}% • €${holdingsAtDate[0].value.toLocaleString('nl-NL', { maximumFractionDigits: 0 })})`
+                          : '100% Vrije Cash'}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Rechter Kolom: Positietabel op Gekozen Dag (7 cols) */}
+                  <div className="lg:col-span-7 bg-white rounded-2xl border border-gray-200 overflow-hidden">
+                    <div className="p-3.5 bg-gray-50/80 border-b border-gray-200 flex items-center justify-between">
+                      <h4 className="text-xs font-black uppercase tracking-wider text-gray-700">
+                        📋 Portefeuille Samenstelling op {selectedPoint?.date}
+                      </h4>
+                      <span className="text-xs font-bold text-gray-500">
+                        Totaal: € {totalValAtDate.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </span>
+                    </div>
+
+                    <div className="overflow-x-auto max-h-80">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 text-gray-500 font-bold uppercase tracking-wider border-b border-gray-200 sticky top-0">
+                          <tr>
+                            <th className="py-2.5 px-3">Aandeel</th>
+                            <th className="py-2.5 px-3 text-right">Stuks</th>
+                            <th className="py-2.5 px-3 text-right">Koers op Datum</th>
+                            <th className="py-2.5 px-3 text-right">Waarde (€)</th>
+                            <th className="py-2.5 px-3 text-right">Gewicht (%)</th>
+                            <th className="py-2.5 px-3 text-right">Ongerealiseerd</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-gray-100 font-medium">
+                          {holdingsAtDate.map((h) => (
+                            <tr key={h.ticker} className="hover:bg-indigo-50/30 transition-colors">
+                              <td className="py-2.5 px-3 font-black text-gray-900">
+                                {h.ticker}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-bold text-gray-800">
+                                {Number(h.shares).toLocaleString('nl-NL', { maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-2.5 px-3 text-right text-gray-600">
+                                € {Number(h.price).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-2.5 px-3 text-right font-extrabold text-gray-900">
+                                € {Number(h.value).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-2.5 px-3 text-right">
+                                <span className="px-2 py-0.5 rounded-lg bg-indigo-50 text-indigo-800 font-black">
+                                  {Number(h.weightPct).toFixed(1)}%
+                                </span>
+                              </td>
+                              <td className={`py-2.5 px-3 text-right font-bold ${
+                                (h.returnPct || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                              }`}>
+                                {(h.returnPct || 0) >= 0 ? '+' : ''}{Number(h.returnPct || 0).toFixed(1)}%
+                              </td>
+                            </tr>
+                          ))}
+
+                          {/* Vrije Cash Rij */}
+                          <tr className="bg-slate-50/90 font-bold text-slate-700 border-t border-slate-200">
+                            <td className="py-2.5 px-3 flex items-center gap-1.5">
+                              <span>💶 Vrije Cash</span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right text-gray-400">-</td>
+                            <td className="py-2.5 px-3 text-right text-gray-400">-</td>
+                            <td className="py-2.5 px-3 text-right font-extrabold text-slate-900">
+                              € {cashAtDate.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </td>
+                            <td className="py-2.5 px-3 text-right">
+                              <span className="px-2 py-0.5 rounded-lg bg-slate-200 text-slate-800 font-black">
+                                {cashWeightPct.toFixed(1)}%
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-right text-gray-400">0.0%</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
 
           {/* Jaarlijkse Prestatie Tabel vs SPY & URTH */}
           {dynamicResult.annualPerformance && dynamicResult.annualPerformance.length > 0 && (

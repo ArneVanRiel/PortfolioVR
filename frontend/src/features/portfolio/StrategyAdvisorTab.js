@@ -135,7 +135,7 @@ const StrategyAdvisorTab = () => {
 
   const [data, setData] = useState(() => {
     try {
-      const cached = localStorage.getItem(`cached_strategy_advisor_stocks_v4_${uid}`);
+      const cached = localStorage.getItem(`cached_strategy_advisor_stocks_v5_${uid}`);
       return cached ? JSON.parse(cached) : null;
     } catch (e) {
       return null;
@@ -143,7 +143,7 @@ const StrategyAdvisorTab = () => {
   });
   const [loading, setLoading] = useState(() => {
     try {
-      return !localStorage.getItem(`cached_strategy_advisor_stocks_v4_${uid}`);
+      return !localStorage.getItem(`cached_strategy_advisor_stocks_v5_${uid}`);
     } catch (e) {
       return true;
     }
@@ -156,6 +156,8 @@ const StrategyAdvisorTab = () => {
   const [matrixFilter, setMatrixFilter] = useState('ALL');
   const [idealTableFilter, setIdealTableFilter] = useState('ALL'); // 'ALL' | 'WATCH_OR_BUY' | 'MACD_RED_TURNING' | 'UNDERVALUED' | 'RISING_WV'
   const [idealTableSort, setIdealTableSort] = useState('WEIGHT'); // 'WEIGHT' | 'RADAR'
+  const [currentDonutGroupMode, setCurrentDonutGroupMode] = useState('holdings'); // 'holdings' | 'brokers'
+  const [showValuationExplanation, setShowValuationExplanation] = useState(false);
   const [showTimingRules, setShowTimingRules] = useState(false);
   const [strategyType, setStrategyType] = useState(() => (canUseStocks ? 'stocks' : 'etf')); // 'stocks' | 'etf'
   const [isCashWidgetOpen, setIsCashWidgetOpen] = useState(false);
@@ -227,7 +229,7 @@ const StrategyAdvisorTab = () => {
       const res = await http.get(`/portfolio/strategy-advisor?userId=${uid}&currency=EUR${force ? '&forceRefresh=true' : ''}`);
       setData(res.data);
       try {
-        localStorage.setItem(`cached_strategy_advisor_stocks_v4_${uid}`, JSON.stringify(res.data));
+        localStorage.setItem(`cached_strategy_advisor_stocks_v5_${uid}`, JSON.stringify(res.data));
       } catch (e) {
         // localStorage quota
       }
@@ -450,33 +452,98 @@ const StrategyAdvisorTab = () => {
     '#a855f7', '#d946ef', '#0ea5e9', '#22c55e', '#eab308'
   ];
 
-  // Donut Chart Data: Huidige Portefeuille
+  // Overzicht van belegde waarde per Broker in Strategie Assistent
+  const advisorBrokerBreakdown = useMemo(() => {
+    if (!data?.holdings) return [];
+    const map = new Map();
+    data.holdings.forEach(h => {
+      const list = Array.isArray(h.brokers) && h.brokers.length > 0
+        ? h.brokers
+        : [{ broker_name: h.primaryBroker || 'Onbekend', holdingValue: h.holdingValue || 0, quantity: h.quantity || 0 }];
+      list.forEach(b => {
+        const bName = String(b.broker_name || 'Onbekend').trim();
+        if (!map.has(bName)) map.set(bName, { broker_name: bName, value: 0, count: 0 });
+        const entry = map.get(bName);
+        entry.value += Number(b.holdingValue || 0);
+        entry.count += 1;
+      });
+    });
+    return Array.from(map.values()).sort((a, b) => b.value - a.value);
+  }, [data]);
+
+  // Donut Chart Data: Huidige Portefeuille (Per Aandeel OF Per Broker, inclusief Vrije Aandelen-Cash)
   const currentChartData = useMemo(() => {
     if (!data?.holdings) return null;
+    const freeCash = Math.max(0, Number(data?.cashAllocation?.stocksAvailableCash || 0));
+    const totalCap = Math.max(1, (Number(data.totalPortfolioValue || 0) + freeCash));
+
+    if (currentDonutGroupMode === 'brokers') {
+      const labels = [];
+      const values = [];
+      const bgColors = [];
+
+      advisorBrokerBreakdown.forEach((b, idx) => {
+        const pct = (b.value / totalCap) * 100;
+        const lower = b.broker_name.toLowerCase();
+        const color = lower.includes('etoro') ? '#10b981' : lower.includes('degiro') ? '#2563eb' : PALETTE[idx % PALETTE.length];
+        labels.push(`🏦 ${b.broker_name} (${pct.toFixed(1)}%)`);
+        values.push(Number(b.value.toFixed(2)));
+        bgColors.push(color);
+      });
+
+      if (freeCash > 1) {
+        const cashPct = (freeCash / totalCap) * 100;
+        labels.push(`💶 Vrije Cash (${cashPct.toFixed(1)}%)`);
+        values.push(freeCash);
+        bgColors.push('#94a3b8');
+      }
+
+      return {
+        labels,
+        datasets: [{
+          data: values,
+          backgroundColor: bgColors,
+          borderColor: '#ffffff',
+          borderWidth: 2,
+          hoverOffset: 6
+        }]
+      };
+    }
+
     const topHoldings = [...data.holdings].sort((a, b) => b.holdingValue - a.holdingValue);
     const mainItems = topHoldings.slice(0, 9);
     const otherItems = topHoldings.slice(9);
     const otherValue = otherItems.reduce((acc, h) => acc + h.holdingValue, 0);
 
-    const labels = mainItems.map(h => `${h.ticker} (${h.weightPct.toFixed(1)}%)`);
+    const labels = mainItems.map(h => `${h.ticker} (${((h.holdingValue / totalCap) * 100).toFixed(1)}%)`);
     const values = mainItems.map(h => h.holdingValue);
+    const bgColors = PALETTE.slice(0, labels.length);
+
     if (otherValue > 0) {
-      const otherPct = data.totalPortfolioValue > 0 ? (otherValue / data.totalPortfolioValue) * 100 : 0;
+      const otherPct = (otherValue / totalCap) * 100;
       labels.push(`Overige (${otherPct.toFixed(1)}%)`);
       values.push(otherValue);
+      bgColors.push('#64748b');
+    }
+
+    if (freeCash > 1) {
+      const cashPct = (freeCash / totalCap) * 100;
+      labels.push(`💶 Vrije Cash (${cashPct.toFixed(1)}%)`);
+      values.push(freeCash);
+      bgColors.push('#94a3b8');
     }
 
     return {
       labels,
       datasets: [{
         data: values,
-        backgroundColor: PALETTE.slice(0, labels.length),
+        backgroundColor: bgColors,
         borderColor: '#ffffff',
         borderWidth: 2,
         hoverOffset: 6
       }]
     };
-  }, [data]);
+  }, [data, currentDonutGroupMode, advisorBrokerBreakdown]);
 
   // Donut Chart Data: Ideale Portefeuille (Gewogen naar Waardeverdeling!)
   const idealChartData = useMemo(() => {
@@ -2072,18 +2139,70 @@ const StrategyAdvisorTab = () => {
             {/* Linker Donut: Huidig Portfolio */}
             <div className="bg-white rounded-3xl p-6 border border-gray-200/80 shadow-sm space-y-4 flex flex-col justify-between">
               <div>
-                <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-gray-100">
                   <div>
                     <h3 className="text-base font-bold text-gray-900 flex items-center gap-2">
                       <i className="ph-fill ph-wallet text-blue-600"></i>
-                      Huidige Portefeuille Verdeling
+                      Huidige Portefeuille Verdeling (incl. Vrije Cash)
                     </h3>
-                    <p className="text-xs text-gray-500">Actuele spreiding over {holdings.length} posities</p>
+                    <p className="text-xs text-gray-500">
+                      Actuele spreiding over {holdings.length} posities ({isIncognito ? '€ •••' : formatCurrency(totalPortfolioValue)}) + vrije aandelen-cash ({isIncognito ? '€ •••' : formatCurrency(data?.cashAllocation?.stocksAvailableCash || 0)})
+                    </p>
                   </div>
-                  <span className="text-xs font-bold text-gray-700 bg-gray-100 px-3 py-1 rounded-full privacy-blur">
-                    {isIncognito ? '€ ••••••' : formatCurrency(totalPortfolioValue)}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <div className="flex items-center bg-slate-100 p-1 rounded-xl text-[11px] font-extrabold">
+                      <button
+                        type="button"
+                        onClick={() => setCurrentDonutGroupMode('holdings')}
+                        className={`px-2.5 py-1 rounded-lg transition-all ${
+                          currentDonutGroupMode === 'holdings'
+                            ? 'bg-white text-indigo-900 shadow-2xs'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        💎 Per Aandeel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setCurrentDonutGroupMode('brokers')}
+                        className={`px-2.5 py-1 rounded-lg transition-all ${
+                          currentDonutGroupMode === 'brokers'
+                            ? 'bg-white text-indigo-900 shadow-2xs'
+                            : 'text-gray-600 hover:text-gray-900'
+                        }`}
+                      >
+                        🏦 Per Broker
+                      </button>
+                    </div>
+                    <span className="text-xs font-bold text-gray-700 bg-gray-100 px-3 py-1 rounded-full privacy-blur">
+                      {isIncognito ? '€ ••••••' : formatCurrency(data?.totalDeployableStocksCapital || (totalPortfolioValue + (data?.cashAllocation?.stocksAvailableCash || 0)))}
+                    </span>
+                  </div>
                 </div>
+
+                {/* Broker Controle Balkje */}
+                {advisorBrokerBreakdown.length > 0 && (
+                  <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[11px]">
+                    {advisorBrokerBreakdown.map(b => {
+                      const isEtoro = b.broker_name.toLowerCase().includes('etoro');
+                      const isDegiro = b.broker_name.toLowerCase().includes('degiro');
+                      return (
+                        <span
+                          key={b.broker_name}
+                          className={`px-2.5 py-1 rounded-lg font-extrabold border privacy-blur ${
+                            isEtoro
+                              ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                              : isDegiro
+                              ? 'bg-blue-50 text-blue-800 border-blue-200'
+                              : 'bg-gray-50 text-gray-700 border-gray-200'
+                          }`}
+                        >
+                          {isEtoro ? '🟢' : isDegiro ? '🔵' : '🏦'} {b.broker_name}: {isIncognito ? '€ •••' : formatCurrency(b.value)} ({b.count} aandelen)
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
 
                 <div className="h-72 mt-4 relative">
                   {currentChartData && <Doughnut data={currentChartData} options={chartOptions} />}
@@ -2105,7 +2224,9 @@ const StrategyAdvisorTab = () => {
                       <i className="ph-fill ph-sparkle text-amber-500"></i>
                       Ideale Portefeuille (Gewogen naar Waardeverdeling)
                     </h3>
-                    <p className="text-xs text-gray-500">Top Super-Kwaliteit aandelen (Score 5/5) proportioneel verdeeld</p>
+                    <p className="text-xs text-gray-500">
+                      Top 5/5 aandelen proportioneel verdeeld over je totale aandelenkapitaal ({isIncognito ? '€ •••' : formatCurrency(data?.totalDeployableStocksCapital || (totalPortfolioValue + (data?.cashAllocation?.stocksAvailableCash || 0)))})
+                    </p>
                   </div>
                   <span className="text-xs font-bold text-emerald-700 bg-emerald-100 px-3 py-1 rounded-full">
                     100% Super-Kwaliteit
@@ -2118,8 +2239,10 @@ const StrategyAdvisorTab = () => {
               </div>
 
               <div className="p-3 bg-emerald-50/80 rounded-xl text-xs text-emerald-800 flex items-center justify-between">
-                <span>Verwachte Alpha Historisch:</span>
-                <span className="font-extrabold text-emerald-700">+369% Outperformance</span>
+                <span>Kapitaalbasis Doelbedragen (Aandelen + Vrije Cash):</span>
+                <span className="font-extrabold text-emerald-700 privacy-blur">
+                  {isIncognito ? '€ ••••••' : formatCurrency(data?.totalDeployableStocksCapital || (totalPortfolioValue + (data?.cashAllocation?.stocksAvailableCash || 0)))} (100% aan het werk)
+                </span>
               </div>
             </div>
 
@@ -2131,44 +2254,114 @@ const StrategyAdvisorTab = () => {
               <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                 <div>
                   <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-900 border border-indigo-200 mb-1">
-                    🎯 Doelverdeling &amp; 3-Pijler Koopkans-Radar
+                    🎯 Doelverdeling &amp; 3-Pijler Koopkans-Radar (Conform Backtest: Aandelen + Vrije Cash)
                   </div>
                   <h3 className="text-base sm:text-lg font-black text-gray-900">
                     Doelverdeling &amp; Waar Zit een Koopkans Aan Te Komen?
                   </h3>
                   <p className="text-xs text-gray-500 mt-0.5">
-                    Controleer in één oogopslag per 5/5 aandeel: <strong>1. Is MACD rood geweest en draait hij naar groen?</strong> • <strong>2. Is het genoeg ondergewaardeerd (≤ 1.3x)?</strong> • <strong>3. Is er een stijgende waardeverdeling (laatste 8 kwartalen)?</strong>
+                    Elk <strong>Doelbedrag (€)</strong> wordt berekend op je <strong>totale aandelenkapitaal inclusief vrije aandelen-cash</strong> (<span className="font-bold text-indigo-900 privacy-blur">{isIncognito ? '€ •••' : formatCurrency(data?.totalDeployableStocksCapital || (totalPortfolioValue + (data?.cashAllocation?.stocksAvailableCash || 0)))}</span> = {isIncognito ? '€ •••' : formatCurrency(totalPortfolioValue)} aandelen + {isIncognito ? '€ •••' : formatCurrency(data?.cashAllocation?.stocksAvailableCash || 0)} vrije cash), zodat al je kapitaal aan het werk wordt gezet — 100% identiek aan de Backtest.
                   </p>
                 </div>
 
-                {/* Sortering Toggle */}
-                <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl self-start lg:self-center shrink-0 text-xs font-bold">
+                {/* Sortering Toggle & Waarderingsuitleg Knop */}
+                <div className="flex flex-wrap items-center gap-2 self-start lg:self-center shrink-0">
                   <button
                     type="button"
-                    onClick={() => setIdealTableSort('WEIGHT')}
-                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                      idealTableSort === 'WEIGHT'
-                        ? 'bg-white text-indigo-800 shadow-xs'
-                        : 'text-gray-600 hover:text-gray-900'
+                    onClick={() => setShowValuationExplanation(prev => !prev)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 border ${
+                      showValuationExplanation
+                        ? 'bg-amber-500 text-amber-950 border-amber-600 shadow-xs'
+                        : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
                     }`}
                   >
-                    <i className="ph-bold ph-chart-pie-slice"></i>
-                    <span>Op Doelgewicht (%)</span>
+                    <i className="ph-fill ph-lightbulb text-sm"></i>
+                    <span>💡 Waarom ≤ 1,3x i.p.v. 1,0x of 0,75x (-25%)?</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setIdealTableSort('RADAR')}
-                    className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                      idealTableSort === 'RADAR'
-                        ? 'bg-white text-emerald-800 shadow-xs'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    <i className="ph-bold ph-radar"></i>
-                    <span>Op Koopkans-Radar</span>
-                  </button>
+
+                  <div className="flex items-center gap-1.5 bg-slate-100 p-1 rounded-xl text-xs font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableSort('WEIGHT')}
+                      className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+                        idealTableSort === 'WEIGHT'
+                          ? 'bg-white text-indigo-800 shadow-xs'
+                          : 'text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      <i className="ph-bold ph-chart-pie-slice"></i>
+                      <span>Op Doelgewicht (%)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIdealTableSort('RADAR')}
+                      className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
+                        idealTableSort === 'RADAR'
+                          ? 'bg-white text-emerald-800 shadow-xs'
+                          : 'text-gray-600 hover:text-gray-900'
+                      }`}
+                    >
+                      <i className="ph-bold ph-radar"></i>
+                      <span>Op Koopkans-Radar</span>
+                    </button>
+                  </div>
                 </div>
               </div>
+
+              {/* UITKLAPBAAR PANEEL: UITLEG WAAROM 1,3X MEER OPLEVERT DAN 1,0X OF 0,75X (-25% KORTING) */}
+              {showValuationExplanation && (
+                <div className="p-4 sm:p-5 rounded-2xl bg-gradient-to-br from-amber-50/90 via-white to-emerald-50/60 border-2 border-amber-300 space-y-3 text-xs animate-fade-in">
+                  <div className="flex items-start justify-between gap-3 border-b border-amber-200/70 pb-2.5">
+                    <div>
+                      <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-black uppercase bg-amber-200 text-amber-950 mb-1">
+                        📚 Strategie &amp; DCF-Waarderingslogica
+                      </span>
+                      <h4 className="text-sm sm:text-base font-black text-gray-900">
+                        Waarom levert kopen tot ≤ 1,3x Intrinsieke Waarde over 10 jaar méér op dan 1,0x of 0,75x (-25% korting)?
+                      </h4>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowValuationExplanation(false)}
+                      className="text-gray-500 hover:text-gray-800 font-bold"
+                    >
+                      Sluiten ✕
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5 leading-relaxed text-gray-700">
+                    <div className="p-3.5 rounded-xl bg-white border border-amber-200 shadow-2xs space-y-1.5">
+                      <div className="font-black text-amber-950 flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[11px]">1</span>
+                        <span>Onze DCF rekent al met 15% disconteringsvoet</span>
+                      </div>
+                      <p className="text-[11px] text-gray-600">
+                        Standaard analisten op Wall Street verdisconteren toekomstige vrije kasstromen met een WACC van <strong>8% tot 10%</strong>. Onze DCF-formule eist een <strong>disconteringsvoet van 15% per jaar</strong> (en een conservatieve eindgroei van 2%). Daardoor ligt onze berekende <em>Intrinsieke Waarde</em> van nature al <strong>30% tot 45% lager</strong> dan een standaard DCF-waardering en zit er al een enorme veiligheidsmarge ingebakken.
+                      </p>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-white border border-indigo-200 shadow-2xs space-y-1.5">
+                      <div className="font-black text-indigo-950 flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-900 text-[11px]">2</span>
+                        <span>Hoe de oude 0,75x (-25% korting) werkte</span>
+                      </div>
+                      <p className="text-[11px] text-gray-600">
+                        In het oorspronkelijke Dashboard-overzicht werkte <strong>0,75 × Intrinsieke Waarde (-25% koopmarge)</strong> niet als een harde blokkade, maar als een <strong>schaalfactor (koopmargefactor)</strong>: zakte een aandeel onder 0,75x, dan kreeg het koopbedrag een bonus-multiplier (<code>|ratio - 1| + 1</code>). In de nieuwe strategie vullen we elk goedgekeurd 5/5-aandeel direct aan tot zijn ideale <strong>Doelbedrag (€)</strong> op het totale aandelenkapitaal.
+                      </p>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl bg-white border border-emerald-200 shadow-2xs space-y-1.5">
+                      <div className="font-black text-emerald-950 flex items-center gap-1.5">
+                        <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 text-[11px]">3</span>
+                        <span>Geen gemiste 5/5-winnaars &amp; minder Cash Drag</span>
+                      </div>
+                      <p className="text-[11px] text-gray-600">
+                        Super-Kwaliteit bedrijven (<strong>Score 5/5</strong>: 10 jaar lang élk kwartaal positieve én stijgende FCF, ROE ≥ 15% en lage schulden) noteren tijdens een normale beursdip (MACD onder 0 draait naar groen) meestal rond <strong>1,05x tot 1,28x</strong> van onze strenge 15%-DCF. Zet je de harde limiet op <strong>1,0x of 0,75x</strong>, dan mis je de beste bodemsignalen en blijft veel kapitaal jarenlang werkloos in cash (0% rendement), terwijl <strong>≤ 1,3x</strong> voluit mee-compoundt en tóch beschermt tegen echte overwaardering (&gt; 1,3x).
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* Snel-filters voor de 3 Koopkans-pijlers */}
               {(() => {

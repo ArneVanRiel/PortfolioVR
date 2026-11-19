@@ -8,6 +8,7 @@ const { // Renamed calculatePortfolioValues to recalculateAndStorePortfolioHisto
   calculateReturns,
   getPortfolioReturns,
   getCurrentPortfolioHoldings,
+  getPortfolioHistoryTimeline,
   getTransactions,
   addTransaction,
   updateTransaction,
@@ -30,6 +31,7 @@ router.get('/calculatePortfolioValues', getPortfolioValues);
 router.get('/calculateReturns', calculateReturns);
 router.get('/portfolioReturns', getPortfolioReturns);
 router.get('/holdings', getCurrentPortfolioHoldings);
+router.get('/history-timeline', getPortfolioHistoryTimeline);
 router.get('/transactions', getTransactions);
 router.get('/baseline-prices-2025', getBaselinePrices2025);
 router.get('/returns-dynamics', getPortfolioReturnsDynamics);

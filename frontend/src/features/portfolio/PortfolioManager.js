@@ -82,6 +82,9 @@ const PortfolioManager = () => {
   const [customEndDate, setCustomEndDate] = useState('');
   const [holdingsSearch, setHoldingsSearch] = useState('');
   const [holdingsSort, setHoldingsSort] = useState({ key: 'value', direction: 'desc' });
+  const [historyTimelineData, setHistoryTimelineData] = useState({ timeline: [], availableBrokers: [], availableYears: [] });
+  const [timelineSliderIdx, setTimelineSliderIdx] = useState(null); // null = Heden (Live)
+  const [selectedBrokerFilter, setSelectedBrokerFilter] = useState('ALL'); // 'ALL' | 'Etoro' | 'Degiro' | ...
   const [transSearch, setTransSearch] = useState('');
   const [transSort, setTransSort] = useState({ key: 'purchase_time', direction: 'desc' });
   const [transTypeFilter, setTransTypeFilter] = useState('');
@@ -240,12 +243,13 @@ const PortfolioManager = () => {
       const customStartParam = chartPeriod === 'Custom' && customStartDate ? `&customStartDate=${customStartDate}` : '';
       const customEndParam = chartPeriod === 'Custom' && customEndDate ? `&customEndDate=${customEndDate}` : '';
       const currencyParam = `&currency=${displayCurrency}`;
-      const [holdingsRes, transactionsRes, typesRes, brokerCashRes, balRes] = await Promise.all([
+      const [holdingsRes, transactionsRes, typesRes, brokerCashRes, balRes, timelineRes] = await Promise.all([
         http.get(`/portfolio/holdings?userId=${uid}&period=${chartPeriod}${customStartParam}${customEndParam}${currencyParam}`),
         http.get(`/portfolio/transactions?userId=${uid}&period=All`),
         http.get('/watchlist/asset-types'), // Gebruikt de bestaande route voor categorieën
         http.get('/balance/available/broker-cash').catch(() => ({ data: null })),
-        http.get('/balance/available/latest-balance').catch(() => ({ data: { totalAmount: 0, balances: {} } }))
+        http.get('/balance/available/latest-balance').catch(() => ({ data: { totalAmount: 0, balances: {} } })),
+        http.get(`/portfolio/history-timeline?userId=${uid}${currencyParam}`).catch(() => ({ data: { timeline: [], availableBrokers: [], availableYears: [] } }))
       ]);
       
       if (brokerCashRes && brokerCashRes.data) {
@@ -253,6 +257,9 @@ const PortfolioManager = () => {
       }
       if (balRes && balRes.data) {
         setAvailableBalanceData(balRes.data);
+      }
+      if (timelineRes && timelineRes.data) {
+        setHistoryTimelineData(timelineRes.data);
       }
       
       // Verwijder onzichtbare spaties uit de database strings met .trim()
@@ -589,10 +596,131 @@ const PortfolioManager = () => {
     }
   };
 
-  // Maak de filter logica ongevoelig voor hoofdletters/kleine letters
-  const filteredHoldings = useMemo(() => rawHoldings.filter(h => 
-    selectedTypes.length === 0 || selectedTypes.some(st => st.toLowerCase() === h.asset_type.toLowerCase())
-  ), [rawHoldings, selectedTypes]);
+  // Historische Portfolio Tijdmachine: actieve snapshot & holdings op de gekozen dag
+  const timelinePoints = useMemo(() => historyTimelineData?.timeline || [], [historyTimelineData]);
+  const effectiveSliderIdx = useMemo(() => {
+    if (timelinePoints.length === 0) return 0;
+    if (timelineSliderIdx === null || timelineSliderIdx >= timelinePoints.length) {
+      return timelinePoints.length - 1;
+    }
+    return Math.max(0, timelineSliderIdx);
+  }, [timelinePoints, timelineSliderIdx]);
+
+  const activeTimeMachinePoint = useMemo(() => {
+    if (timelinePoints.length === 0) return null;
+    return timelinePoints[effectiveSliderIdx] || timelinePoints[timelinePoints.length - 1];
+  }, [timelinePoints, effectiveSliderIdx]);
+
+  const isViewingHistoricalDate = useMemo(() => {
+    if (timelinePoints.length === 0 || timelineSliderIdx === null) return false;
+    return effectiveSliderIdx < timelinePoints.length - 1;
+  }, [timelinePoints, timelineSliderIdx, effectiveSliderIdx]);
+
+  // Base holdings (Heden = rawHoldings of laatste snapshot, Historisch = snapshot op gekozen datum)
+  const baseHoldingsForDate = useMemo(() => {
+    if (isViewingHistoricalDate && activeTimeMachinePoint?.holdings) {
+      return activeTimeMachinePoint.holdings;
+    }
+    return rawHoldings;
+  }, [isViewingHistoricalDate, activeTimeMachinePoint, rawHoldings]);
+
+  // Overzicht van totalen per Broker op de huidige/gekozen datum (voor de Broker-filter knoppen & Donut)
+  const brokerTotals = useMemo(() => {
+    const map = new Map();
+    let totalAll = 0;
+
+    baseHoldingsForDate.forEach(h => {
+      if (selectedTypes.length > 0 && !selectedTypes.some(st => st.toLowerCase() === (h.asset_type || '').toLowerCase())) {
+        return;
+      }
+      const brokersList = Array.isArray(h.brokers) && h.brokers.length > 0
+        ? h.brokers
+        : [{
+            broker_name: h.broker_name || h.primary_broker || 'Onbekend',
+            quantity: h.quantity || 0,
+            value: h.value || 0,
+            total_invested: h.total_invested || 0,
+            gainLoss: h.gainLoss || 0
+          }];
+
+      brokersList.forEach(b => {
+        const bName = String(b.broker_name || 'Onbekend').trim();
+        if (!map.has(bName)) {
+          map.set(bName, { broker_name: bName, value: 0, invested: 0, gainLoss: 0, count: 0 });
+        }
+        const entry = map.get(bName);
+        entry.value += Number(b.value || 0);
+        entry.invested += Number(b.total_invested || 0);
+        entry.gainLoss += Number(b.gainLoss || 0);
+        entry.count += 1;
+        totalAll += Number(b.value || 0);
+      });
+    });
+
+    return Array.from(map.values())
+      .map(b => ({
+        ...b,
+        weightPct: totalAll > 0 ? Number(((b.value / totalAll) * 100).toFixed(2)) : 0,
+        gainLossPercent: b.invested > 0 ? Number(((b.gainLoss / b.invested) * 100).toFixed(2)) : 0
+      }))
+      .sort((a, b) => b.value - a.value);
+  }, [baseHoldingsForDate, selectedTypes]);
+
+  // Maak de filter logica ongevoelig voor hoofdletters/kleine letters én pas de Broker-filter toe
+  const filteredHoldings = useMemo(() => {
+    const typeFiltered = baseHoldingsForDate.filter(h =>
+      selectedTypes.length === 0 || selectedTypes.some(st => st.toLowerCase() === (h.asset_type || '').toLowerCase())
+    );
+
+    if (!selectedBrokerFilter || selectedBrokerFilter === 'ALL') {
+      const totalVal = typeFiltered.reduce((acc, h) => acc + Number(h.value || 0), 0);
+      return typeFiltered.map(h => {
+        const val = Number(h.value || 0);
+        const inv = Number(h.total_invested || 0);
+        const gain = Number(h.gainLoss || 0);
+        const irr = h.gainLossPercent !== undefined ? Number(h.gainLossPercent) : (inv > 0 ? (gain / inv) * 100 : 0);
+        return {
+          ...h,
+          irr,
+          weight: totalVal > 0 ? (val / totalVal) * 100 : 0
+        };
+      });
+    }
+
+    // Filter op specifieke broker (bv. 'Etoro' of 'Degiro') en toon exact de aantallen/waarde bij die broker
+    const targetBrokerLower = selectedBrokerFilter.toLowerCase();
+    const projected = [];
+
+    typeFiltered.forEach(h => {
+      if (Array.isArray(h.brokers) && h.brokers.length > 0) {
+        const match = h.brokers.find(b => String(b.broker_name || '').trim().toLowerCase() === targetBrokerLower);
+        if (match && Number(match.quantity) > 0.0001) {
+          projected.push({
+            ...h,
+            quantity: match.quantity,
+            value: match.value,
+            total_invested: match.total_invested,
+            average_price: match.average_price,
+            cumulative_dividends: match.cumulative_dividends ?? h.cumulative_dividends ?? 0,
+            gainLoss: match.gainLoss,
+            gainLossPercent: match.gainLossPercent,
+            irr: match.gainLossPercent,
+            primary_broker: match.broker_name,
+            broker_name: match.broker_name,
+            brokers: [match]
+          });
+        }
+      } else if (String(h.broker_name || h.primary_broker || '').toLowerCase().includes(targetBrokerLower)) {
+        projected.push(h);
+      }
+    });
+
+    const totalBrokerVal = projected.reduce((acc, h) => acc + Number(h.value || 0), 0);
+    return projected.map(h => ({
+      ...h,
+      weight: totalBrokerVal > 0 ? (Number(h.value || 0) / totalBrokerVal) * 100 : 0
+    }));
+  }, [baseHoldingsForDate, selectedTypes, selectedBrokerFilter]);
   
   const filteredTransactions = useMemo(() => {
     let result = rawTransactions;
@@ -695,17 +823,36 @@ const PortfolioManager = () => {
     return '';
   };
 
-  // --- Zoek en Sorteer Applicatie ---
+  // --- Zoek en Sorteer Applicatie (ondersteunt alle kolommen van Holdings) ---
   const processedHoldings = useMemo(() => {
     let result = [...filteredHoldings];
     if (holdingsSearch) {
       const lower = holdingsSearch.toLowerCase();
-      result = result.filter(h => h.ticker?.toLowerCase().includes(lower) || h.name?.toLowerCase().includes(lower));
+      result = result.filter(h =>
+        h.ticker?.toLowerCase().includes(lower) ||
+        h.name?.toLowerCase().includes(lower) ||
+        h.primary_broker?.toLowerCase().includes(lower) ||
+        h.broker_name?.toLowerCase().includes(lower)
+      );
     }
     if (holdingsSort.key) {
+      const key = holdingsSort.key;
+      const dir = holdingsSort.direction === 'asc' ? 1 : -1;
       result.sort((a, b) => {
-        if (a[holdingsSort.key] < b[holdingsSort.key]) return holdingsSort.direction === 'asc' ? -1 : 1;
-        if (a[holdingsSort.key] > b[holdingsSort.key]) return holdingsSort.direction === 'asc' ? 1 : -1;
+        if (key === 'ticker' || key === 'name') {
+          const strA = String(a.ticker || a.name || '').toLowerCase();
+          const strB = String(b.ticker || b.name || '').toLowerCase();
+          return strA.localeCompare(strB) * dir;
+        }
+        if (key === 'broker_name' || key === 'primary_broker') {
+          const strA = String(a.primary_broker || a.broker_name || '').toLowerCase();
+          const strB = String(b.primary_broker || b.broker_name || '').toLowerCase();
+          return strA.localeCompare(strB) * dir;
+        }
+        const numA = Number(a[key] ?? 0);
+        const numB = Number(b[key] ?? 0);
+        if (numA < numB) return -1 * dir;
+        if (numA > numB) return 1 * dir;
         return 0;
       });
     }
@@ -2162,20 +2309,38 @@ const PortfolioManager = () => {
       </div>
 
       {/* 4 Stats Cards Row (Snowball Style - Common tab only - 2x2 op mobiel) */}
-      {activeTab === 'common' && (
+      {activeTab === 'common' && (() => {
+        const useFilteredSummary = isViewingHistoricalDate || (selectedBrokerFilter && selectedBrokerFilter !== 'ALL');
+        const displayVal = useFilteredSummary
+          ? summary.totalValue
+          : (displayCurrency === 'EUR' ? (latestPortfolioData?.total_value_eur ?? summary.totalValue) : (latestPortfolioData?.total_value ?? summary.totalValue));
+        const displayInv = useFilteredSummary
+          ? summary.totalInvested
+          : (displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur ?? summary.totalInvested) : (latestPortfolioData?.net_invested ?? summary.totalInvested));
+        const displayProfitVal = useFilteredSummary ? summary.overallGainLoss : totalProfit.value;
+        const displayProfitPct = useFilteredSummary ? summary.overallGainLossPercentage : totalProfit.percent;
+
+        return (
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-6">
           {/* Card 1: Value */}
           <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-wallet text-xs sm:text-sm text-blue-500"></i>
-              Value
+            <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
+              <span className="flex items-center gap-1.5">
+                <i className="ph ph-wallet text-xs sm:text-sm text-blue-500"></i>
+                Value {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''}
+              </span>
+              {isViewingHistoricalDate && activeTimeMachinePoint?.date && (
+                <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[10px] font-black">
+                  📅 {activeTimeMachinePoint.date}
+                </span>
+              )}
             </div>
             <div className="mt-1.5 sm:mt-3">
               <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
-                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.total_value_eur ?? summary.totalValue) : (latestPortfolioData?.total_value ?? summary.totalValue))}
+                {loading ? '...' : formatCurrency(displayVal)}
               </span>
               <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur block mt-0.5 sm:mt-1 truncate">
-                {loading ? '...' : formatCurrency(displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur ?? summary.totalInvested) : (latestPortfolioData?.net_invested ?? summary.totalInvested))} inleg
+                {loading ? '...' : formatCurrency(displayInv)} inleg
               </span>
             </div>
           </div>
@@ -2184,15 +2349,15 @@ const PortfolioManager = () => {
           <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
             <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
               <i className="ph ph-chart-line-up text-xs sm:text-sm text-teal-500"></i>
-              Profit
+              Profit {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''}
             </div>
             <div className="mt-1.5 sm:mt-3">
               <div className="flex items-baseline gap-1 sm:gap-2 flex-wrap">
-                <span className={`text-lg sm:text-3xl font-extrabold tracking-tight privacy-blur block ${totalProfit.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                  {loading ? '...' : (totalProfit.value >= 0 ? '+' : '') + formatCurrency(totalProfit.value)}
+                <span className={`text-lg sm:text-3xl font-extrabold tracking-tight privacy-blur block ${displayProfitVal >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
+                  {loading ? '...' : (displayProfitVal >= 0 ? '+' : '') + formatCurrency(displayProfitVal)}
                 </span>
-                <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-full flex items-center gap-0.5 ${totalProfit.value >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                  {totalProfit.value >= 0 ? '▲' : '▼'} {Math.abs(totalProfit.percent).toFixed(1)}%
+                <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-full flex items-center gap-0.5 ${displayProfitVal >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
+                  {displayProfitVal >= 0 ? '▲' : '▼'} {Math.abs(displayProfitPct).toFixed(1)}%
                 </span>
               </div>
               <span className={`text-[10px] sm:text-xs font-semibold mt-0.5 sm:mt-1 block truncate ${dailyChange.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
@@ -2238,7 +2403,8 @@ const PortfolioManager = () => {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Cash Breakdown Banner (De Belegger / Snowball Style) */}
       {activeTab === 'common' && (() => {
@@ -2301,6 +2467,7 @@ const PortfolioManager = () => {
           lineData={lineData}
           lineOptions={lineOptions}
           processedHoldings={processedHoldings}
+          baseHoldingsForDate={baseHoldingsForDate}
           holdingsSort={holdingsSort}
           handleHoldingsSort={handleHoldingsSort}
           getSortIcon={getSortIcon}
@@ -2313,6 +2480,14 @@ const PortfolioManager = () => {
           holdingsSearch={holdingsSearch}
           setHoldingsSearch={setHoldingsSearch}
           loading={loading}
+          historyTimelineData={historyTimelineData}
+          timelineSliderIdx={effectiveSliderIdx}
+          setTimelineSliderIdx={setTimelineSliderIdx}
+          activeTimeMachinePoint={activeTimeMachinePoint}
+          isViewingHistoricalDate={isViewingHistoricalDate}
+          selectedBrokerFilter={selectedBrokerFilter}
+          setSelectedBrokerFilter={setSelectedBrokerFilter}
+          brokerTotals={brokerTotals}
         />
       )}
 
@@ -2320,11 +2495,20 @@ const PortfolioManager = () => {
       {activeTab === 'diversification' && (
         <DiversificationTab
           filteredHoldings={filteredHoldings}
+          baseHoldingsForDate={baseHoldingsForDate}
           donutData={donutData}
           donutOptions={donutOptions}
           isIncognito={isIncognito}
           formatCurrency={formatCurrency}
           loading={loading}
+          historyTimelineData={historyTimelineData}
+          timelineSliderIdx={effectiveSliderIdx}
+          setTimelineSliderIdx={setTimelineSliderIdx}
+          activeTimeMachinePoint={activeTimeMachinePoint}
+          isViewingHistoricalDate={isViewingHistoricalDate}
+          selectedBrokerFilter={selectedBrokerFilter}
+          setSelectedBrokerFilter={setSelectedBrokerFilter}
+          brokerTotals={brokerTotals}
         />
       )}
 
