@@ -677,6 +677,10 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
               if (!product && !isin) return null;
               if (rawQty === 0) return null;
 
+              const cleanIsin = String(isin || '').trim().toUpperCase();
+              const isUsAsset = cleanIsin.startsWith('US') || (!product.includes('.DE') && !product.includes('.AS') && !product.includes('.PA') && !product.includes('.BR') && !product.includes('.TO'));
+              const rawCurrency = r['FX'] || r['Valuta'] || (isUsAsset ? 'USD' : 'EUR');
+
               return {
                 ticker: product || isin,
                 isin: String(isin).trim().toUpperCase(),
@@ -689,7 +693,7 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
                 purchase_time: parseDeGiroDate(dateStr, timeStr),
                 fees: rawFees,
                 taxes: 0,
-                currency: r['FX'] || r['Valuta'] || 'EUR',
+                currency: rawCurrency,
                 exchange_rate: parseNumber(r['Wisselkoers'] || r['FX Rate']) || 1
               };
             }).filter(Boolean);
@@ -804,6 +808,10 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
               const product = r['Product'] || r['Product '] || r['ISIN'] || '';
               const isin = r['ISIN'] || '';
 
+              const cleanIsin = String(isin || '').trim().toUpperCase();
+              const isUsAsset = cleanIsin.startsWith('US') || (!product.includes('.DE') && !product.includes('.AS') && !product.includes('.PA') && !product.includes('.BR') && !product.includes('.TO'));
+              const rawCurrency = r['FX'] || r['Valuta'] || (isUsAsset ? 'USD' : (r['Mutatie'] && isNaN(parseNumber(r['Mutatie'])) ? r['Mutatie'] : 'EUR')) || 'EUR';
+
               return {
                 ticker: product || isin,
                 isin: String(isin).trim().toUpperCase(),
@@ -816,7 +824,7 @@ const BrokerSyncModal = ({ isOpen, onClose, onImportSuccess, allExistingTransact
                 purchase_time: parseDeGiroDate(r['Datum'] || r['Date'], r['Tijd'] || r['Time']),
                 fees: g.fees,
                 taxes: g.taxes,
-                currency: r['FX'] || r['Valuta'] || (r['Mutatie'] && isNaN(parseNumber(r['Mutatie'])) ? r['Mutatie'] : 'EUR') || 'EUR',
+                currency: rawCurrency,
                 exchange_rate: 1
               };
             });

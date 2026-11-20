@@ -34,7 +34,7 @@ const getCatColor = (catName, idx = 0) => {
 
 const OverviewTab = ({
   history,
-  processedHoldings,
+  processedHoldings = [],
   baseHoldingsForDate = [],
   holdingsSort,
   handleHoldingsSort,
@@ -52,14 +52,35 @@ const OverviewTab = ({
   isViewingHistoricalDate = false,
   selectedBrokerFilter = 'ALL',
   setSelectedBrokerFilter,
+  selectedTypes = [],
+  setSelectedTypes,
+  brokerCash,
+  totalCashDisplay = 0,
   brokerTotals = []
 }) => {
   const navigate = useNavigate();
   const [donutGroupBy, setDonutGroupBy] = useState('brokers'); // 'brokers' | 'categories' | 'holdings'
+  const [includeCashInDonut, setIncludeCashInDonut] = useState(false);
+  const [selectedHoldingForModal, setSelectedHoldingForModal] = useState(null);
+  const [mobileSortOption, setMobileSortOption] = useState('pl_desc');
 
   const totalValue = processedHoldings.reduce((sum, h) => sum + (h.value || 0), 0);
   const timeline = useMemo(() => historyTimelineData?.timeline || [], [historyTimelineData]);
   const availableYears = useMemo(() => historyTimelineData?.availableYears || [], [historyTimelineData]);
+
+  const sortedMobileHoldings = useMemo(() => {
+    const list = [...processedHoldings];
+    if (mobileSortOption === 'pl_desc') {
+      list.sort((a, b) => (Number(b.gainLoss) || 0) - (Number(a.gainLoss) || 0));
+    } else if (mobileSortOption === 'pl_asc') {
+      list.sort((a, b) => (Number(a.gainLoss) || 0) - (Number(b.gainLoss) || 0));
+    } else if (mobileSortOption === 'val_desc') {
+      list.sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+    } else if (mobileSortOption === 'ticker') {
+      list.sort((a, b) => String(a.ticker || '').localeCompare(String(b.ticker || '')));
+    }
+    return list;
+  }, [processedHoldings, mobileSortOption]);
 
   // Groepeer data voor Donut & Overzichtstabel op basis van donutGroupBy ('brokers', 'categories', 'holdings')
   const groupedAllocationData = useMemo(() => {
@@ -236,9 +257,114 @@ const OverviewTab = ({
 
   return (
     <div className="space-y-6">
-      {/* 🕰️ HISTORISCHE PORTFOLIO TIJDMACHINE & BROKER-CONTROLE BALK */}
+      {/* 🕰️ MOBIELE COMPACTE TIJDMACHINE (eToro / DEGIRO Compact - Geen Lappen Tekst) */}
       {timeline.length > 0 && (
-        <div className={`bg-white rounded-2xl p-4 sm:p-5 border-2 shadow-sm space-y-4 transition-all ${
+        <div className="block md:hidden bg-white p-3.5 rounded-2xl shadow-sm border border-gray-200 space-y-2.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="px-2.5 py-1 rounded-xl bg-indigo-600 text-white font-black text-xs shadow-2xs">
+              📅 {activeTimeMachinePoint?.date || 'Vandaag'} {!isViewingHistoricalDate && '(Live)'}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(0)}
+                disabled={timelineSliderIdx === 0}
+                className="p-1 px-2 rounded-lg bg-gray-100 text-gray-700 text-xs font-bold disabled:opacity-40"
+                title="Eerste datum"
+              >⏮</button>
+              <button
+                type="button"
+                onClick={jumpToPrevTrade}
+                disabled={timelineSliderIdx === 0}
+                className="p-1 px-2 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-bold disabled:opacity-40"
+                title="Vorige transactiedag"
+              >◀</button>
+              <button
+                type="button"
+                onClick={jumpToNextTrade}
+                disabled={timelineSliderIdx >= timeline.length - 1}
+                className="p-1 px-2 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-bold disabled:opacity-40"
+                title="Volgende transactiedag"
+              >▶</button>
+              <button
+                type="button"
+                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1)}
+                disabled={timelineSliderIdx >= timeline.length - 1}
+                className="p-1 px-2 rounded-lg bg-indigo-600 text-white text-xs font-bold disabled:opacity-40"
+                title="Heden (Live)"
+              >⏭</button>
+            </div>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, timeline.length - 1)}
+            value={timelineSliderIdx}
+            onChange={(e) => setTimelineSliderIdx && setTimelineSliderIdx(Number(e.target.value))}
+            className="w-full h-2 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+          />
+          {/* Snelle filter pills voor brokers en types */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
+            <button
+              type="button"
+              onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                selectedBrokerFilter === 'ALL' ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              Alle Brokers
+            </button>
+            {brokerTotals.map(b => {
+              const isActive = selectedBrokerFilter.toLowerCase() === b.broker_name.toLowerCase();
+              const isEtoro = b.broker_name.toLowerCase().includes('etoro');
+              return (
+                <button
+                  key={b.broker_name}
+                  type="button"
+                  onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
+                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                    isActive ? (isEtoro ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-blue-600 text-white border-blue-600') : 'bg-gray-100 text-gray-700 border-gray-200'
+                  }`}
+                >
+                  {isEtoro ? '🟢 eToro' : '🔵 DEGIRO'} ({b.weightPct.toFixed(0)}%)
+                </button>
+              );
+            })}
+            <span className="text-gray-300">|</span>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes([])}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                !selectedTypes || selectedTypes.length === 0 ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              Alles
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase())) ? 'bg-teal-600 text-white border-teal-600' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              💎 Aandelen
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase())) ? 'bg-amber-600 text-white border-amber-600' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              📊 ETF's
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 🕰️ DESKTOP TIJDMACHINE (Verborgen op Mobiel) */}
+      {timeline.length > 0 && (
+        <div className={`hidden md:block bg-white rounded-2xl p-4 sm:p-5 border-2 shadow-sm space-y-4 transition-all ${
           isViewingHistoricalDate ? 'border-indigo-400 ring-2 ring-indigo-100' : 'border-indigo-200/80'
         }`}>
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-gray-100 pb-3">
@@ -446,8 +572,8 @@ const OverviewTab = ({
         </div>
       )}
 
-      {/* Milestone Progress Bar (De Belegger Stijl) */}
-      <div className="bg-white p-4 sm:p-5 rounded-xl shadow-sm border border-gray-200">
+      {/* Milestone Progress Bar (De Belegger Stijl - Verborgen op mobiel) */}
+      <div className="hidden md:block bg-white p-4 sm:p-5 rounded-xl shadow-sm border border-gray-200">
         <div className="flex flex-wrap items-center justify-between gap-3 mb-2.5">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-base border border-amber-100 shadow-xs">
@@ -478,8 +604,83 @@ const OverviewTab = ({
         </div>
       </div>
 
-      {/* Allocation Grid (Met schakelaar: Per Broker / Per Categorie / Per Aandeel) */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+      {/* 📊 MOBIELE ALLOCATIE BALK (eToro Screenshot 1 Stijl - Clean & Zonder Clutter) */}
+      <div className="block md:hidden bg-white p-4 rounded-2xl shadow-sm border border-gray-200 space-y-3">
+        <div className="flex items-center justify-between">
+          <h4 className="font-extrabold text-sm text-gray-900">Allocatie</h4>
+          <div className="inline-flex rounded-xl p-0.5 bg-gray-100 text-[11px] font-extrabold">
+            <button
+              type="button"
+              onClick={() => setDonutGroupBy('holdings')}
+              className={`px-2.5 py-1 rounded-lg transition-all ${
+                donutGroupBy === 'holdings' ? 'bg-slate-900 text-white shadow-2xs font-black' : 'text-gray-500'
+              }`}
+            >
+              Bezit
+            </button>
+            <button
+              type="button"
+              onClick={() => setDonutGroupBy('brokers')}
+              className={`px-2.5 py-1 rounded-lg transition-all ${
+                donutGroupBy === 'brokers' ? 'bg-slate-900 text-white shadow-2xs font-black' : 'text-gray-500'
+              }`}
+            >
+              Broker
+            </button>
+            <button
+              type="button"
+              onClick={() => setDonutGroupBy('categories')}
+              className={`px-2.5 py-1 rounded-lg transition-all ${
+                donutGroupBy === 'categories' ? 'bg-slate-900 text-white shadow-2xs font-black' : 'text-gray-500'
+              }`}
+            >
+              Categorie
+            </button>
+          </div>
+        </div>
+
+        {/* Horizontale Gesegmenteerde Voortgangsbalk */}
+        <div className="w-full h-3 rounded-full overflow-hidden flex bg-gray-100 p-0.5 border border-gray-200/80 shadow-2xs">
+          {groupedAllocationData.map((item, idx) => {
+            const pct = item.percentage || 0;
+            if (pct <= 0) return null;
+            return (
+              <div
+                key={idx}
+                className="h-full first:rounded-l-full last:rounded-r-full transition-all duration-500"
+                style={{
+                  width: `${pct}%`,
+                  backgroundColor: item.color
+                }}
+                title={`${item.shortLabel || item.name}: ${pct.toFixed(1)}%`}
+              />
+            );
+          })}
+        </div>
+
+        {/* Chips met percentages */}
+        <div className="flex flex-wrap gap-1.5 pt-0.5">
+          {groupedAllocationData.slice(0, 5).map((item, idx) => (
+            <span
+              key={idx}
+              className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-50 border border-gray-200 text-xs font-extrabold text-gray-800"
+            >
+              <span className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: item.color }} />
+              <span>{item.shortLabel || item.name}</span>
+              <span className="text-gray-400 font-semibold">{item.percentage.toFixed(1)}%</span>
+            </span>
+          ))}
+          {groupedAllocationData.length > 5 && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-gray-50 border border-gray-200 text-xs font-extrabold text-gray-500">
+              Overige ({groupedAllocationData.length - 5}):{' '}
+              {groupedAllocationData.slice(5).reduce((acc, c) => acc + c.percentage, 0).toFixed(1)}%
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Allocation Grid (Desktop: Per Broker / Per Categorie / Per Aandeel) */}
+      <div className="hidden md:grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Left: Donut Chart Card */}
         <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between h-[390px]">
           <div className="space-y-2.5">
@@ -667,16 +868,16 @@ const OverviewTab = ({
 
       {/* Holdings Tabel (Met Sortering op ALLE Kolommen & Broker-kolom) */}
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-6 border-b border-gray-100 gap-4">
-          <div className="flex items-center gap-3 flex-wrap">
-            <h3 className="text-lg font-bold text-gray-900">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center p-4 sm:p-6 border-b border-gray-100 gap-3">
+          <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+            <h3 className="text-base sm:text-lg font-bold text-gray-900">
               Holdings {isViewingHistoricalDate ? `op ${activeTimeMachinePoint?.date}` : ''}
             </h3>
-            <span className="bg-gray-100 text-gray-600 text-xs font-bold px-2.5 py-1 rounded-full">
+            <span className="bg-gray-100 text-gray-600 text-xs font-bold px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full">
               {processedHoldings.length} Assets
             </span>
             {selectedBrokerFilter !== 'ALL' && (
-              <span className="bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-black px-2.5 py-1 rounded-full flex items-center gap-1.5">
+              <span className="bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-black px-2 py-0.5 rounded-full flex items-center gap-1.5">
                 <span>🏦 Enkel {selectedBrokerFilter}</span>
                 <button
                   type="button"
@@ -688,9 +889,71 @@ const OverviewTab = ({
                 </button>
               </span>
             )}
+            {selectedTypes && selectedTypes.length > 0 && (
+              <span className="bg-amber-100 text-amber-900 border border-amber-200 text-xs font-black px-2 py-0.5 rounded-full flex items-center gap-1.5">
+                <span>{selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase())) ? '📊 Enkel ETF\'s' : '💎 Enkel Aandelen'}</span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTypes && setSelectedTypes([])}
+                  className="hover:text-rose-600 font-black"
+                  title="Toon alle types"
+                >
+                  ✕
+                </button>
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-2 w-full sm:w-auto">
+          <div className="flex items-center gap-2 w-full sm:w-auto flex-wrap justify-between sm:justify-end">
+            {/* Mobile Sorteer Dropdown (zoals eToro Screenshot 3) */}
+            <select
+              value={mobileSortOption}
+              onChange={(e) => setMobileSortOption(e.target.value)}
+              className="sm:hidden text-xs font-extrabold bg-gray-100 border border-gray-200 rounded-lg px-2.5 py-1.5 text-gray-700"
+            >
+              <option value="pl_desc">Hoogste P/L ▼</option>
+              <option value="pl_asc">Laagste P/L ▲</option>
+              <option value="val_desc">Hoogste Waarde ▼</option>
+              <option value="ticker">Ticker A-Z</option>
+            </select>
+
+            {/* Snelle Asset Type Knoppen in Holdings Header */}
+            <div className="inline-flex rounded-lg p-0.5 bg-gray-100 text-xs font-extrabold">
+              <button
+                type="button"
+                onClick={() => setSelectedTypes && setSelectedTypes([])}
+                className={`px-2.5 py-1.5 rounded-md transition-all ${
+                  !selectedTypes || selectedTypes.length === 0
+                    ? 'bg-white text-gray-900 shadow-2xs font-black'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                Alles
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
+                className={`px-2.5 py-1.5 rounded-md transition-all ${
+                  selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase()))
+                    ? 'bg-teal-600 text-white shadow-2xs font-black'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                💎 Aandelen
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
+                className={`px-2.5 py-1.5 rounded-md transition-all ${
+                  selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase()))
+                    ? 'bg-amber-600 text-white shadow-2xs font-black'
+                    : 'text-gray-500 hover:text-gray-800'
+                }`}
+              >
+                📊 ETF's
+              </button>
+            </div>
+
             <div className="relative flex-1 sm:flex-initial">
               <i className="ph ph-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"></i>
               <input 
@@ -698,13 +961,14 @@ const OverviewTab = ({
                 placeholder="Zoek aandeel of broker..." 
                 value={holdingsSearch} 
                 onChange={(e) => setHoldingsSearch(e.target.value)} 
-                className="pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-64 transition-all"
+                className="pl-9 pr-4 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm font-medium focus:outline-none focus:ring-2 focus:ring-blue-500 w-full sm:w-56 transition-all"
               />
             </div>
           </div>
         </div>
       
-        <div className="overflow-x-auto">
+        {/* DESKTOP HOLDINGS TABEL (Verborgen op mobiel) */}
+        <div className="hidden md:block overflow-x-auto">
           {loading ? (
             <div className="animate-pulse space-y-4 p-6">
               {[...Array(5)].map((_, i) => (
@@ -903,7 +1167,214 @@ const OverviewTab = ({
             </table>
           )}
         </div>
+
+        {/* MOBIELE COMPACTE HOLDINGS LIJST (eToro & DEGIRO Screenshot Stijl - Sleek, Snappy, Data-First) */}
+        <div className="block md:hidden divide-y divide-gray-100">
+          <div className="p-3 bg-gray-50/80 flex items-center justify-between text-xs font-bold text-gray-500 border-b border-gray-100">
+            <span className="flex items-center gap-1.5">
+              <span>Activa ({sortedMobileHoldings.length})</span>
+            </span>
+            <span className="text-[11px] text-gray-400 font-semibold">
+              Tik op holding of ⋮ voor details
+            </span>
+          </div>
+
+          {loading ? (
+            <div className="p-6 text-center text-xs text-gray-400 animate-pulse">
+              Laden van holdings...
+            </div>
+          ) : sortedMobileHoldings.length > 0 ? (
+            sortedMobileHoldings.map((h) => {
+              const isPositive = (h.gainLoss || 0) >= 0;
+              const profitVal = Number(h.gainLoss || 0);
+              const profitPct = Number(
+                h.gainLossPercent ?? (h.total_invested > 0 ? (profitVal / h.total_invested) * 100 : 0)
+              );
+              const curPrice = Number(h.current_price || h.price || h.average_price || 0);
+              const isEur = h.currency === 'EUR';
+
+              return (
+                <div
+                  key={h.ticker}
+                  onClick={() => setSelectedHoldingForModal(h)}
+                  className="p-3.5 hover:bg-gray-50 active:bg-gray-100 transition-colors flex items-center justify-between cursor-pointer gap-2"
+                >
+                  {/* Linker kolom: Avatar + Ticker + Naam/Aantal */}
+                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                    <div className="w-9 h-9 rounded-xl bg-slate-100 text-slate-800 font-black text-xs uppercase flex items-center justify-center border border-gray-200 shrink-0">
+                      {h.ticker ? h.ticker.substring(0, 2) : '•'}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="font-black text-sm text-gray-900 tracking-tight truncate block">
+                          {h.ticker}
+                        </span>
+                        {h.primary_broker && (
+                          <span className={`text-[9px] font-black px-1.5 py-0.2 rounded shrink-0 ${
+                            h.primary_broker.toLowerCase().includes('etoro')
+                              ? 'bg-emerald-50 text-emerald-700'
+                              : 'bg-blue-50 text-blue-700'
+                          }`}>
+                            {h.primary_broker.toLowerCase().includes('etoro') ? 'eToro' : 'DEGIRO'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-xs text-gray-500 font-medium block truncate">
+                        {h.name || h.ticker}
+                      </span>
+                      <span className="text-[11px] text-gray-400 font-semibold block mt-0.5">
+                        {isEur ? '€' : '$'}{curPrice.toFixed(2)} × {h.quantity} st.
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Rechter kolom: Waarde + P/L badge + 3 dots knop */}
+                  <div className="flex items-center gap-2 shrink-0 text-right">
+                    <div className="flex flex-col items-end">
+                      <span className="font-black text-sm text-gray-900 privacy-blur">
+                        {formatCurrency(h.value || 0)}
+                      </span>
+                      <span className={`inline-flex items-center gap-0.5 text-[11px] font-extrabold px-1.5 py-0.5 rounded-md mt-0.5 ${
+                        isPositive ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'
+                      }`}>
+                        {isPositive ? '▲ +' : '▼ '}{formatCurrency(profitVal)} ({profitPct.toFixed(1)}%)
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setSelectedHoldingForModal(h);
+                      }}
+                      className="p-1.5 text-gray-400 hover:text-gray-700 active:bg-gray-200 rounded-lg"
+                      title="Alle details openen"
+                      aria-label="Details"
+                    >
+                      <i className="ph-bold ph-dots-three-vertical text-base"></i>
+                    </button>
+                  </div>
+                </div>
+              );
+            })
+          ) : (
+            <div className="p-8 text-center text-xs font-bold text-gray-400">
+              Geen posities gevonden voor de huidige filters.
+            </div>
+          )}
+        </div>
       </div>
+
+      {/* 📱 DETAIL BOTTOM SHEET MODAL (eToro / DEGIRO 3-Puntjes Scherm) */}
+      {selectedHoldingForModal && (
+        <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+          <div
+            className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity"
+            onClick={() => setSelectedHoldingForModal(null)}
+          />
+          <div className="relative bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[85vh] overflow-y-auto shadow-2xl p-5 space-y-4 z-10 animate-slide-up">
+            {/* Header */}
+            <div className="flex items-start justify-between border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-2xl bg-indigo-50 text-indigo-700 font-black text-sm flex items-center justify-center border border-indigo-100">
+                  {selectedHoldingForModal.ticker?.substring(0, 2) || '•'}
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-gray-900 leading-tight">
+                    {selectedHoldingForModal.name || selectedHoldingForModal.ticker}
+                  </h3>
+                  <span className="text-xs font-bold text-gray-400 uppercase">
+                    {selectedHoldingForModal.ticker} • {selectedHoldingForModal.asset_type || 'Aandeel'}
+                  </span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedHoldingForModal(null)}
+                className="w-8 h-8 rounded-full bg-gray-100 text-gray-500 hover:text-gray-900 flex items-center justify-center font-bold text-sm"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Cijfers Grid */}
+            <div className="grid grid-cols-2 gap-2.5 text-left">
+              <div className="bg-slate-50 p-3 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Huidige Waarde</span>
+                <span className="text-base font-black text-gray-900 privacy-blur block">
+                  {formatCurrency(selectedHoldingForModal.value || 0)}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Totale Inleg (Cost Basis)</span>
+                <span className="text-base font-black text-gray-700 privacy-blur block">
+                  {formatCurrency(selectedHoldingForModal.total_invested || 0)}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Totale Winst / Verlies</span>
+                <span className={`text-base font-black privacy-blur block ${
+                  (selectedHoldingForModal.gainLoss || 0) >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                }`}>
+                  {(selectedHoldingForModal.gainLoss || 0) >= 0 ? '+' : ''}
+                  {formatCurrency(selectedHoldingForModal.gainLoss || 0)}
+                  {' '}
+                  <span className="text-xs">({(selectedHoldingForModal.gainLossPercent ?? 0).toFixed(1)}%)</span>
+                </span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Aantal & Gem. Aankoopprijs</span>
+                <span className="text-sm font-bold text-gray-800 block">
+                  {selectedHoldingForModal.quantity} st. @ {selectedHoldingForModal.currency === 'EUR' ? '€' : '$'}
+                  {(selectedHoldingForModal.average_price || 0).toFixed(2)}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Ontvangen Dividend</span>
+                <span className="text-sm font-bold text-emerald-600 block">
+                  +{formatCurrency(selectedHoldingForModal.cumulative_dividends || 0)}
+                  {' '}
+                  <span className="text-gray-400 text-xs">({(selectedHoldingForModal.dividend_yield || 0).toFixed(1)}% yield)</span>
+                </span>
+              </div>
+              <div className="bg-slate-50 p-3 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Portefeuillegewicht</span>
+                <span className="text-sm font-bold text-indigo-700 block">
+                  {totalValue > 0 ? ((selectedHoldingForModal.value / totalValue) * 100).toFixed(1) : 0}% van portfolio
+                </span>
+              </div>
+            </div>
+
+            {/* Broker badge info */}
+            <div className="p-3 bg-gray-50 rounded-xl flex items-center justify-between text-xs">
+              <span className="text-gray-500 font-bold">Platform / Broker:</span>
+              <span className="font-extrabold text-gray-900">
+                {selectedHoldingForModal.primary_broker || 'eToro / DEGIRO'}
+              </span>
+            </div>
+
+            {/* Actieknoppen */}
+            <div className="pt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  navigate(`/analysis?ticker=${selectedHoldingForModal.ticker}`);
+                }}
+                className="flex-1 py-3 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs shadow-sm flex items-center justify-center gap-2"
+              >
+                <i className="ph-fill ph-chart-line-up text-base"></i>
+                Bekijk Uitgebreide Analyse
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedHoldingForModal(null)}
+                className="py-3 px-4 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 font-bold text-xs"
+              >
+                Sluiten
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

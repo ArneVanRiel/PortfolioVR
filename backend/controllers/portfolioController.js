@@ -933,9 +933,21 @@ const getPortfolioValues = async (req, res) => {
     const transactions = txResult.recordset;
 
     const filterTypes = assetTypes.split(',').map(t => t.trim().toUpperCase());
+    const isMatchingType = (at) => {
+      const u = String(at || '').toUpperCase().trim();
+      return filterTypes.some(ft => {
+        if (ft === 'STOCK' || ft === 'STOCKS' || ft === 'AANDELEN') {
+          return u === 'STOCK' || u === 'STOCKS' || (!u.includes('ETF') && !u.includes('FUND'));
+        }
+        if (ft === 'ETF' || ft === 'ETFS' || ft === 'FUNDS') {
+          return u.includes('ETF') || u.includes('FUND');
+        }
+        return u === ft;
+      });
+    };
     const relevantStockIds = [...new Set(
       transactions
-        .filter(t => t.aandeel_id && t.asset_type && filterTypes.includes(t.asset_type.toUpperCase()))
+        .filter(t => t.aandeel_id && t.asset_type && isMatchingType(t.asset_type))
         .map(t => Number(t.aandeel_id))
         .filter(id => Number.isInteger(id))
     )];
@@ -1001,7 +1013,7 @@ const getPortfolioValues = async (req, res) => {
     });
 
     transactions.forEach(t => {
-      if (t.asset_type && filterTypes.includes(t.asset_type.toUpperCase())) {
+      if (t.asset_type && isMatchingType(t.asset_type)) {
         const dStr = new Date(t.purchase_time).toISOString().split('T')[0];
         if (dStr >= startDateStr && dStr <= endDateStr) {
           datesSet.add(dStr);
@@ -1027,7 +1039,7 @@ const getPortfolioValues = async (req, res) => {
         }
         stockExchangeIsEur[tx.aandeel_id] = tx.currency === 'EUR';
 
-        if (filterTypes.includes(tx.asset_type.toUpperCase())) {
+        if (isMatchingType(tx.asset_type)) {
           if (!holdings[tx.aandeel_id]) {
             holdings[tx.aandeel_id] = 0;
             netInvested[tx.aandeel_id] = 0;
@@ -1077,7 +1089,7 @@ const getPortfolioValues = async (req, res) => {
           lastKnownPrices[tx.aandeel_id] = tx.price;
           stockExchangeIsEur[tx.aandeel_id] = tx.currency === 'EUR';
 
-          if (filterTypes.includes(tx.asset_type.toUpperCase())) {
+          if (isMatchingType(tx.asset_type)) {
             if (!holdings[tx.aandeel_id]) {
               holdings[tx.aandeel_id] = 0;
               netInvested[tx.aandeel_id] = 0;
@@ -1303,214 +1315,208 @@ const getCurrentPortfolioHoldings = async (req, res) => {
     }
     const pool = await sql.connect(config);
 
-    // 1. Haal holdings op
-    const query = `
-      WITH Holdings AS (
-        SELECT
-          t.aandeel_id,
-          SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS total_quantity,
-          SUM(CASE WHEN t.currency = 'EUR' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_eur,
-          SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS invested_usd,
-          SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'EUR' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS div_eur,
-          SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'USD' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS div_usd
-        FROM PF_transactions t
-        WHERE t.user_id = @userId
-        AND t.purchase_time <= @endDate
-        GROUP BY t.aandeel_id
-        HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
-      ),
-      LatestFX AS (
-        SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= @endDate ORDER BY date DESC
-      )
-      SELECT
-        h.aandeel_id,
-        s.ticker_symbol AS ticker,
-        s.name,
-        at.type_name AS asset_type,
-        h.total_quantity AS quantity,
-        ISNULL(er.rate, 1.13) AS fx_rate,
-        -- Detecteer native valuta
-        CASE 
-          WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-          THEN 'EUR' 
-          ELSE 'USD' 
-        END AS native_currency,
-        
-        -- Geconverteerde prijs naar gevraagde weergave-valuta (@isEur)
-        CASE 
-          WHEN @isEur = 1 THEN
-            CASE 
-              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-              THEN COALESCE(p.closing_price, ltp.price, 0)
-              ELSE COALESCE(p.closing_price, ltp.price, 0) / ISNULL(er.rate, 1.13)
-            END
-          ELSE
-            CASE 
-              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-              THEN COALESCE(p.closing_price, ltp.price, 0) * ISNULL(er.rate, 1.13)
-              ELSE COALESCE(p.closing_price, ltp.price, 0)
-            END
-        END AS price,
-
-        -- Totale marktwaarde van de holding
-        CASE 
-          WHEN @isEur = 1 THEN
-            h.total_quantity * CASE 
-              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-              THEN COALESCE(p.closing_price, ltp.price, 0)
-              ELSE COALESCE(p.closing_price, ltp.price, 0) / ISNULL(er.rate, 1.13)
-            END
-          ELSE
-            h.total_quantity * CASE 
-              WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-              THEN COALESCE(p.closing_price, ltp.price, 0) * ISNULL(er.rate, 1.13)
-              ELSE COALESCE(p.closing_price, ltp.price, 0)
-            END
-        END AS value,
-
-        -- Totale inleg geconverteerd naar gevraagde valuta
-        CASE 
-          WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13)))
-          ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd)
-        END AS total_invested,
-
-        -- Cumulatieve dividenden geconverteerd naar gevraagde valuta
-        CASE 
-          WHEN @isEur = 1 THEN (h.div_eur + (h.div_usd / ISNULL(er.rate, 1.13)))
-          ELSE ((h.div_eur * ISNULL(er.rate, 1.13)) + h.div_usd)
-        END AS cumulative_dividends,
-
-        -- Gemiddelde aankoopprijs in gevraagde valuta
-        CASE 
-          WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13))) / NULLIF(h.total_quantity, 0)
-          ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd) / NULLIF(h.total_quantity, 0)
-        END AS average_price,
-
-        -- Ongerealiseerde winst / verlies
-        (
-          (CASE 
-            WHEN @isEur = 1 THEN
-              h.total_quantity * CASE 
-                WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-                THEN COALESCE(p.closing_price, ltp.price, 0)
-                ELSE COALESCE(p.closing_price, ltp.price, 0) / ISNULL(er.rate, 1.13)
-              END
-            ELSE
-              h.total_quantity * CASE 
-                WHEN (s.ticker_symbol LIKE '%.DE' OR s.ticker_symbol LIKE '%.AS' OR s.ticker_symbol LIKE '%.BR' OR s.ticker_symbol LIKE '%.PA' OR at.type_name = 'ETF' OR h.invested_eur > 0)
-                THEN COALESCE(p.closing_price, ltp.price, 0) * ISNULL(er.rate, 1.13)
-                ELSE COALESCE(p.closing_price, ltp.price, 0)
-              END
-          END)
-          -
-          (CASE 
-            WHEN @isEur = 1 THEN (h.invested_eur + (h.invested_usd / ISNULL(er.rate, 1.13)))
-            ELSE ((h.invested_eur * ISNULL(er.rate, 1.13)) + h.invested_usd)
-          END)
-        ) AS gainLoss
-
-      FROM Holdings h
-      JOIN Stocks s ON h.aandeel_id = s.aandeel_id
-      LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
-      OUTER APPLY (
-        SELECT TOP 1 closing_price FROM DailyClosingPrices dcp WHERE dcp.aandeel_id = h.aandeel_id AND dcp.date <= @endDate ORDER BY dcp.date DESC
-      ) p
-      OUTER APPLY (
-        SELECT TOP 1 price, currency FROM PF_transactions pt WHERE pt.user_id = @userId AND pt.aandeel_id = h.aandeel_id AND pt.purchase_time <= @endDate ORDER BY pt.purchase_time DESC
-      ) ltp
-      OUTER APPLY (
-        SELECT rate FROM LatestFX
-      ) er;
-      `;
-
-    // 2. Haal ook de per-broker uitsplitsing op tot @endDate
-    const brokerBreakdownQuery = `
-      SELECT
-        t.aandeel_id,
-        COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END) AS broker_name,
+    // 1. Haal alle transacties, wisselkoers en slotkoersen op voor de accurate Moving Average Cost Basis
+    const txQuery = `
+      SELECT 
+        t.id, t.aandeel_id, 
         COALESCE(NULLIF(t.broker_id, 0), CASE WHEN t.currency = 'USD' THEN 1 ELSE 2 END) AS broker_id,
-        SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS broker_quantity,
-        SUM(CASE WHEN t.currency = 'EUR' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS broker_invested_eur,
-        SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS broker_invested_usd,
-        SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'EUR' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS broker_div_eur,
-        SUM(CASE WHEN t.transaction_type = 'DIVIDEND' AND t.currency = 'USD' THEN (t.quantity * t.price - ISNULL(t.taxes, 0)) ELSE 0 END) AS broker_div_usd
+        COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END) AS broker_name,
+        t.transaction_type, t.quantity, t.price, t.currency, t.taxes, t.purchase_time,
+        s.ticker_symbol AS ticker, s.name,
+        CASE WHEN UPPER(ISNULL(at.type_name, '')) IN ('STOCK', 'STOCKS', 'EQUITY') THEN 'Stocks' WHEN UPPER(ISNULL(at.type_name, '')) IN ('ETF', 'ETFS', 'FUND') THEN 'ETF' ELSE ISNULL(at.type_name, 'Stocks') END AS asset_type
       FROM PF_transactions t
+      LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+      LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
       LEFT JOIN Brokers b ON t.broker_id = b.broker_id
-      WHERE t.user_id = @userId
-        AND t.aandeel_id IS NOT NULL
-        AND t.purchase_time <= @endDate
-      GROUP BY t.aandeel_id, COALESCE(NULLIF(t.broker_id, 0), CASE WHEN t.currency = 'USD' THEN 1 ELSE 2 END), COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END)
-      HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
+      WHERE t.user_id = @userId AND t.aandeel_id IS NOT NULL AND t.purchase_time <= @endDate
+      ORDER BY t.purchase_time ASC, t.id ASC
     `;
 
-    const [result, brokerResult] = await Promise.all([
-      pool.request()
-        .input('userId', sql.Int, userId)
-        .input('endDate', sql.DateTime, endDate)
-        .input('isEur', sql.Bit, isEur)
-        .query(query),
-      pool.request()
-        .input('userId', sql.Int, userId)
-        .input('endDate', sql.DateTime, endDate)
-        .query(brokerBreakdownQuery)
+    const [txRes, fxRes] = await Promise.all([
+      pool.request().input('userId', sql.Int, userId).input('endDate', sql.DateTime, endDate).query(txQuery),
+      pool.request().input('endDate', sql.DateTime, endDate).query(`
+        SELECT TOP 1 rate FROM DailyExchangeRates WHERE currency_pair = 'EURUSD' AND date <= @endDate ORDER BY date DESC
+      `)
     ]);
 
-    const brokerByStockMap = new Map();
-    for (const br of (brokerResult.recordset || [])) {
-      if (!brokerByStockMap.has(br.aandeel_id)) brokerByStockMap.set(br.aandeel_id, []);
-      brokerByStockMap.get(br.aandeel_id).push(br);
+    const fxRate = Number(fxRes.recordset[0]?.rate || 1.13);
+    const transactions = txRes.recordset || [];
+
+    if (transactions.length === 0) {
+      portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: [] });
+      return res.status(200).json([]);
     }
 
-    const totalPortfolioVal = (result.recordset || []).reduce((acc, r) => acc + Number(r.value || 0), 0);
+    const stockIds = [...new Set(transactions.map(t => Number(t.aandeel_id)).filter(Boolean))];
 
-    const enrichedHoldings = (result.recordset || []).map(row => {
-      const fx = Number(row.fx_rate || 1.13);
-      const price = Number(row.price || 0);
-      const val = Number(row.value || 0);
-      const inv = Number(row.total_invested || 0);
-      const gain = Number(row.gainLoss || 0);
-      const gainPct = inv > 0 ? (gain / inv) * 100 : 0;
-      const weight = totalPortfolioVal > 0 ? (val / totalPortfolioVal) * 100 : 0;
+    // Haal de meest recente slotkoers op tot @endDate voor elke aandeel_id
+    const pricesRes = await pool.request()
+      .input('endDate', sql.DateTime, endDate)
+      .query(`
+        SELECT dcp.aandeel_id, dcp.closing_price
+        FROM DailyClosingPrices dcp
+        INNER JOIN (
+          SELECT aandeel_id, MAX(date) AS max_date
+          FROM DailyClosingPrices
+          WHERE aandeel_id IN (${stockIds.join(',')}) AND date <= @endDate
+          GROUP BY aandeel_id
+        ) latest ON dcp.aandeel_id = latest.aandeel_id AND dcp.date = latest.max_date
+      `);
 
-      const rawBrokers = brokerByStockMap.get(row.aandeel_id) || [];
-      const brokers = rawBrokers.map(b => {
-        const bQty = Number(b.broker_quantity || 0);
-        const bInv = isEur
-          ? (Number(b.broker_invested_eur || 0) + (Number(b.broker_invested_usd || 0) / fx))
-          : ((Number(b.broker_invested_eur || 0) * fx) + Number(b.broker_invested_usd || 0));
+    const priceMap = {};
+    for (const p of (pricesRes.recordset || [])) {
+      priceMap[p.aandeel_id] = Number(p.closing_price || 0);
+    }
+
+    // Chronologische berekening van Weighted Moving Average Cost Basis
+    const stockMap = new Map();
+
+    for (const tx of transactions) {
+      const sid = tx.aandeel_id;
+      if (!stockMap.has(sid)) {
+        stockMap.set(sid, {
+          aandeel_id: sid,
+          ticker: tx.ticker,
+          name: tx.name,
+          asset_type: tx.asset_type,
+          lastTxPrice: Number(tx.price || 0),
+          lastTxCurrency: tx.currency,
+          brokerMap: new Map()
+        });
+      }
+      const sEntry = stockMap.get(sid);
+      sEntry.lastTxPrice = Number(tx.price || 0);
+      sEntry.lastTxCurrency = tx.currency;
+
+      const bName = String(tx.broker_name || (tx.broker_id === 1 ? 'Etoro' : 'Degiro')).trim();
+      if (!sEntry.brokerMap.has(bName)) {
+        sEntry.brokerMap.set(bName, {
+          broker_id: tx.broker_id,
+          broker_name: bName,
+          qty: 0,
+          invEur: 0,
+          invUsd: 0,
+          divEur: 0,
+          divUsd: 0
+        });
+      }
+      const bState = sEntry.brokerMap.get(bName);
+      const qty = Number(tx.quantity || 0);
+      const price = Number(tx.price || 0);
+
+      if (tx.transaction_type === 'BUY') {
+        bState.qty += qty;
+        if (tx.currency === 'EUR') bState.invEur += qty * price;
+        else bState.invUsd += qty * price;
+      } else if (tx.transaction_type === 'SELL') {
+        // Verminder inleg proportioneel met de gemiddelde aankoopprijs (geen negatieve inleg!)
+        const avgCostEur = bState.qty > 0 ? (bState.invEur / bState.qty) : 0;
+        const avgCostUsd = bState.qty > 0 ? (bState.invUsd / bState.qty) : 0;
+        bState.invEur = Math.max(0, bState.invEur - (qty * avgCostEur));
+        bState.invUsd = Math.max(0, bState.invUsd - (qty * avgCostUsd));
+        bState.qty = Math.max(0, bState.qty - qty);
+      } else if (tx.transaction_type === 'DIVIDEND') {
+        const divNet = Math.max(0, (qty * price) - Number(tx.taxes || 0));
+        if (tx.currency === 'EUR') bState.divEur += divNet;
+        else bState.divUsd += divNet;
+      }
+    }
+
+    // Stel holdings samen
+    const unweightedHoldings = [];
+    let totalPortfolioVal = 0;
+
+    for (const s of stockMap.values()) {
+      let totQty = 0;
+      let totInvEur = 0;
+      let totInvUsd = 0;
+      let totDivEur = 0;
+      let totDivUsd = 0;
+      const brokersList = [];
+
+      const isNativeEur = (s.ticker.endsWith('.DE') || s.ticker.endsWith('.AS') || s.ticker.endsWith('.BR') || s.ticker.endsWith('.PA') || s.asset_type === 'ETF');
+      const rawPrice = priceMap[s.aandeel_id] || s.lastTxPrice || 0;
+      
+      const priceInTarget = isEur
+        ? (isNativeEur ? rawPrice : rawPrice / fxRate)
+        : (isNativeEur ? rawPrice * fxRate : rawPrice);
+
+      for (const b of s.brokerMap.values()) {
         const bDiv = isEur
-          ? (Number(b.broker_div_eur || 0) + (Number(b.broker_div_usd || 0) / fx))
-          : ((Number(b.broker_div_eur || 0) * fx) + Number(b.broker_div_usd || 0));
-        const bVal = bQty * price;
+          ? (b.divEur + (b.divUsd / fxRate))
+          : ((b.divEur * fxRate) + b.divUsd);
+        totDivEur += b.divEur;
+        totDivUsd += b.divUsd;
+
+        if (b.qty <= 0.0001) continue;
+
+        totQty += b.qty;
+        totInvEur += b.invEur;
+        totInvUsd += b.invUsd;
+
+        const bInv = isEur
+          ? (b.invEur + (b.invUsd / fxRate))
+          : ((b.invEur * fxRate) + b.invUsd);
+        const bVal = b.qty * priceInTarget;
         const bGain = bVal - bInv;
         const bGainPct = bInv > 0 ? (bGain / bInv) * 100 : 0;
-        return {
+
+        brokersList.push({
           broker_id: b.broker_id,
-          broker_name: String(b.broker_name || 'Onbekend').trim(),
-          quantity: Number(bQty.toFixed(5)),
+          broker_name: b.broker_name,
+          quantity: Number(b.qty.toFixed(5)),
           value: Number(bVal.toFixed(2)),
           total_invested: Number(bInv.toFixed(2)),
-          average_price: bQty > 0 ? Number((bInv / bQty).toFixed(2)) : 0,
+          average_price: b.qty > 0 ? Number((bInv / b.qty).toFixed(2)) : 0,
           cumulative_dividends: Number(bDiv.toFixed(2)),
           gainLoss: Number(bGain.toFixed(2)),
           gainLossPercent: Number(bGainPct.toFixed(2))
-        };
-      }).sort((a, b) => b.value - a.value);
+        });
+      }
 
-      const primaryBroker = brokers.length > 0
-        ? brokers.map(b => b.broker_name).join(' + ')
-        : 'Onbekend';
+      if (totQty <= 0.0001) continue;
 
-      return {
-        ...row,
-        gainLossPercent: Number(gainPct.toFixed(2)),
-        irr: Number(gainPct.toFixed(2)),
-        weight: Number(weight.toFixed(2)),
+      brokersList.sort((a, b) => b.value - a.value);
+      const primaryBroker = brokersList.map(b => b.broker_name).join(' + ');
+
+      const totInv = isEur
+        ? (totInvEur + (totInvUsd / fxRate))
+        : ((totInvEur * fxRate) + totInvUsd);
+      const totVal = totQty * priceInTarget;
+      const totGain = totVal - totInv;
+      const totGainPct = totInv > 0 ? (totGain / totInv) * 100 : 0;
+      const totDiv = isEur
+        ? (totDivEur + (totDivUsd / fxRate))
+        : ((totDivEur * fxRate) + totDivUsd);
+
+      totalPortfolioVal += totVal;
+
+      unweightedHoldings.push({
+        aandeel_id: s.aandeel_id,
+        ticker: s.ticker,
+        name: s.name,
+        asset_type: s.asset_type,
+        quantity: Number(totQty.toFixed(5)),
+        fx_rate: fxRate,
+        native_currency: isNativeEur ? 'EUR' : 'USD',
+        price: Number(priceInTarget.toFixed(2)),
+        value: Number(totVal.toFixed(2)),
+        total_invested: Number(totInv.toFixed(2)),
+        cumulative_dividends: Number(totDiv.toFixed(2)),
+        average_price: totQty > 0 ? Number((totInv / totQty).toFixed(2)) : 0,
+        gainLoss: Number(totGain.toFixed(2)),
+        gainLossPercent: Number(totGainPct.toFixed(2)),
+        irr: Number(totGainPct.toFixed(2)),
         primary_broker: primaryBroker,
-        broker_name: brokers.length === 1 ? brokers[0].broker_name : primaryBroker,
-        brokers
-      };
-    });
+        broker_name: brokersList.length === 1 ? brokersList[0].broker_name : primaryBroker,
+        brokers: brokersList
+      });
+    }
+
+    const enrichedHoldings = unweightedHoldings.map(h => ({
+      ...h,
+      weight: totalPortfolioVal > 0 ? Number(((h.value / totalPortfolioVal) * 100).toFixed(2)) : 0
+    })).sort((a, b) => b.value - a.value);
 
     portfolioValuesCache.set(cacheKey, { timestamp: Date.now(), data: enrichedHoldings });
     return enrichedHoldings;
@@ -1553,7 +1559,7 @@ const getPortfolioHistoryTimeline = async (req, res) => {
           t.transaction_type, t.quantity, t.price, t.currency,
           ISNULL(t.fees, 0) AS fees, ISNULL(t.taxes, 0) AS taxes, t.purchase_time,
           s.ticker_symbol AS ticker, s.name AS stock_name,
-          ISNULL(at.type_name, 'Stocks') AS asset_type,
+          CASE WHEN UPPER(ISNULL(at.type_name, '')) IN ('STOCK', 'STOCKS', 'EQUITY') THEN 'Stocks' WHEN UPPER(ISNULL(at.type_name, '')) IN ('ETF', 'ETFS', 'FUND') THEN 'ETF' ELSE ISNULL(at.type_name, 'Stocks') END AS asset_type,
           COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END) AS broker_name
         FROM PF_transactions t
         LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
@@ -1683,10 +1689,12 @@ const getPortfolioHistoryTimeline = async (req, res) => {
           if (tx.currency === 'EUR') bState.invEur += qty * price;
           else bState.invUsd += qty * price;
         } else if (tx.transaction_type === 'SELL') {
-          // Verminder inleg proportioneel of met verkoopbedrag conform getCurrentPortfolioHoldings
+          // Verminder inleg proportioneel met gewogen gemiddelde aankoopprijs (geen negatieve inleg!)
+          const avgCostEur = bState.qty > 0 ? (bState.invEur / bState.qty) : 0;
+          const avgCostUsd = bState.qty > 0 ? (bState.invUsd / bState.qty) : 0;
+          bState.invEur = Math.max(0, bState.invEur - (qty * avgCostEur));
+          bState.invUsd = Math.max(0, bState.invUsd - (qty * avgCostUsd));
           bState.qty = Math.max(0, bState.qty - qty);
-          if (tx.currency === 'EUR') bState.invEur = Math.max(0, bState.invEur - (qty * price));
-          else bState.invUsd = Math.max(0, bState.invUsd - (qty * price));
         } else if (tx.transaction_type === 'DIVIDEND') {
           const divNet = Math.max(0, (qty * price) - Number(tx.taxes || 0));
           if (tx.currency === 'EUR') bState.divEur += divNet;

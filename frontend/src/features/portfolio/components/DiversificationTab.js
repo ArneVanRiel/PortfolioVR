@@ -9,10 +9,22 @@ const CAT_COLORS = [
 
 const getHoldingMetadata = (ticker, holding = {}) => {
   const norm = String(ticker || '').toUpperCase().trim();
+  const rawType = String(holding.asset_type || '').toUpperCase().trim();
   
-  // Default values
+  // Default values - Altijd genormaliseerd naar 'Stocks' of 'ETF' (geen 'STOCK' vs 'stocks' splitsing meer)
   let sector = 'Technology & Growth';
-  let assetClass = holding.asset_type || 'Stocks';
+  let assetClass = 'Stocks';
+  if (rawType.includes('ETF') || rawType.includes('FUND')) {
+    assetClass = 'ETF';
+  } else if (rawType.includes('CASH') || rawType.includes('MONEY')) {
+    assetClass = 'Cash';
+  } else if (rawType.includes('COMMODITY') || rawType.includes('GOLD')) {
+    assetClass = 'Commodities';
+  } else if (rawType.includes('CRYPTO')) {
+    assetClass = 'Crypto';
+  } else {
+    assetClass = 'Stocks';
+  }
   let currency = holding.native_currency || 'USD';
   let region = 'North America';
   let country = 'United States';
@@ -41,13 +53,13 @@ const getHoldingMetadata = (ticker, holding = {}) => {
     currency = norm.includes('EUR') ? 'EUR' : 'USD';
     region = norm.includes('EUR') ? 'Europe' : 'North America';
     country = norm.includes('EUR') ? 'Germany' : 'United States';
-  } else if (norm.includes('SBUX') || norm.includes('COST') || norm.includes('HD')) {
-    sector = 'Consumer Cyclical';
+  } else if (norm.includes('SBUX') || norm.includes('COST') || norm.includes('HD') || norm.includes('PGR')) {
+    sector = norm.includes('PGR') ? 'Financials' : 'Consumer Cyclical';
     assetClass = 'Stocks';
     currency = 'USD';
     region = 'North America';
     country = 'United States';
-  } else if (norm.includes('JPM') || norm.includes('JEPI')) {
+  } else if (norm.includes('JPM') || norm.includes('JEPI') || norm.includes('NDAQ')) {
     sector = 'Financials';
     assetClass = 'Stocks';
     currency = 'USD';
@@ -55,6 +67,12 @@ const getHoldingMetadata = (ticker, holding = {}) => {
     country = 'United States';
   } else if (norm.includes('VOD') || norm.includes('NFLX')) {
     sector = 'Communication Services';
+    assetClass = 'Stocks';
+    currency = 'USD';
+    region = 'North America';
+    country = 'United States';
+  } else if (norm.includes('ADBE')) {
+    sector = 'Technology';
     assetClass = 'Stocks';
     currency = 'USD';
     region = 'North America';
@@ -76,6 +94,8 @@ const DiversificationTab = ({
   isViewingHistoricalDate = false,
   selectedBrokerFilter = 'ALL',
   setSelectedBrokerFilter,
+  selectedTypes = [],
+  setSelectedTypes,
   brokerTotals = []
 }) => {
   const [activeGroup, setActiveGroup] = useState('brokers'); // 'brokers', 'classes', 'sectors', 'currencies', 'regions', 'countries'
@@ -142,7 +162,11 @@ const DiversificationTab = ({
         const meta = getHoldingMetadata(h.ticker, h);
         let key = '';
         if (activeGroup === 'sectors') key = meta.sector;
-        else if (activeGroup === 'classes') key = meta.assetClass;
+        else if (activeGroup === 'classes') {
+          key = meta.assetClass;
+          if (String(key).toUpperCase() === 'STOCK' || String(key).toUpperCase() === 'STOCKS') key = 'Stocks';
+          else if (String(key).toUpperCase() === 'ETF' || String(key).toUpperCase() === 'ETFS') key = 'ETF';
+        }
         else if (activeGroup === 'currencies') key = meta.currency;
         else if (activeGroup === 'regions') key = meta.region;
         else if (activeGroup === 'countries') key = meta.country;
@@ -369,6 +393,44 @@ const DiversificationTab = ({
               })}
             </div>
           )}
+
+          {/* 📊 ASSET TYPE FILTER (Alles / Aandelen / ETF's) */}
+          <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-gray-100">
+            <span className="text-xs font-bold text-gray-500">Filter Asset Type:</span>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes([])}
+              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border transition-all ${
+                !selectedTypes || selectedTypes.length === 0
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              Alles
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
+              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border transition-all ${
+                selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase()))
+                  ? 'bg-teal-600 text-white border-teal-700 shadow-xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              💎 Aandelen
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
+              className={`px-3 py-1.5 rounded-xl text-xs font-extrabold border transition-all ${
+                selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase()))
+                  ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              📊 ETF's
+            </button>
+          </div>
         </div>
       )}
 
@@ -397,7 +459,7 @@ const DiversificationTab = ({
               <div className="w-full h-full relative">
                 <Doughnut data={allHoldingsChartData} options={chartOptions} />
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Value</span>
+                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Belegd (excl. cash)</span>
                   <span className="text-xl font-extrabold text-gray-900 tracking-tight privacy-blur">{formatCurrency(totalValue)}</span>
                 </div>
               </div>
@@ -470,7 +532,7 @@ const DiversificationTab = ({
               <div className="w-full h-full relative">
                 <Doughnut data={groupedChartData} options={chartOptions} />
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Total Value</span>
+                  <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Belegd (excl. cash)</span>
                   <span className="text-xl font-extrabold text-gray-900 tracking-tight privacy-blur">{formatCurrency(totalValue)}</span>
                 </div>
               </div>

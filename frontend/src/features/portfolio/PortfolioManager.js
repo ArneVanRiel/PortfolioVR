@@ -276,19 +276,26 @@ const PortfolioManager = () => {
               ? ((h.currency === 'EUR' || (h.ticker && (h.ticker.endsWith('.DE') || h.ticker.endsWith('.AS') || h.ticker.endsWith('.BR')))) ? 'Degiro' : 'Etoro')
               : String(h.primary_broker).trim());
 
+        const rawType = String(h.asset_type || '').toUpperCase().trim();
+        const normAssetType = (rawType.includes('ETF') || rawType.includes('FUND')) ? 'ETF' : 'Stocks';
+
         return { 
           ...h, 
-          asset_type: h.asset_type ? String(h.asset_type).trim() : 'Onbekend', 
+          asset_type: normAssetType, 
           primary_broker: primaryBroker,
           broker_name: brokers.length === 1 ? brokers[0].broker_name : primaryBroker,
           brokers,
           todayChange: 0 
         };
       }));
-      setRawTransactions(transactionsRes.data.map(t => ({
-        ...t, 
-        asset_type: t.asset_type ? String(t.asset_type).trim() : 'Onbekend' 
-      })));
+      setRawTransactions(transactionsRes.data.map(t => {
+        const rawTransType = String(t.asset_type || '').toUpperCase().trim();
+        const normTransAssetType = (rawTransType.includes('ETF') || rawTransType.includes('FUND')) ? 'ETF' : 'Stocks';
+        return {
+          ...t, 
+          asset_type: normTransAssetType
+        };
+      }));
       const trimmedTypes = typesRes.data.map(t => t.type_name ? String(t.type_name).trim() : 'Onbekend');
       setAvailableAssetTypes([...new Set(trimmedTypes)]); // Set verwijdert eventuele duplicaten
     } catch (error) {
@@ -641,13 +648,28 @@ const PortfolioManager = () => {
     return rawHoldings;
   }, [isViewingHistoricalDate, activeTimeMachinePoint, rawHoldings]);
 
+  const matchesAssetType = (holdingType, selected) => {
+    if (!selected || selected.length === 0) return true;
+    const hUpper = String(holdingType || '').toUpperCase().trim();
+    return selected.some(st => {
+      const sUpper = String(st).toUpperCase().trim();
+      if (sUpper === 'STOCK' || sUpper === 'STOCKS' || sUpper === 'AANDELEN') {
+        return hUpper === 'STOCKS' || hUpper === 'STOCK' || (!hUpper.includes('ETF') && !hUpper.includes('FUND'));
+      }
+      if (sUpper === 'ETF' || sUpper === 'ETFS') {
+        return hUpper.includes('ETF') || hUpper.includes('FUND');
+      }
+      return hUpper === sUpper;
+    });
+  };
+
   // Overzicht van totalen per Broker op de huidige/gekozen datum (voor de Broker-filter knoppen & Donut)
   const brokerTotals = useMemo(() => {
     const map = new Map();
     let totalAll = 0;
 
     baseHoldingsForDate.forEach(h => {
-      if (selectedTypes.length > 0 && !selectedTypes.some(st => st.toLowerCase() === (h.asset_type || '').toLowerCase())) {
+      if (!matchesAssetType(h.asset_type, selectedTypes)) {
         return;
       }
       const brokersList = Array.isArray(h.brokers) && h.brokers.length > 0
@@ -690,7 +712,7 @@ const PortfolioManager = () => {
   // Maak de filter logica ongevoelig voor hoofdletters/kleine letters én pas de Broker-filter toe
   const filteredHoldings = useMemo(() => {
     const typeFiltered = baseHoldingsForDate.filter(h =>
-      selectedTypes.length === 0 || selectedTypes.some(st => st.toLowerCase() === (h.asset_type || '').toLowerCase())
+      matchesAssetType(h.asset_type, selectedTypes)
     );
 
     if (!selectedBrokerFilter || selectedBrokerFilter === 'ALL') {
@@ -746,7 +768,7 @@ const PortfolioManager = () => {
   const filteredTransactions = useMemo(() => {
     let result = rawTransactions;
     if (selectedTypes.length > 0) {
-        result = result.filter(t => selectedTypes.some(st => st.toLowerCase() === t.asset_type.toLowerCase()));
+        result = result.filter(t => matchesAssetType(t.asset_type, selectedTypes));
     }
 
     if (chartPeriod !== 'All') {
@@ -888,7 +910,7 @@ const PortfolioManager = () => {
   const processedTransactions = useMemo(() => {
     let result = [...rawTransactions];
     if (selectedTypes.length > 0) {
-      result = result.filter(t => selectedTypes.some(st => st.toLowerCase() === t.asset_type.toLowerCase()));
+      result = result.filter(t => matchesAssetType(t.asset_type, selectedTypes));
     }
     if (transTypeFilter) {
       result = result.filter(t => t.transaction_type === transTypeFilter);
@@ -1099,9 +1121,10 @@ const PortfolioManager = () => {
   }, [filteredTransactions, history, displayCurrency]);
 
 
-  const formatCurrency = (val) => {
-    if (isIncognito) return displayCurrency === 'EUR' ? '€ ••••••' : '$ ••••••';
-    return new Intl.NumberFormat(displayCurrency === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: displayCurrency }).format(val || 0);
+  const formatCurrency = (val, overrideCurrency = null) => {
+    const curr = overrideCurrency || displayCurrency;
+    if (isIncognito) return curr === 'EUR' ? '€ ••••••' : '$ ••••••';
+    return new Intl.NumberFormat(curr === 'EUR' ? 'nl-BE' : 'en-US', { style: 'currency', currency: curr }).format(val || 0);
   };
   const formatPercentage = (val) => isIncognito ? '••• %' : `${(val > 0 ? '+' : '')}${(val || 0).toFixed(2)}%`;
 
@@ -1638,8 +1661,14 @@ const PortfolioManager = () => {
           startDate.setMonth(0, 1);
         } else if (upperPeriod === '1Y') {
           startDate.setFullYear(startDate.getFullYear() - 1);
+        } else if (upperPeriod === '2Y') {
+          startDate.setFullYear(startDate.getFullYear() - 2);
+        } else if (upperPeriod === '3Y') {
+          startDate.setFullYear(startDate.getFullYear() - 3);
         } else if (upperPeriod === '5Y') {
           startDate.setFullYear(startDate.getFullYear() - 5);
+        } else if (upperPeriod === 'ALL') {
+          startDate.setFullYear(1970);
         } else {
           startDate.setFullYear(startDate.getFullYear() - 1);
         }
@@ -1923,6 +1952,25 @@ const PortfolioManager = () => {
     });
     return Object.values(grouped).sort((a, b) => b.totalNet - a.totalNet);
   }, [filteredDivs]);
+
+  const otherCashSum = useMemo(() => {
+    let sum = 0;
+    if (availableBalanceData?.balances) {
+      Object.entries(availableBalanceData.balances).forEach(([name, amount]) => {
+        const lower = name.toLowerCase();
+        if (!lower.includes('etoro') && !lower.includes('degiro')) {
+          sum += (Number(amount) || 0);
+        }
+      });
+    }
+    return sum;
+  }, [availableBalanceData]);
+
+  const totalCashDisplay = useMemo(() => {
+    return (availableBalanceData?.totalAmount > 0)
+      ? availableBalanceData.totalAmount
+      : ((brokerCash?.totalCashEur || 0) + otherCashSum);
+  }, [availableBalanceData, brokerCash, otherCashSum]);
 
   // Global loading screen removed to keep layout stable and tab items interactive
 
@@ -2342,13 +2390,70 @@ const PortfolioManager = () => {
         const displayProfitPct = useFilteredSummary ? summary.overallGainLossPercentage : totalProfit.percent;
 
         return (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-6">
+        <>
+          {/* MOBIELE HERO KAART (eToro / DEGIRO Stijl - Clean, Geen Overbodige Tekst) */}
+          <div className="block md:hidden bg-white p-4 rounded-2xl shadow-sm border border-gray-200 space-y-3">
+            <div className="flex items-start justify-between">
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
+                  Waarde portefeuille {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''}
+                </span>
+                <div className="text-2xl font-black text-gray-900 tracking-tight privacy-blur mt-0.5">
+                  {loading ? '...' : formatCurrency(displayVal)}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-1 text-xs font-bold">
+                  <span className={`inline-flex items-center gap-0.5 ${dailyChange.value >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {dailyChange.value >= 0 ? '▲' : '▼'} {formatCurrency(Math.abs(dailyChange.value))} ({dailyChange.percent.toFixed(2)}%) Vandaag
+                  </span>
+                  <span className="text-gray-300">•</span>
+                  <span className={`inline-flex items-center gap-0.5 ${displayProfitVal >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                    {displayProfitVal >= 0 ? '+' : ''}{formatCurrency(displayProfitVal)} ({displayProfitPct.toFixed(1)}%) P/L
+                  </span>
+                </div>
+              </div>
+
+              {/* 3 puntjes optiemenu knop */}
+              <button
+                type="button"
+                onClick={() => setMobileMenuOpen(true)}
+                className="p-2 rounded-xl bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 transition-colors shrink-0"
+                title="Opties en instellingen"
+              >
+                <i className="ph-bold ph-dots-three-vertical text-lg"></i>
+              </button>
+            </div>
+
+            {/* Compacte chip rij (Cash, IRR, Dividend) - eToro stijl */}
+            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-100 text-left">
+              <div className="bg-slate-50 p-2 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Beschikbaar</span>
+                <span className="text-xs font-black text-gray-900 privacy-blur block truncate">
+                  {formatCurrency(totalCashDisplay)}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-2 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">IRR Rendement</span>
+                <span className="text-xs font-black text-purple-700 block truncate">
+                  {latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100).toFixed(1) + '%' : '0.0%'}
+                </span>
+              </div>
+              <div className="bg-slate-50 p-2 rounded-xl border border-gray-100">
+                <span className="text-[10px] font-bold text-gray-400 block uppercase">Geschat Div.</span>
+                <span className="text-xs font-black text-amber-700 privacy-blur block truncate">
+                  {formatCurrency(passiveIncome.annual)}/jr
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* DESKTOP 4 STATS CARDS ROW (Snowball Style - Verborgen op mobiel) */}
+          <div className="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-6">
           {/* Card 1: Value */}
           <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
             <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
               <span className="flex items-center gap-1.5">
                 <i className="ph ph-wallet text-xs sm:text-sm text-blue-500"></i>
-                Value {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''}
+                Belegd {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''} <span className="text-[10px] font-semibold text-gray-400 lowercase">(excl. cash)</span>
               </span>
               {isViewingHistoricalDate && activeTimeMachinePoint?.date && (
                 <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[10px] font-black">
@@ -2360,9 +2465,16 @@ const PortfolioManager = () => {
               <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
                 {loading ? '...' : formatCurrency(displayVal)}
               </span>
-              <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur block mt-0.5 sm:mt-1 truncate">
-                {loading ? '...' : formatCurrency(displayInv)} inleg
-              </span>
+              <div className="flex items-center justify-between gap-1 mt-0.5 sm:mt-1 flex-wrap">
+                <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur truncate">
+                  {loading ? '...' : formatCurrency(displayInv)} inleg • (excl. cash)
+                </span>
+                {totalCashDisplay > 0 && selectedBrokerFilter === 'ALL' && (
+                  <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded privacy-blur">
+                    Totaal incl. cash: {formatCurrency(displayVal + totalCashDisplay)}
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -2424,26 +2536,14 @@ const PortfolioManager = () => {
             </div>
           </div>
         </div>
+        </>
         );
       })()}
 
-      {/* Cash Breakdown Banner (De Belegger / Snowball Style) */}
+      {/* Cash Breakdown Banner (De Belegger / Snowball Style - Hidden op mobiel voor maximale rust) */}
       {activeTab === 'common' && (() => {
-        let otherCashSum = 0;
-        if (availableBalanceData?.balances) {
-          Object.entries(availableBalanceData.balances).forEach(([name, amount]) => {
-            const lower = name.toLowerCase();
-            if (!lower.includes('etoro') && !lower.includes('degiro')) {
-              otherCashSum += (Number(amount) || 0);
-            }
-          });
-        }
-        const totalCashDisplay = (availableBalanceData?.totalAmount > 0) 
-          ? availableBalanceData.totalAmount 
-          : ((brokerCash?.totalCashEur || 0) + otherCashSum);
-
         return (
-          <div className="bg-white px-5 py-3.5 rounded-xl shadow-sm border border-gray-200 flex flex-wrap items-center justify-between gap-4">
+          <div className="hidden md:flex bg-white px-5 py-3.5 rounded-xl shadow-sm border border-gray-200 flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xl border border-emerald-100 shadow-sm">
                 <i className="ph ph-coins"></i>
@@ -2456,6 +2556,9 @@ const PortfolioManager = () => {
                   </span>
                   <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
                     Gekoppeld & Vrij
+                  </span>
+                  <span className="text-[11px] text-gray-400 font-medium">
+                    (Niet meegerekend in 'Belegd Vermogen', direct inzetbaar)
                   </span>
                 </div>
                 <div className="text-xs text-gray-600 flex items-center gap-2 mt-1 flex-wrap font-medium">
@@ -2508,6 +2611,10 @@ const PortfolioManager = () => {
           isViewingHistoricalDate={isViewingHistoricalDate}
           selectedBrokerFilter={selectedBrokerFilter}
           setSelectedBrokerFilter={setSelectedBrokerFilter}
+          selectedTypes={selectedTypes}
+          setSelectedTypes={setSelectedTypes}
+          brokerCash={brokerCash}
+          totalCashDisplay={totalCashDisplay}
           brokerTotals={brokerTotals}
         />
       )}
@@ -2529,6 +2636,8 @@ const PortfolioManager = () => {
           isViewingHistoricalDate={isViewingHistoricalDate}
           selectedBrokerFilter={selectedBrokerFilter}
           setSelectedBrokerFilter={setSelectedBrokerFilter}
+          selectedTypes={selectedTypes}
+          setSelectedTypes={setSelectedTypes}
           brokerTotals={brokerTotals}
         />
       )}
@@ -2559,6 +2668,7 @@ const PortfolioManager = () => {
           setIsEditModalOpen={setIsEditModalOpen}
           isIncognito={isIncognito}
           formatCurrency={formatCurrency}
+          displayCurrency={displayCurrency}
           isDemo={isDemo}
           loading={loading}
           onOpenBrokerSync={() => setIsBrokerSyncOpen(true)}
@@ -2634,6 +2744,14 @@ const PortfolioManager = () => {
           holdingsSort={holdingsSort}
           formatPercentage={formatPercentage}
           loading={loading}
+          historyTimelineData={historyTimelineData}
+          timelineSliderIdx={effectiveSliderIdx}
+          setTimelineSliderIdx={setTimelineSliderIdx}
+          activeTimeMachinePoint={activeTimeMachinePoint}
+          isViewingHistoricalDate={isViewingHistoricalDate}
+          selectedBrokerFilter={selectedBrokerFilter}
+          setSelectedBrokerFilter={setSelectedBrokerFilter}
+          brokerTotals={brokerTotals}
         />
       )}
 
@@ -2659,6 +2777,18 @@ const PortfolioManager = () => {
           loading={loading}
           processedHoldings={processedHoldings}
           displayCurrency={displayCurrency}
+          historyTimelineData={historyTimelineData}
+          timelineSliderIdx={effectiveSliderIdx}
+          setTimelineSliderIdx={setTimelineSliderIdx}
+          activeTimeMachinePoint={activeTimeMachinePoint}
+          isViewingHistoricalDate={isViewingHistoricalDate}
+          selectedBrokerFilter={selectedBrokerFilter}
+          setSelectedBrokerFilter={setSelectedBrokerFilter}
+          selectedTypes={selectedTypes}
+          setSelectedTypes={setSelectedTypes}
+          brokerTotals={brokerTotals}
+          rawTransactions={rawTransactions}
+          totalCashDisplay={totalCashDisplay}
         />
       )}
 

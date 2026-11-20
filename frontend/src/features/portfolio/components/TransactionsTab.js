@@ -26,6 +26,7 @@ const TransactionsTab = ({
   setIsEditModalOpen,
   isIncognito,
   formatCurrency,
+  displayCurrency = 'EUR',
   isDemo,
   loading,
   onOpenBrokerSync,
@@ -360,6 +361,12 @@ const TransactionsTab = ({
                   const isEtoroApi = t.import_source === 'etoro_api';
                   const isEtoroStatement = t.import_source === 'etoro_statement' || (t.broker_name && t.broker_name.toLowerCase().includes('etoro') && isImported && !isEtoroApi);
                   const isDegiro = t.import_source === 'degiro_upload' || (t.broker_name && t.broker_name.toLowerCase().includes('degiro') && isImported);
+                  const isNativeEur = t.ticker_symbol && (t.ticker_symbol.endsWith('.DE') || t.ticker_symbol.endsWith('.AS') || t.ticker_symbol.endsWith('.BR') || t.ticker_symbol.endsWith('.PA'));
+                  const txCurrency = t.currency ? String(t.currency).trim().toUpperCase() : (isNativeEur ? 'EUR' : 'USD');
+                  const isForeign = txCurrency !== displayCurrency;
+                  const fx = Number(t.historical_exchange_rate || 1.10);
+                  const convertedPrice = txCurrency === 'USD' ? (t.price / fx) : (t.price * fx);
+                  const convertedTotal = txCurrency === 'USD' ? ((t.quantity * t.price) / fx) : ((t.quantity * t.price) * fx);
 
                   return (
                     <tr key={idx} className="hover:bg-gray-50/50 transition-all">
@@ -471,12 +478,28 @@ const TransactionsTab = ({
 
                       {/* Prijs */}
                       <td className="px-4 py-4 whitespace-nowrap text-xs font-semibold text-gray-600 text-right privacy-blur">
-                        {isCash ? '-' : formatCurrency(t.price)}
+                        {isCash ? '-' : (
+                          <div>
+                            <span className="font-bold text-gray-900">{formatCurrency(t.price, txCurrency)}</span>
+                            {isForeign && (
+                              <span className="block text-[10px] text-gray-400 font-medium">
+                                ({formatCurrency(convertedPrice, displayCurrency)})
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Totaal */}
                       <td className="px-5 py-4 whitespace-nowrap text-xs font-bold text-gray-900 text-right privacy-blur">
-                        {formatCurrency(t.quantity * t.price)}
+                        <div>
+                          <span>{formatCurrency(t.quantity * t.price, txCurrency)}</span>
+                          {isForeign && (
+                            <span className="block text-[10px] text-gray-400 font-medium">
+                              ({formatCurrency(convertedTotal, displayCurrency)})
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Acties & Vergrendeling */}
@@ -603,7 +626,7 @@ const TransactionsTab = ({
                       {t.broker_name || <span className="text-gray-300 font-medium">Onbekend</span>}
                     </td>
                     <td className="px-4 py-3.5 whitespace-nowrap text-xs font-semibold text-gray-600">
-                      <span className="privacy-blur">{isIncognito ? '••••••' : t.quantity}</span> <span className="text-gray-400 mx-0.5">@</span> <span className="privacy-blur">{formatCurrency(t.price)}</span>
+                      <span className="privacy-blur">{isIncognito ? '••••••' : t.quantity}</span> <span className="text-gray-400 mx-0.5">@</span> <span className="privacy-blur">{formatCurrency(t.price, t.currency || ((t.ticker_symbol && (t.ticker_symbol.endsWith('.DE') || t.ticker_symbol.endsWith('.AS') || t.ticker_symbol.endsWith('.BR'))) ? 'EUR' : 'USD'))}</span>
                       {t._hasVariance && !t._isPossibleSplit && (
                         <span className="ml-2 px-1.5 py-0.5 rounded text-[10px] font-bold bg-rose-100 text-rose-600" title="Prijs wijkt af van de andere duplicaten in deze groep">
                           Δ {formatCurrency(t._varianceAmount)}

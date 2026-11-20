@@ -52,10 +52,20 @@ const GrowthTab = ({
   renderTimeframeSelector,
   formatCurrency,
   isIncognito,
-  processedHoldings,
+  processedHoldings = [],
   rawTransactions,
   availableAssetTypes,
-  loading
+  loading,
+  historyTimelineData,
+  timelineSliderIdx = 0,
+  setTimelineSliderIdx,
+  activeTimeMachinePoint,
+  isViewingHistoricalDate = false,
+  selectedBrokerFilter = 'ALL',
+  setSelectedBrokerFilter,
+  selectedTypes = [],
+  setSelectedTypes,
+  brokerTotals = []
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -114,6 +124,131 @@ const GrowthTab = ({
     }
   }, [availableAssetTypes]);
 
+  const timeline = useMemo(() => historyTimelineData?.timeline || [], [historyTimelineData]);
+  const timelineYears = useMemo(() => historyTimelineData?.availableYears || [], [historyTimelineData]);
+
+  const totalAllBrokersVal = useMemo(
+    () => brokerTotals.reduce((acc, b) => acc + Number(b.value || 0), 0),
+    [brokerTotals]
+  );
+
+  const jumpToPrevTrade = () => {
+    if (!timeline.length || !setTimelineSliderIdx) return;
+    for (let i = timelineSliderIdx - 1; i >= 0; i--) {
+      if (timeline[i]?.hadTrade) {
+        setTimelineSliderIdx(i);
+        return;
+      }
+    }
+    setTimelineSliderIdx(Math.max(0, timelineSliderIdx - 1));
+  };
+
+  const jumpToNextTrade = () => {
+    if (!timeline.length || !setTimelineSliderIdx) return;
+    for (let i = timelineSliderIdx + 1; i < timeline.length; i++) {
+      if (timeline[i]?.hadTrade) {
+        setTimelineSliderIdx(i);
+        return;
+      }
+    }
+    setTimelineSliderIdx(Math.min(timeline.length - 1, timelineSliderIdx + 1));
+  };
+
+  const jumpToYear = (yr) => {
+    if (!timeline.length || !setTimelineSliderIdx) return;
+    let lastIdx = -1;
+    for (let i = 0; i < timeline.length; i++) {
+      if (timeline[i]?.date?.startsWith(yr)) {
+        lastIdx = i;
+      }
+    }
+    if (lastIdx >= 0) setTimelineSliderIdx(lastIdx);
+  };
+
+  // 💎 Aandelen vs. 📊 ETF Rendementsvergelijker
+  const assetClassComparison = useMemo(() => {
+    let stocksVal = 0;
+    let stocksInv = 0;
+    let stocksProfit = 0;
+    let etfVal = 0;
+    let etfInv = 0;
+    let etfProfit = 0;
+
+    (processedHoldings || []).forEach(h => {
+      const type = String(h.asset_type || '').toUpperCase();
+      const val = Number(h.value || 0);
+      const inv = Number(h.total_invested || 0);
+      const profit = Number(h.gainLoss !== undefined ? h.gainLoss : (val - inv));
+
+      if (type.includes('STOCK')) {
+        stocksVal += val;
+        stocksInv += inv;
+        stocksProfit += profit;
+      } else if (type.includes('ETF') || type.includes('FUND')) {
+        etfVal += val;
+        etfInv += inv;
+        etfProfit += profit;
+      }
+    });
+
+    const stocksPct = stocksInv > 0 ? (stocksProfit / stocksInv) * 100 : 0;
+    const etfPct = etfInv > 0 ? (etfProfit / etfInv) * 100 : 0;
+    const diffPct = stocksPct - etfPct;
+    const winner = diffPct >= 0 ? 'stocks' : 'etf';
+
+    return {
+      stocksVal,
+      stocksInv,
+      stocksProfit,
+      stocksPct,
+      etfVal,
+      etfInv,
+      etfProfit,
+      etfPct,
+      diffPct: Math.abs(diffPct),
+      winner,
+      hasBoth: (stocksVal > 0 || stocksInv > 0) && (etfVal > 0 || etfInv > 0)
+    };
+  }, [processedHoldings]);
+
+  const handleShowComparisonOnPerfChart = () => {
+    setPerfGroupBy('class');
+    setGrowthPerfType('percent');
+    setVisibleCategories(prev => ({
+      ...prev,
+      STOCKS: true,
+      STOCK: true,
+      Stocks: true,
+      ETF: true,
+      ETFS: true,
+      FUNDS: true
+    }));
+    const el = document.getElementById('card-portfolio-performance');
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleShowComparisonOnValueChart = () => {
+    setGroupBy('class');
+    setHistoryType('assets');
+    setVisibleCategories(prev => ({
+      ...prev,
+      STOCKS: true,
+      STOCK: true,
+      Stocks: true,
+      ETF: true,
+      ETFS: true,
+      FUNDS: true
+    }));
+    const el = document.getElementById('card-portfolio-value');
+    if (el) el.scrollIntoView({ behavior: 'smooth' });
+  };
+
+  const handleResetToTotal = () => {
+    setGroupBy('none');
+    setHistoryType('portfolio');
+    setPerfGroupBy('none');
+  };
+
   const CATEGORY_COLORS = {
     STOCK: '#2563eb',     // Blue
     STOCKS: '#2563eb',
@@ -157,12 +292,12 @@ const GrowthTab = ({
     if (filteredHistVal.length === 0) return '';
     const startD = new Date(filteredHistVal[0].date);
     const endD = new Date(filteredHistVal[filteredHistVal.length - 1].date);
-    
+
     const formatDt = (d) => {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       return `${months[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).substring(2)}`;
     };
-    
+
     return `${formatDt(startD)} - ${formatDt(endD)}`;
   }, [filteredHistVal]);
 
@@ -176,28 +311,28 @@ const GrowthTab = ({
 
   const rebasedBenchmarkValues = useMemo(() => {
     if (filteredHistVal.length === 0 || matchedBenchmarkValues.length === 0) return [];
-    
+
     const startP = filteredHistVal[0].total_value || 0;
     const startB = matchedBenchmarkValues.find(v => v !== null) || 0;
-    
+
     if (startP === 0 || startB === 0) {
       return matchedBenchmarkValues;
     }
-    
+
     const ratio = startP / startB;
     return matchedBenchmarkValues.map(v => v === null ? null : parseFloat((v * ratio).toFixed(2)));
   }, [filteredHistVal, matchedBenchmarkValues]);
 
   const rebasedBenchmarkCost = useMemo(() => {
     if (filteredHistVal.length === 0 || matchedBenchmarkValues.length === 0) return [];
-    
+
     const startP = filteredHistVal[0].total_value || 0;
     const startB = matchedBenchmarkValues.find(v => v !== null) || 0;
-    
+
     if (startP === 0 || startB === 0) {
       return filteredHistVal.map(h => h.net_invested);
     }
-    
+
     const ratio = startP / startB;
     return filteredHistVal.map(h => {
       const hDateStr = h.date.substring(0, 10);
@@ -209,7 +344,7 @@ const GrowthTab = ({
 
   const periodGains = useMemo(() => {
     if (filteredHistVal.length < 2 || rebasedBenchmarkValues.length < 2 || rebasedBenchmarkCost.length < 2) return { portfolio: 0, benchmark: 0 };
-    
+
     const startP = filteredHistVal[0].total_value || 0;
     const startInvested = filteredHistVal[0].net_invested || 0;
     const endP = filteredHistVal[filteredHistVal.length - 1].total_value || 0;
@@ -217,7 +352,7 @@ const GrowthTab = ({
 
     const endB = rebasedBenchmarkValues[rebasedBenchmarkValues.length - 1] || 0;
     const endBCost = rebasedBenchmarkCost[rebasedBenchmarkCost.length - 1] || 0;
-    
+
     const portfolioProfit = (endP - endInvested) - (startP - startInvested);
     const benchmarkProfit = (endB - endBCost) - (startP - rebasedBenchmarkCost[0]);
 
@@ -264,12 +399,12 @@ const GrowthTab = ({
     if (!growthShowTrades || !rawTransactions || rawTransactions.length === 0) {
       return null;
     }
-    
+
     const pointRadii = [];
     const pointHoverRadii = [];
     const pointBgColors = [];
     const pointBorderColors = [];
-    
+
     filteredHistVal.forEach(h => {
       const hDateStr = h.date.substring(0, 10);
       const dayTxs = rawTransactions.filter(t => {
@@ -277,7 +412,7 @@ const GrowthTab = ({
         const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
         return tDateStr === hDateStr && (t.transaction_type === 'BUY' || t.transaction_type === 'SELL');
       });
-      
+
       if (dayTxs.length > 0) {
         const hasBuy = dayTxs.some(t => t.transaction_type === 'BUY');
         pointRadii.push(6);
@@ -291,7 +426,7 @@ const GrowthTab = ({
         pointBorderColors.push('#2563eb');
       }
     });
-    
+
     return { pointRadii, pointHoverRadii, pointBgColors, pointBorderColors };
   }, [filteredHistVal, rawTransactions, growthShowTrades]);
 
@@ -308,7 +443,7 @@ const GrowthTab = ({
             const found = (categoryHistories[cat] || []).find(c => c.date.substring(0, 10) === hDateStr);
             return found ? found.total_value : 0;
           });
-          
+
           datasets.push({
             label: getCategoryLabel(cat),
             data: catData,
@@ -384,7 +519,7 @@ const GrowthTab = ({
         } else if (hoverIdx !== null) {
           xEnd = scales.x.getPixelForValue(hoverIdx);
         }
-        
+
         ctx.save();
         ctx.fillStyle = 'rgba(59, 130, 246, 0.08)';
         ctx.fillRect(
@@ -393,11 +528,11 @@ const GrowthTab = ({
           Math.abs(xEnd - xStart),
           chartArea.bottom - chartArea.top
         );
-        
+
         ctx.strokeStyle = 'rgba(59, 130, 246, 0.3)';
         ctx.lineWidth = 1;
         ctx.setLineDash([4, 4]);
-        
+
         ctx.beginPath();
         ctx.moveTo(xStart, chartArea.top);
         ctx.lineTo(xStart, chartArea.bottom);
@@ -407,7 +542,7 @@ const GrowthTab = ({
         ctx.moveTo(xEnd, chartArea.top);
         ctx.lineTo(xEnd, chartArea.bottom);
         ctx.stroke();
-        
+
         ctx.restore();
       }
     }
@@ -429,7 +564,7 @@ const GrowthTab = ({
           const end = Math.max(dragStartIdx, clickedIdx);
           setDragEndIdx(end);
           setDragStartIdx(start);
-          
+
           if (filteredHistVal[start] && filteredHistVal[end]) {
             setValStart(filteredHistVal[start].date);
             setValEnd(filteredHistVal[end].date);
@@ -468,12 +603,12 @@ const GrowthTab = ({
     if (filteredHistPerf.length === 0) return '';
     const startD = new Date(filteredHistPerf[0].date);
     const endD = new Date(filteredHistPerf[filteredHistPerf.length - 1].date);
-    
+
     const formatDt = (d) => {
       const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
       return `${months[d.getMonth()]} ${d.getDate()}, ${String(d.getFullYear()).substring(2)}`;
     };
-    
+
     return `${formatDt(startD)} - ${formatDt(endD)}`;
   }, [filteredHistPerf]);
 
@@ -487,37 +622,37 @@ const GrowthTab = ({
 
   const fullTwrTimeline = useMemo(() => {
     if (!history || history.length === 0) return [];
-    
+
     let currentTwr = 1.0;
     const twrValues = [];
-    
+
     for (let i = 0; i < history.length; i++) {
       const h = history[i];
       if (i === 0) {
         twrValues.push(0);
         continue;
       }
-      
+
       const prev = history[i - 1];
       const prevVal = prev.total_value || 0;
       const curVal = h.total_value || 0;
       const curInvested = h.net_invested || 0;
       const prevInvested = prev.net_invested || 0;
-      
+
       const cf = curInvested - prevInvested;
-      
+
       let dailyReturn = 0;
       if (prevVal > 0) {
         dailyReturn = (curVal - cf) / prevVal - 1;
       }
-      
+
       if (dailyReturn > 2.0) dailyReturn = 0;
       if (dailyReturn < -0.9) dailyReturn = 0;
-      
+
       currentTwr = currentTwr * (1 + dailyReturn);
       twrValues.push((currentTwr - 1) * 100);
     }
-    
+
     return twrValues;
   }, [history]);
 
@@ -534,84 +669,84 @@ const GrowthTab = ({
   // Compiles TWR timelines for individual asset categories
   const categoryTwrTimelines = useMemo(() => {
     if (!history || history.length === 0 || !categoryHistories) return {};
-    
+
     const catTimelines = {};
-    
+
     availableAssetTypes.forEach(cat => {
       const catHistory = categoryHistories[cat] || [];
       if (catHistory.length === 0) {
         catTimelines[cat] = [];
         return;
       }
-      
+
       let currentTwr = 1.0;
       const twrValues = [];
-      
+
       for (let i = 0; i < catHistory.length; i++) {
         const h = catHistory[i];
         if (i === 0) {
           twrValues.push(0);
           continue;
         }
-        
+
         const prev = catHistory[i - 1];
         const prevVal = prev.total_value || 0;
         const curVal = h.total_value || 0;
         const curInvested = h.net_invested || 0;
         const prevInvested = prev.net_invested || 0;
-        
+
         const cf = curInvested - prevInvested;
-        
+
         let dailyReturn = 0;
         if (prevVal > 0) {
           dailyReturn = (curVal - cf) / prevVal - 1;
         }
-        
+
         if (dailyReturn > 2.0) dailyReturn = 0;
         if (dailyReturn < -0.9) dailyReturn = 0;
-        
+
         currentTwr = currentTwr * (1 + dailyReturn);
         twrValues.push((currentTwr - 1) * 100);
       }
-      
+
       catTimelines[cat] = twrValues;
     });
-    
+
     return catTimelines;
   }, [history, categoryHistories, availableAssetTypes]);
 
   const getCategoryLegendValues = (cat) => {
     const catHistory = categoryHistories[cat] || [];
     const fullCatTwrValues = categoryTwrTimelines[cat] || [];
-    
+
     if (catHistory.length === 0 || filteredHistPerf.length < 2) {
       return { val: 0, pct: 0 };
     }
-    
+
     const startHDate = filteredHistPerf[0].date.substring(0, 10);
     const endHDate = filteredHistPerf[filteredHistPerf.length - 1].date.substring(0, 10);
-    
+
     const startIdx = catHistory.findIndex(p => p.date.substring(0, 10) === startHDate);
     const endIdx = catHistory.findIndex(p => p.date.substring(0, 10) === endHDate);
-    
+
     if (startIdx === -1 || endIdx === -1) {
       return { val: 0, pct: 0 };
     }
-    
+
     const startVal = catHistory[startIdx].total_value || 0;
     const startInvested = catHistory[startIdx].net_invested || 0;
     const endVal = catHistory[endIdx].total_value || 0;
     const endInvested = catHistory[endIdx].net_invested || 0;
-    
+
     const startProfit = startVal - startInvested;
     const endProfit = endVal - endInvested;
-    
+
     let val = endProfit - startProfit;
     let pct = 0;
-    
+
     const startTwrPct = fullCatTwrValues[startIdx] || 0;
     const endTwrPct = fullCatTwrValues[endIdx] || 0;
-    
+
     if (perfCalcMethod === 'period') {
       val = endProfit - startProfit;
       pct = (((1 + endTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
@@ -619,27 +754,27 @@ const GrowthTab = ({
       val = endProfit;
       pct = endTwrPct;
     }
-    
+
     return { val, pct };
   };
 
   const perfLegendValues = useMemo(() => {
     if (filteredHistPerf.length < 2) return { portfolioVal: 0, portfolioPct: 0, benchmarkVal: 0, benchmarkPct: 0 };
-    
+
     const startP = filteredHistPerf[0].total_value || 0;
     const startInvested = filteredHistPerf[0].net_invested || 0;
     const endP = filteredHistPerf[filteredHistPerf.length - 1].total_value || 0;
     const endInvested = filteredHistPerf[filteredHistPerf.length - 1].net_invested || 0;
-    
+
     const startPProfit = startP - startInvested;
     const endPProfit = endP - endInvested;
-    
+
     let pProfit = endPProfit - startPProfit;
     let pPct = 0;
-    
+
     const startTwrPct = twrValuesForPerf[0] || 0;
     const endTwrPct = twrValuesForPerf[twrValuesForPerf.length - 1] || 0;
-    
+
     if (perfCalcMethod === 'period') {
       pProfit = endPProfit - startPProfit;
       pPct = (((1 + endTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
@@ -647,14 +782,14 @@ const GrowthTab = ({
       pProfit = endPProfit;
       pPct = endTwrPct;
     }
-    
+
     const startBPoint = matchedPerfBenchmarkValues.find(v => v !== null) || { value: 0, costBasis: 0, rawPrice: 0 };
     const endBPoint = matchedPerfBenchmarkValues[matchedPerfBenchmarkValues.length - 1] || { value: 0, costBasis: 0, rawPrice: 0 };
     const firstBPoint = benchmarkHistory.length > 0 ? benchmarkHistory[0] : { value: 0, costBasis: 0, rawPrice: 0 };
-    
+
     let bProfit = 0;
     let bPct = 0;
-    
+
     if (perfCalcMethod === 'period') {
       const startPrice = startBPoint.rawPrice || 1;
       const endPrice = endBPoint.rawPrice || 1;
@@ -666,7 +801,7 @@ const GrowthTab = ({
       bPct = ((endPrice - firstPrice) / firstPrice) * 100;
       bProfit = (bPct / 100) * endInvested;
     }
-    
+
     return {
       portfolioVal: pProfit,
       portfolioPct: pPct,
@@ -684,24 +819,24 @@ const GrowthTab = ({
         if (visibleCategories[cat]) {
           const catHistory = categoryHistories[cat] || [];
           const fullCatTwrValues = categoryTwrTimelines[cat] || [];
-          
+
           const catData = filteredHistPerf.map((h, idx) => {
             const fullIdx = catHistory.findIndex(p => p.date.substring(0, 10) === h.date.substring(0, 10));
             const currentTwrPct = fullIdx !== -1 ? (fullCatTwrValues[fullIdx] || 0) : 0;
-            
+
             const startHDate = filteredHistPerf[0].date.substring(0, 10);
             const startIdx = catHistory.findIndex(p => p.date.substring(0, 10) === startHDate);
             const startTwrPct = startIdx !== -1 ? (fullCatTwrValues[startIdx] || 0) : 0;
-            
+
             const catVal = fullIdx !== -1 ? (catHistory[fullIdx].total_value || 0) : 0;
             const catInvested = fullIdx !== -1 ? (catHistory[fullIdx].net_invested || 0) : 0;
-            
+
             const startCatVal = startIdx !== -1 ? (catHistory[startIdx].total_value || 0) : 0;
             const startCatInvested = startIdx !== -1 ? (catHistory[startIdx].net_invested || 0) : 0;
-            
+
             const profit = catVal - catInvested;
             const startProfit = startCatVal - startCatInvested;
-            
+
             if (perfCalcMethod === 'period') {
               if (growthPerfType === 'percent') {
                 return (((1 + currentTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
@@ -740,7 +875,7 @@ const GrowthTab = ({
         const profit = h.total_value - h.net_invested;
         const currentTwrPct = twrValuesForPerf[idx] || 0;
         const startTwrPct = twrValuesForPerf[0] || 0;
-        
+
         if (perfCalcMethod === 'period') {
           if (growthPerfType === 'percent') {
             return (((1 + currentTwrPct / 100) / (1 + startTwrPct / 100)) - 1) * 100;
@@ -777,18 +912,18 @@ const GrowthTab = ({
       const bData = filteredHistPerf.map((h, idx) => {
         const bPoint = matchedPerfBenchmarkValues[idx] || startBPoint;
         const bPrice = bPoint.rawPrice || 1;
-        
+
         if (perfCalcMethod === 'period') {
           const startPrice = startBPoint.rawPrice || 1;
           const bPct = ((bPrice - startPrice) / startPrice) * 100;
-          return growthPerfType === 'percent' 
-            ? bPct 
+          return growthPerfType === 'percent'
+            ? bPct
             : (bPct / 100) * (h.net_invested || 1);
         } else {
           const firstPrice = firstBPoint.rawPrice || 1;
           const bPct = ((bPrice - firstPrice) / firstPrice) * 100;
-          return growthPerfType === 'percent' 
-            ? bPct 
+          return growthPerfType === 'percent'
+            ? bPct
             : (bPct / 100) * (h.net_invested || 1);
         }
       });
@@ -851,12 +986,12 @@ const GrowthTab = ({
   const exportToCSV = () => {
     const headers = ['Period', 'Total profit (%)', 'Total profit ($)', 'Capital gain', 'Dividends received', 'Taxes'];
     const rows = filteredModalData.map(d => [
-        formatPeriodLabel(d.period, dynamicsPeriod),
-        d.returnPercent.toFixed(2),
-        d.returnValue.toFixed(2),
-        (d.capitalGain || 0).toFixed(2),
-        (d.dividendsReceived || 0).toFixed(2),
-        (d.taxes || 0).toFixed(2)
+      formatPeriodLabel(d.period, dynamicsPeriod),
+      d.returnPercent.toFixed(2),
+      d.returnValue.toFixed(2),
+      (d.capitalGain || 0).toFixed(2),
+      (d.dividendsReceived || 0).toFixed(2),
+      (d.taxes || 0).toFixed(2)
     ]);
     const csvContent = [headers, ...rows].map(e => e.join(",")).join("\n");
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -879,27 +1014,27 @@ const GrowthTab = ({
         meta.data.forEach((bar, index) => {
           const val = dataset.data[index];
           if (val === null || val === undefined) return;
-          
+
           let labelText = '';
           if (dynamicsDisplay === 'percent' || dynamicsDisplay === 'irr') {
-              labelText = `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
+            labelText = `${val >= 0 ? '+' : ''}${val.toFixed(2)}%`;
           } else {
-              labelText = formatCurrency(val);
+            labelText = formatCurrency(val);
           }
-          
+
           ctx.font = 'bold 9px Outfit, Inter, sans-serif';
           ctx.fillStyle = val >= 0 ? '#0d9488' : '#e11d48'; // dark teal/red
           ctx.textAlign = 'center';
-          
+
           const padding = 6;
           let yPos = bar.y - padding;
           if (val < 0) {
-              yPos = bar.y + padding + 10;
+            yPos = bar.y + padding + 10;
           }
-          
+
           if (yPos > bottom) yPos = bottom - 2;
           if (yPos < top) yPos = top + 10;
-          
+
           ctx.fillText(labelText, bar.x, yPos);
         });
       });
@@ -1003,9 +1138,455 @@ const GrowthTab = ({
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4 sm:space-y-6">
+      {/* 📱 COMPACTE MOBIELE TIJDMACHINE & BROKER SELECTOR (eToro / DEGIRO Stijl) */}
+      {timeline.length > 0 && (
+        <div className="block md:hidden bg-white p-3 rounded-2xl shadow-sm border border-gray-200 space-y-2.5">
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-black bg-purple-50 text-purple-900 border border-purple-200">
+              📅 {activeTimeMachinePoint?.date || 'Vandaag'}
+              {!isViewingHistoricalDate && <span className="text-[10px] text-emerald-600 font-extrabold">• Live</span>}
+            </span>
+
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={jumpToPrevTrade}
+                disabled={timelineSliderIdx === 0}
+                className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-30 text-xs font-bold"
+                title="Vorige transactie"
+              >
+                ◀
+              </button>
+              <button
+                type="button"
+                onClick={jumpToNextTrade}
+                disabled={timelineSliderIdx >= timeline.length - 1}
+                className="p-1.5 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-700 disabled:opacity-30 text-xs font-bold"
+                title="Volgende transactie"
+              >
+                ▶
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1)}
+                disabled={timelineSliderIdx >= timeline.length - 1}
+                className="px-2 py-1 rounded-lg bg-purple-600 text-white text-[11px] font-black disabled:opacity-40"
+              >
+                Live
+              </button>
+            </div>
+          </div>
+
+          <input
+            type="range"
+            min={0}
+            max={Math.max(0, timeline.length - 1)}
+            value={timelineSliderIdx}
+            onChange={(e) => setTimelineSliderIdx && setTimelineSliderIdx(Number(e.target.value))}
+            className="w-full h-2 bg-purple-100 rounded-lg appearance-none cursor-pointer accent-purple-600"
+          />
+
+          {/* Horizontaal scrollende chips voor broker & asset type selectie op mobiel */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+            <button
+              type="button"
+              onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                selectedBrokerFilter === 'ALL' ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              Alle Brokers
+            </button>
+            {brokerTotals.map(b => {
+              const isActive = selectedBrokerFilter.toLowerCase() === b.broker_name.toLowerCase();
+              const isEtoro = b.broker_name.toLowerCase().includes('etoro');
+              return (
+                <button
+                  key={b.broker_name}
+                  type="button"
+                  onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
+                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                    isActive ? (isEtoro ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-blue-600 text-white border-blue-600') : 'bg-gray-100 text-gray-700 border-gray-200'
+                  }`}
+                >
+                  {isEtoro ? '🟢 eToro' : '🔵 DEGIRO'} ({b.weightPct.toFixed(0)}%)
+                </button>
+              );
+            })}
+            <span className="text-gray-300">|</span>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes([])}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                !selectedTypes || selectedTypes.length === 0 ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              Alles
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase())) ? 'bg-teal-600 text-white border-teal-600' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              💎 Aandelen
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase())) ? 'bg-amber-600 text-white border-amber-600' : 'bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              📊 ETF's
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* 🕰️ DESKTOP TIJDMACHINE (Verborgen op Mobiel) */}
+      {timeline.length > 0 && (
+        <div className={`hidden md:block bg-white rounded-2xl p-3.5 sm:p-5 border-2 shadow-sm space-y-3 sm:space-y-4 transition-all ${
+          isViewingHistoricalDate ? 'border-purple-400 ring-2 ring-purple-100' : 'border-purple-200/80'
+        }`}>
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-gray-100 pb-3">
+            <div className="flex items-center gap-2">
+              <span className="p-2 rounded-xl bg-purple-100 text-purple-700 font-black text-sm">🕰️</span>
+              <div>
+                <h4 className="font-extrabold text-sm sm:text-base text-gray-900 leading-tight">
+                  Portfolio Tijdmachine & Historische Groei
+                </h4>
+                <p className="text-xs text-gray-500">
+                  Bekijk hoe jouw vermogen en verhouding Aandelen vs. ETF's doorheen de tijd is geëvolueerd.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(0)}
+                disabled={timelineSliderIdx === 0}
+                className="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-extrabold disabled:opacity-40"
+              >
+                ⏮ Start
+              </button>
+              <button
+                type="button"
+                onClick={jumpToPrevTrade}
+                disabled={timelineSliderIdx === 0}
+                className="px-3 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 text-xs font-extrabold disabled:opacity-40"
+              >
+                ◀ Vorige Transactiedag
+              </button>
+              <button
+                type="button"
+                onClick={jumpToNextTrade}
+                disabled={timelineSliderIdx >= timeline.length - 1}
+                className="px-3 py-1.5 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 text-xs font-extrabold disabled:opacity-40"
+              >
+                Volgende Transactiedag ▶
+              </button>
+              <button
+                type="button"
+                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1)}
+                disabled={timelineSliderIdx >= timeline.length - 1}
+                className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-extrabold disabled:opacity-40 shadow-xs"
+              >
+                Heden (Live) ⏭
+              </button>
+            </div>
+          </div>
+
+          <div className="p-3 sm:p-3.5 rounded-xl bg-gradient-to-r from-slate-50 via-purple-50/50 to-emerald-50/40 border border-purple-100 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="px-3 py-1 rounded-xl bg-purple-600 text-white font-black text-xs sm:text-sm shadow-xs">
+                📅 {activeTimeMachinePoint?.date || 'Vandaag'} {!isViewingHistoricalDate && '(Huidige Live Situatie)'}
+              </span>
+
+              {timelineYears.length > 1 && (
+                <div className="flex flex-wrap items-center gap-1">
+                  {timelineYears.map(yr => (
+                    <button
+                      key={yr}
+                      type="button"
+                      onClick={() => jumpToYear(yr)}
+                      className={`px-2 py-0.5 rounded-lg text-xs font-extrabold transition-all ${activeTimeMachinePoint?.date?.startsWith(yr)
+                        ? 'bg-purple-600 text-white shadow-2xs'
+                        : 'bg-white hover:bg-purple-50 text-gray-700 border border-gray-200'
+                        }`}
+                    >
+                      {yr}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, timeline.length - 1)}
+              value={timelineSliderIdx}
+              onChange={(e) => setTimelineSliderIdx && setTimelineSliderIdx(Number(e.target.value))}
+              className="w-full h-2.5 bg-purple-200 rounded-lg appearance-none cursor-pointer accent-purple-600"
+            />
+            <div className="flex items-center justify-between text-[11px] font-bold text-gray-500">
+              <span>Eerste transactie: {timeline[0]?.date}</span>
+              <span>Stap {timelineSliderIdx + 1} van {timeline.length}</span>
+              <span>Heden: {timeline[timeline.length - 1]?.date}</span>
+            </div>
+          </div>
+
+          {/* 🏦 BROKER-FILTER & 📊 ASSET TYPE FILTER BALK */}
+          <div className="flex flex-col gap-2 pt-1 border-t border-gray-100">
+            {brokerTotals.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-extrabold text-gray-600 flex items-center gap-1">
+                  <i className="ph-fill ph-bank text-purple-600"></i>
+                  <span>Filter per Broker:</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 border ${selectedBrokerFilter === 'ALL'
+                    ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                    : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                    }`}
+                >
+                  <span>Alle Brokers</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black privacy-blur ${selectedBrokerFilter === 'ALL' ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-600'
+                    }`}>
+                    {formatCurrency(totalAllBrokersVal)}
+                  </span>
+                </button>
+                {brokerTotals.map(b => {
+                  const isActive = selectedBrokerFilter.toLowerCase() === b.broker_name.toLowerCase();
+                  const isEtoro = b.broker_name.toLowerCase() === 'etoro';
+                  const isDegiro = b.broker_name.toLowerCase() === 'degiro';
+                  return (
+                    <button
+                      key={b.broker_name}
+                      type="button"
+                      onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
+                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 border ${isActive
+                        ? isEtoro
+                          ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
+                          : isDegiro
+                            ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                            : 'bg-purple-600 text-white border-purple-700 shadow-xs'
+                        : 'bg-white text-gray-800 border-gray-200 hover:bg-gray-50'
+                        }`}
+                    >
+                      <span>{isEtoro ? '🟢' : isDegiro ? '🔵' : '🏦'} {b.broker_name}</span>
+                      <span className="text-[11px] opacity-85">({b.count} pos.)</span>
+                      <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black privacy-blur ${isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'
+                        }`}>
+                        {formatCurrency(b.value)} ({b.weightPct.toFixed(1)}%)
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 📊 ASSET TYPE FILTER */}
+            <div className="flex flex-wrap items-center gap-2 pt-1 border-t border-gray-100">
+              <span className="text-xs font-extrabold text-gray-600 flex items-center gap-1">
+                <i className="ph-fill ph-funnel text-purple-600"></i>
+                <span>Filter Asset Type:</span>
+              </span>
+              <button
+                type="button"
+                onClick={() => setSelectedTypes && setSelectedTypes([])}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all border ${!selectedTypes || selectedTypes.length === 0
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+              >
+                Alles
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all border ${selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase()))
+                  ? 'bg-teal-600 text-white border-teal-700 shadow-xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+              >
+                💎 Aandelen
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
+                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all border ${selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FONDSEN', 'FUNDS'].includes(String(t).toUpperCase()))
+                  ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+                  }`}
+              >
+                📊 ETF's & Fondsen
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ⚖️ AANDELEN VS. ETF'S RENDEMENTSVERGELIJKER (HERO CARD) */}
+      <div className="bg-gradient-to-br from-white via-slate-50 to-indigo-50/40 rounded-2xl p-4 sm:p-6 border border-slate-200 shadow-sm space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="p-2 rounded-xl bg-indigo-100 text-indigo-700 font-black text-sm">⚖️</span>
+              <h3 className="text-base sm:text-lg font-black text-gray-900">
+                Aandelen vs. ETF Rendementsvergelijking
+              </h3>
+            </div>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Ontdek direct welke categorie (losse aandelen of gespreide ETF's) het hoogste rendement oplevert.
+            </p>
+          </div>
+
+          {/* Snelle actieknoppen voor interactieve grafiek weergave */}
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleShowComparisonOnPerfChart}
+              className="px-3 py-1.5 rounded-xl bg-teal-600 hover:bg-teal-700 text-white text-xs font-extrabold shadow-xs transition-all flex items-center gap-1.5"
+            >
+              <span>📈 Bekijk Rendement op Grafiek</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleShowComparisonOnValueChart}
+              className="px-3 py-1.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-extrabold shadow-xs transition-all flex items-center gap-1.5"
+            >
+              <span>💰 Bekijk Waarde op Grafiek</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleResetToTotal}
+              className="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-extrabold transition-all"
+              title="Reset beide grafieken naar het geconsolideerde totaalbeeld"
+            >
+              ↺ Reset
+            </button>
+          </div>
+        </div>
+
+        {/* Vergelijkings Cards Grid: Aandelen vs. ETF */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {/* Card A: 💎 Losse Aandelen */}
+          <div className="bg-white rounded-xl p-4 sm:p-5 border-2 border-teal-200/80 shadow-xs relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-24 h-24 bg-teal-500/5 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
+            <div className="flex items-center justify-between mb-3">
+              <span className="flex items-center gap-1.5 text-xs font-black text-teal-800 uppercase tracking-wider">
+                <span>💎</span> Losse Aandelen (Stocks)
+              </span>
+              <span className={`px-2.5 py-1 rounded-xl text-xs font-black ${assetClassComparison.stocksPct >= 0
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                }`}>
+                {assetClassComparison.stocksPct >= 0 ? '+' : ''}{assetClassComparison.stocksPct.toFixed(2)}% ROI
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 block">Portefeuillewaarde</span>
+                <span className="text-sm sm:text-base font-black text-gray-900 privacy-blur">
+                  {formatCurrency(assetClassComparison.stocksVal)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 block">Totale Inleg</span>
+                <span className="text-sm sm:text-base font-black text-gray-700 privacy-blur">
+                  {formatCurrency(assetClassComparison.stocksInv)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 block">Gerealiseerd + Ongerealiseerd</span>
+                <span className={`text-sm sm:text-base font-black privacy-blur ${assetClassComparison.stocksProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                  }`}>
+                  {assetClassComparison.stocksProfit >= 0 ? '+' : ''}{formatCurrency(assetClassComparison.stocksProfit)}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          {/* Card B: 📊 ETF's & Fondsen */}
+          <div className="bg-white rounded-xl p-4 sm:p-5 border-2 border-amber-200/80 shadow-xs relative overflow-hidden">
+            <div className="absolute top-0 right-0 w-24 h-24 bg-amber-500/5 rounded-full -mr-8 -mt-8 pointer-events-none"></div>
+            <div className="flex items-center justify-between mb-3">
+              <span className="flex items-center gap-1.5 text-xs font-black text-amber-800 uppercase tracking-wider">
+                <span>📊</span> ETF's & Fondsen (Funds)
+              </span>
+              <span className={`px-2.5 py-1 rounded-xl text-xs font-black ${assetClassComparison.etfPct >= 0
+                ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                : 'bg-rose-50 text-rose-700 border border-rose-200'
+                }`}>
+                {assetClassComparison.etfPct >= 0 ? '+' : ''}{assetClassComparison.etfPct.toFixed(2)}% ROI
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 block">Portefeuillewaarde</span>
+                <span className="text-sm sm:text-base font-black text-gray-900 privacy-blur">
+                  {formatCurrency(assetClassComparison.etfVal)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 block">Totale Inleg</span>
+                <span className="text-sm sm:text-base font-black text-gray-700 privacy-blur">
+                  {formatCurrency(assetClassComparison.etfInv)}
+                </span>
+              </div>
+              <div>
+                <span className="text-[11px] font-bold text-gray-400 block">Gerealiseerd + Ongerealiseerd</span>
+                <span className={`text-sm sm:text-base font-black privacy-blur ${assetClassComparison.etfProfit >= 0 ? 'text-emerald-600' : 'text-rose-600'
+                  }`}>
+                  {assetClassComparison.etfProfit >= 0 ? '+' : ''}{formatCurrency(assetClassComparison.etfProfit)}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* 🏆 Conclusie / Winnaar Banner */}
+        {assetClassComparison.hasBoth && (
+          <div className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs font-bold ${assetClassComparison.winner === 'stocks'
+            ? 'bg-teal-50 border-teal-200 text-teal-900'
+            : 'bg-amber-50 border-amber-200 text-amber-900'
+            }`}>
+            <div className="flex items-center gap-2">
+              <span className="text-base">{assetClassComparison.winner === 'stocks' ? '💎' : '📊'}</span>
+              <span>
+                {assetClassComparison.winner === 'stocks' ? (
+                  <>
+                    <strong className="font-black">Losse Aandelen</strong> renderen momenteel{' '}
+                    <span className="underline decoration-teal-500 font-black">+{assetClassComparison.diffPct.toFixed(2)}%</span>{' '}
+                    beter dan ETF's ({assetClassComparison.stocksPct.toFixed(1)}% vs. {assetClassComparison.etfPct.toFixed(1)}%).
+                  </>
+                ) : (
+                  <>
+                    <strong className="font-black">ETF's & Fondsen</strong> renderen momenteel{' '}
+                    <span className="underline decoration-amber-500 font-black">+{assetClassComparison.diffPct.toFixed(2)}%</span>{' '}
+                    beter dan losse aandelen ({assetClassComparison.etfPct.toFixed(1)}% vs. {assetClassComparison.stocksPct.toFixed(1)}%).
+                  </>
+                )}
+              </span>
+            </div>
+            <span className="text-[11px] text-gray-500 italic">
+              Klik hierboven op 'Bekijk Rendement op Grafiek' voor de historische tijdlijn per categorie.
+            </span>
+          </div>
+        )}
+      </div>
+
       {/* Benchmark Selector Bar */}
-      <div className="bg-white px-6 py-4 rounded-xl border border-gray-200 shadow-sm flex justify-between items-center">
+      <div className="bg-white px-4 sm:px-6 py-3.5 sm:py-4 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Benchmarks:</span>
           <div className="relative">
@@ -1042,21 +1623,21 @@ const GrowthTab = ({
       </div>
 
       {/* Card 1: Portfolio Value Compare */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[560px] relative">
+      <div id="card-portfolio-value" className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col min-h-[480px] sm:h-[560px] relative">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-4 gap-4">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Portfolio value
             <span className="cursor-help text-xs text-gray-300 border border-gray-200 rounded-full w-4 h-4 flex items-center justify-center font-normal" title="Compare value and cost basis with index benchmarks. Drag or click on graph to select custom date ranges.">?</span>
             {dragStartIdx !== null && (
-              <button 
-                onClick={resetSelection} 
+              <button
+                onClick={resetSelection}
                 className="text-[10px] bg-gray-100 hover:bg-gray-200 text-gray-500 font-bold px-2 py-0.5 rounded transition-all ml-2"
               >
                 Reset selectie
               </button>
             )}
           </h3>
-          
+
           {/* Custom Date Range & Period Gains legend (Screenshot 11) */}
           {groupBy !== 'class' && (
             <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-gray-500 sm:text-right">
@@ -1079,11 +1660,10 @@ const GrowthTab = ({
 
         {/* Dynamic Alert Banner */}
         {alertInfo && groupBy !== 'class' && (
-          <div className={`mb-4 px-4 py-3 rounded-lg flex items-center gap-3 border text-xs font-semibold ${
-            alertInfo.isAhead 
-              ? 'bg-emerald-50/50 border-emerald-100 text-emerald-700' 
-              : 'bg-rose-50/50 border-rose-100 text-rose-700'
-          }`}>
+          <div className={`mb-4 px-4 py-3 rounded-lg flex items-center gap-3 border text-xs font-semibold ${alertInfo.isAhead
+            ? 'bg-emerald-50/50 border-emerald-100 text-emerald-700'
+            : 'bg-rose-50/50 border-rose-100 text-rose-700'
+            }`}>
             <i className={`ph-fill ${alertInfo.isAhead ? 'ph-trend-up' : 'ph-trend-down'} text-base`}></i>
             <span>
               Portfolio is {alertInfo.isAhead ? 'ahead' : 'behind'} of {alertInfo.benchmarkName} by {formatCurrency(alertInfo.diffVal)} ({alertInfo.diffPct}%) over the selected period
@@ -1093,7 +1673,7 @@ const GrowthTab = ({
 
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
           {renderTimeframeSelector(valPeriod, setValPeriod, valStart, setValStart, valEnd, setValEnd)}
-          
+
           <div className="flex items-center gap-4">
             {/* Custom legend with visibility toggles (Screenshot 11 & 19) */}
             {groupBy === 'class' ? (
@@ -1148,22 +1728,20 @@ const GrowthTab = ({
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setSettingsOpen(false)}></div>
                   <div className="origin-top-right absolute right-0 mt-2 w-80 rounded-xl shadow-xl bg-white border border-gray-100 ring-1 ring-black ring-opacity-5 z-50 p-4 space-y-4 text-xs font-semibold text-gray-700">
-                    
+
                     {/* Tabs row: Portfolio history vs Assets history */}
                     <div className="flex bg-gray-50 p-0.5 rounded-lg border border-gray-200">
                       <button
                         onClick={() => setHistoryType('portfolio')}
-                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
-                          historyType === 'portfolio' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
-                        }`}
+                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${historyType === 'portfolio' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                          }`}
                       >
                         Portfolio history
                       </button>
                       <button
                         onClick={() => setHistoryType('assets')}
-                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
-                          historyType === 'assets' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
-                        }`}
+                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${historyType === 'assets' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                          }`}
                       >
                         Assets history
                       </button>
@@ -1233,11 +1811,11 @@ const GrowthTab = ({
               <div className="w-12 h-12 rounded-full border-4 border-gray-100 border-t-blue-500 animate-spin"></div>
             </div>
           ) : filteredHistVal.length > 0 ? (
-            <Line 
+            <Line
               key={`${valPeriod}-${filteredHistVal.length}-${visibleDatasets.portfolio}-${visibleDatasets.benchmark}-${historyType}-${groupBy}`}
-              data={valueChartData} 
-              options={valueChartOptions} 
-              plugins={[rangeSelectionPlugin]} 
+              data={valueChartData}
+              options={valueChartOptions}
+              plugins={[rangeSelectionPlugin]}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
@@ -1278,13 +1856,13 @@ const GrowthTab = ({
       </div>
 
       {/* Card 2: Portfolio Performance (Teal Chart Upgrade) */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[570px] relative">
+      <div id="card-portfolio-performance" className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col min-h-[480px] sm:h-[570px] relative">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-2 gap-4">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Portfolio performance
             <span className="cursor-help text-xs text-gray-300 border border-gray-200 rounded-full w-4 h-4 flex items-center justify-center font-normal" title="Historical return on assets.">?</span>
           </h3>
-          
+
           {/* Legend showing absolute gains and percentages (Screenshot 16 & 19) */}
           {perfGroupBy !== 'class' && (
             <div className="flex flex-wrap items-center gap-3 text-xs font-bold text-gray-500 sm:text-right">
@@ -1308,11 +1886,10 @@ const GrowthTab = ({
           <span>Benchmarks:</span>
           <button
             onClick={() => setPerfCompareBenchmark(true)}
-            className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all border ${
-              perfCompareBenchmark 
-                ? 'bg-blue-50 text-blue-600 border-blue-100' 
-                : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border-gray-200'
-            }`}
+            className={`px-2.5 py-1 rounded-md text-xs font-bold transition-all border ${perfCompareBenchmark
+              ? 'bg-blue-50 text-blue-600 border-blue-100'
+              : 'bg-gray-50 text-gray-500 hover:bg-gray-100 border-gray-200'
+              }`}
           >
             {benchmarkName}
           </button>
@@ -1326,7 +1903,7 @@ const GrowthTab = ({
 
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-6 gap-4">
           {renderTimeframeSelector(perfPeriod, setPerfPeriod, perfStart, setPerfStart, perfEnd, setPerfEnd)}
-          
+
           {/* Settings Menu Button */}
           <div className="relative">
             <button
@@ -1341,22 +1918,20 @@ const GrowthTab = ({
               <>
                 <div className="fixed inset-0 z-40" onClick={() => setPerfSettingsOpen(false)}></div>
                 <div className="origin-top-right absolute right-0 mt-2 w-80 rounded-xl shadow-xl bg-white border border-gray-100 ring-1 ring-black ring-opacity-5 z-50 p-4 space-y-4 text-xs font-semibold text-gray-700">
-                  
+
                   {/* Total Profit % vs $ tabs (Screenshot 17) */}
                   <div className="flex bg-gray-50 p-0.5 rounded-lg border border-gray-200">
                     <button
                       onClick={() => setGrowthPerfType('percent')}
-                      className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
-                        growthPerfType === 'percent' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
-                      }`}
+                      className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${growthPerfType === 'percent' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                        }`}
                     >
                       Total profit, %
                     </button>
                     <button
                       onClick={() => setGrowthPerfType('value')}
-                      className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
-                        growthPerfType === 'value' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
-                      }`}
+                      className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${growthPerfType === 'value' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                        }`}
                     >
                       Total profit, $
                     </button>
@@ -1391,17 +1966,15 @@ const GrowthTab = ({
                     <div className="flex bg-gray-50 p-0.5 rounded-lg border border-gray-200">
                       <button
                         onClick={() => setPerfCalcMethod('period')}
-                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
-                          perfCalcMethod === 'period' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
-                        }`}
+                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${perfCalcMethod === 'period' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                          }`}
                       >
                         Selected period
                       </button>
                       <button
                         onClick={() => setPerfCalcMethod('first_trade')}
-                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${
-                          perfCalcMethod === 'first_trade' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
-                        }`}
+                        className={`flex-1 py-1.5 text-center rounded-md font-bold transition-all ${perfCalcMethod === 'first_trade' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-400 hover:text-gray-600'
+                          }`}
                       >
                         From first trade
                       </button>
@@ -1409,8 +1982,8 @@ const GrowthTab = ({
 
                     {/* Explanatory description below tabs */}
                     <p className="text-[10px] text-gray-400 leading-normal font-medium pt-1">
-                      {perfCalcMethod === 'period' 
-                        ? 'PL is calculated relative to the portfolio value at the beginning of the period. Realized PL is calculated relative to the price of the asset at the beginning of the selected period (NOT the purchase price).' 
+                      {perfCalcMethod === 'period'
+                        ? 'PL is calculated relative to the portfolio value at the beginning of the period. Realized PL is calculated relative to the price of the asset at the beginning of the selected period (NOT the purchase price).'
                         : 'PL is always calculated from the date of the first transaction, and then the chart is "zoomed" to the selected period. Total values are calculated as the difference between PL values at the beginning and PL values at the end of the selected period.'
                       }
                     </p>
@@ -1428,10 +2001,10 @@ const GrowthTab = ({
               <div className="w-12 h-12 rounded-full border-4 border-gray-100 border-t-blue-500 animate-spin"></div>
             </div>
           ) : filteredHistPerf.length > 0 ? (
-            <Line 
+            <Line
               key={`${perfPeriod}-${filteredHistPerf.length}-${growthPerfType}-${perfCalcMethod}-${perfCompareBenchmark}-${perfGroupBy}`}
-              data={performanceChartData} 
-              options={performanceChartOptions} 
+              data={performanceChartData}
+              options={performanceChartOptions}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
@@ -1466,15 +2039,15 @@ const GrowthTab = ({
       </div>
 
       {/* Card 3: Dynamics of portfolio returns */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[520px]">
+      <div id="card-portfolio-dynamics" className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col min-h-[480px] sm:h-[520px]">
         <div className="flex justify-between items-center mb-4">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Dynamics of portfolio returns
             <span className="cursor-help text-xs text-gray-300 border border-gray-200 rounded-full w-4 h-4 flex items-center justify-center font-normal" title="Monthly/weekly returns timeline.">?</span>
           </h3>
           <div className="relative">
-            <button 
-              onClick={() => setDynamicsSettingsOpen(!dynamicsSettingsOpen)} 
+            <button
+              onClick={() => setDynamicsSettingsOpen(!dynamicsSettingsOpen)}
               className="p-1.5 hover:bg-gray-100 rounded-lg transition-all text-gray-400 hover:text-gray-600"
             >
               <i className="ph ph-dots-three text-xl font-bold"></i>
@@ -1486,8 +2059,8 @@ const GrowthTab = ({
                   <div className="px-4 py-2 flex flex-col gap-2">
                     <div className="flex justify-between items-center text-xs font-semibold text-gray-700">
                       <span>Period</span>
-                      <select 
-                        value={dynamicsPeriod} 
+                      <select
+                        value={dynamicsPeriod}
                         onChange={(e) => {
                           setDynamicsPeriod(e.target.value);
                           setDynamicsSettingsOpen(false);
@@ -1500,11 +2073,11 @@ const GrowthTab = ({
                         <option value="annually">Annual</option>
                       </select>
                     </div>
-                    
+
                     <div className="flex justify-between items-center text-xs font-semibold text-gray-700 mt-2">
                       <span>Display values</span>
-                      <select 
-                        value={dynamicsDisplay} 
+                      <select
+                        value={dynamicsDisplay}
                         onChange={(e) => {
                           setDynamicsDisplay(e.target.value);
                           setDynamicsSettingsOpen(false);
@@ -1519,7 +2092,7 @@ const GrowthTab = ({
 
                     <div className="flex justify-between items-center text-xs font-semibold text-gray-700 mt-2">
                       <span>Group by</span>
-                      <select 
+                      <select
                         disabled
                         className="px-2 py-1 text-xs border border-gray-200 rounded bg-gray-100 text-gray-400 outline-none font-bold cursor-not-allowed"
                       >
@@ -1537,7 +2110,7 @@ const GrowthTab = ({
         <div className="flex items-center gap-3 text-xs mb-3">
           <span className="text-gray-400 font-bold">Benchmarks:</span>
           <span className="px-2 py-0.5 bg-gray-100 text-gray-700 font-bold rounded">{benchmarkName}</span>
-          <button 
+          <button
             onClick={() => setDropdownOpen(true)}
             className="text-blue-600 hover:text-blue-700 font-bold transition-all"
           >
@@ -1564,9 +2137,9 @@ const GrowthTab = ({
               <div className="w-12 h-12 rounded-full border-4 border-gray-100 border-t-blue-500 animate-spin"></div>
             </div>
           ) : dynamicsData.length > 0 ? (
-            <Bar 
+            <Bar
               key={`${dynPeriod}-${dynamicsData.length}-${dynamicsDisplay}-${cardPeriodFilter}`}
-              data={dynamicsChartData} 
+              data={dynamicsChartData}
               options={dynamicsChartOptions}
               plugins={[barLabelsPlugin]}
             />
@@ -1580,7 +2153,7 @@ const GrowthTab = ({
 
         {/* View details link */}
         <div className="mt-4 pt-3 border-t border-gray-100 text-left">
-          <button 
+          <button
             onClick={() => setIsDynamicsModalOpen(true)}
             className="text-xs font-bold text-gray-600 hover:text-gray-900 transition-all flex items-center gap-1"
           >
@@ -1601,14 +2174,14 @@ const GrowthTab = ({
                 Dynamics of portfolio returns
               </h3>
               <div className="flex items-center gap-3">
-                <button 
+                <button
                   onClick={exportToCSV}
                   className="text-[11px] font-bold text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200/80 px-3 py-2 rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
                 >
                   <i className="ph ph-export text-sm"></i>
                   Export to CSV
                 </button>
-                <button 
+                <button
                   onClick={() => setIsDynamicsModalOpen(false)}
                   className="text-gray-400 hover:text-gray-600 p-1.5 hover:bg-gray-100 rounded-lg transition-all"
                 >
@@ -1703,7 +2276,7 @@ const GrowthTab = ({
       )}
 
       {/* Card 4: Holdings Performance */}
-      <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[520px]">
+      <div id="card-holdings-performance" className="bg-white p-4 sm:p-6 rounded-2xl shadow-sm border border-gray-200 flex flex-col min-h-[440px] sm:h-[520px]">
         <div className="flex justify-between items-center mb-6">
           <h3 className="text-base font-bold text-gray-900 flex items-center gap-1.5">
             Holdings performance
@@ -1718,10 +2291,10 @@ const GrowthTab = ({
               <div className="w-12 h-12 rounded-full border-4 border-gray-100 border-t-blue-500 animate-spin"></div>
             </div>
           ) : holdingsPerfData.length > 0 ? (
-            <Bar 
+            <Bar
               key={`${holdingsPerfData.length}`}
-              data={holdingsChartData} 
-              options={holdingsChartOptions} 
+              data={holdingsChartData}
+              options={holdingsChartOptions}
             />
           ) : (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 text-sm">
