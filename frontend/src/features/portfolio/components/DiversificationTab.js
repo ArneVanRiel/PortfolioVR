@@ -128,7 +128,10 @@ const DiversificationTab = ({
               value: h.value || 0
             }];
         brokersList.forEach(b => {
-          const bName = String(b.broker_name || 'Onbekend').trim();
+          let bName = String(b.broker_name || '').trim();
+          if (!bName || bName.toLowerCase() === 'onbekend') {
+            bName = (h.currency === 'EUR' || (h.ticker && (h.ticker.endsWith('.DE') || h.ticker.endsWith('.AS') || h.ticker.endsWith('.BR')))) ? 'Degiro' : 'Etoro';
+          }
           if (!groups[bName]) groups[bName] = { value: 0, count: 0 };
           groups[bName].value += Number(b.value || 0);
           groups[bName].count += 1;

@@ -79,7 +79,10 @@ const OverviewTab = ({
             }];
 
         brokersList.forEach(b => {
-          const bName = b.broker_name ? String(b.broker_name).trim() : 'Onbekend';
+          let bName = b.broker_name ? String(b.broker_name).trim() : '';
+          if (!bName || bName.toLowerCase() === 'onbekend') {
+            bName = (h.currency === 'EUR' || (h.ticker && (h.ticker.endsWith('.DE') || h.ticker.endsWith('.AS') || h.ticker.endsWith('.BR')))) ? 'Degiro' : 'Etoro';
+          }
           if (!groups[bName]) {
             groups[bName] = { name: bName, value: 0, invested: 0, count: 0, isBroker: true };
           }

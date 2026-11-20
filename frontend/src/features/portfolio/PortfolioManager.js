@@ -262,12 +262,29 @@ const PortfolioManager = () => {
         setHistoryTimelineData(timelineRes.data);
       }
       
-      // Verwijder onzichtbare spaties uit de database strings met .trim()
-      setRawHoldings(holdingsRes.data.map(h => ({ 
-        ...h, 
-        asset_type: h.asset_type ? String(h.asset_type).trim() : 'Onbekend', 
-        todayChange: 0 
-      })));
+      // Verwijder onzichtbare spaties uit de database strings met .trim() en valideer brokers
+      setRawHoldings((holdingsRes.data || []).map(h => {
+        const brokers = Array.isArray(h.brokers) ? h.brokers.map(b => ({
+          ...b,
+          broker_name: (!b.broker_name || String(b.broker_name).trim().toLowerCase() === 'onbekend')
+            ? ((h.currency === 'EUR' || (h.ticker && (h.ticker.endsWith('.DE') || h.ticker.endsWith('.AS') || h.ticker.endsWith('.BR')))) ? 'Degiro' : 'Etoro')
+            : String(b.broker_name).trim()
+        })) : [];
+        const primaryBroker = brokers.length > 0
+          ? brokers.map(b => b.broker_name).join(' + ')
+          : ((!h.primary_broker || String(h.primary_broker).trim().toLowerCase() === 'onbekend')
+              ? ((h.currency === 'EUR' || (h.ticker && (h.ticker.endsWith('.DE') || h.ticker.endsWith('.AS') || h.ticker.endsWith('.BR')))) ? 'Degiro' : 'Etoro')
+              : String(h.primary_broker).trim());
+
+        return { 
+          ...h, 
+          asset_type: h.asset_type ? String(h.asset_type).trim() : 'Onbekend', 
+          primary_broker: primaryBroker,
+          broker_name: brokers.length === 1 ? brokers[0].broker_name : primaryBroker,
+          brokers,
+          todayChange: 0 
+        };
+      }));
       setRawTransactions(transactionsRes.data.map(t => ({
         ...t, 
         asset_type: t.asset_type ? String(t.asset_type).trim() : 'Onbekend' 
@@ -644,7 +661,10 @@ const PortfolioManager = () => {
           }];
 
       brokersList.forEach(b => {
-        const bName = String(b.broker_name || 'Onbekend').trim();
+        let bName = String(b.broker_name || '').trim();
+        if (!bName || bName.toLowerCase() === 'onbekend') {
+          bName = (h.currency === 'EUR' || (h.ticker && (h.ticker.endsWith('.DE') || h.ticker.endsWith('.AS') || h.ticker.endsWith('.BR')))) ? 'Degiro' : 'Etoro';
+        }
         if (!map.has(bName)) {
           map.set(bName, { broker_name: bName, value: 0, invested: 0, gainLoss: 0, count: 0 });
         }
@@ -658,6 +678,7 @@ const PortfolioManager = () => {
     });
 
     return Array.from(map.values())
+      .filter(b => b.broker_name && b.broker_name.toLowerCase() !== 'onbekend')
       .map(b => ({
         ...b,
         weightPct: totalAll > 0 ? Number(((b.value / totalAll) * 100).toFixed(2)) : 0,

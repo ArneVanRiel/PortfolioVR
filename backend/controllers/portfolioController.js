@@ -1427,8 +1427,8 @@ const getCurrentPortfolioHoldings = async (req, res) => {
     const brokerBreakdownQuery = `
       SELECT
         t.aandeel_id,
-        ISNULL(b.name, 'Onbekend') AS broker_name,
-        t.broker_id,
+        COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END) AS broker_name,
+        COALESCE(NULLIF(t.broker_id, 0), CASE WHEN t.currency = 'USD' THEN 1 ELSE 2 END) AS broker_id,
         SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) AS broker_quantity,
         SUM(CASE WHEN t.currency = 'EUR' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS broker_invested_eur,
         SUM(CASE WHEN t.currency = 'USD' THEN (CASE WHEN t.transaction_type = 'BUY' THEN t.quantity * t.price WHEN t.transaction_type = 'SELL' THEN -t.quantity * t.price ELSE 0 END) ELSE 0 END) AS broker_invested_usd,
@@ -1439,7 +1439,7 @@ const getCurrentPortfolioHoldings = async (req, res) => {
       WHERE t.user_id = @userId
         AND t.aandeel_id IS NOT NULL
         AND t.purchase_time <= @endDate
-      GROUP BY t.aandeel_id, t.broker_id, b.name
+      GROUP BY t.aandeel_id, COALESCE(NULLIF(t.broker_id, 0), CASE WHEN t.currency = 'USD' THEN 1 ELSE 2 END), COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END)
       HAVING SUM(CASE WHEN t.transaction_type = 'BUY' THEN t.quantity WHEN t.transaction_type = 'SELL' THEN -t.quantity ELSE 0 END) > 0.0001
     `;
 
@@ -1548,11 +1548,13 @@ const getPortfolioHistoryTimeline = async (req, res) => {
       .input('userId', sql.Int, userId)
       .query(`
         SELECT 
-          t.id, t.aandeel_id, t.broker_id, t.transaction_type, t.quantity, t.price, t.currency,
+          t.id, t.aandeel_id, 
+          COALESCE(NULLIF(t.broker_id, 0), CASE WHEN t.currency = 'USD' THEN 1 ELSE 2 END) AS broker_id,
+          t.transaction_type, t.quantity, t.price, t.currency,
           ISNULL(t.fees, 0) AS fees, ISNULL(t.taxes, 0) AS taxes, t.purchase_time,
           s.ticker_symbol AS ticker, s.name AS stock_name,
           ISNULL(at.type_name, 'Stocks') AS asset_type,
-          ISNULL(b.name, 'Onbekend') AS broker_name
+          COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END) AS broker_name
         FROM PF_transactions t
         LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
         LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
@@ -1800,6 +1802,31 @@ const getPortfolioHistoryTimeline = async (req, res) => {
       const dayGain = dayTotalVal - dayTotalInv;
       const dayGainPct = dayTotalInv > 0 ? (dayGain / dayTotalInv) * 100 : 0;
 
+      // Bereken snapshot totalen per broker voor deze dag
+      const dayBrokerMap = new Map();
+      snapshotHoldings.forEach(h => {
+        (h.brokers || []).forEach(b => {
+          const bName = String(b.broker_name || 'Etoro').trim();
+          if (bName && bName !== 'Onbekend') {
+            if (!dayBrokerMap.has(bName)) {
+              dayBrokerMap.set(bName, { broker_name: bName, value: 0, invested: 0, gainLoss: 0, count: 0 });
+            }
+            const e = dayBrokerMap.get(bName);
+            e.value += Number(b.value || 0);
+            e.invested += Number(b.total_invested || 0);
+            e.gainLoss += Number(b.gainLoss || 0);
+            e.count += 1;
+          }
+        });
+      });
+      const dayBrokerTotals = Array.from(dayBrokerMap.values()).map(b => ({
+        ...b,
+        value: Number(b.value.toFixed(2)),
+        invested: Number(b.invested.toFixed(2)),
+        gainLoss: Number(b.gainLoss.toFixed(2)),
+        percentage: dayTotalVal > 0 ? Number(((b.value / dayTotalVal) * 100).toFixed(2)) : 0
+      })).sort((a, b) => b.value - a.value);
+
       timeline.push({
         date: dateStr,
         isToday: isLastDay,
@@ -1810,6 +1837,7 @@ const getPortfolioHistoryTimeline = async (req, res) => {
         totalGainLoss: Number(dayGain.toFixed(2)),
         totalGainLossPct: Number(dayGainPct.toFixed(2)),
         cumulativeDividends: Number(dayTotalDiv.toFixed(2)),
+        brokerTotals: dayBrokerTotals,
         holdings: snapshotHoldings
       });
     }
@@ -1817,7 +1845,7 @@ const getPortfolioHistoryTimeline = async (req, res) => {
     const availableYears = Array.from(new Set(timeline.map(pt => pt.date.substring(0, 4))));
     const responsePayload = {
       timeline,
-      availableBrokers: Array.from(availableBrokersSet),
+      availableBrokers: Array.from(availableBrokersSet).filter(b => b && b !== 'Onbekend'),
       availableYears
     };
 
@@ -1875,7 +1903,8 @@ const getTransactions = async (req, res) => {
             WHERE currency_pair = 'EURUSD' AND date <= '2025-12-31' 
             ORDER BY date DESC
         )
-        SELECT t.*, s.ticker_symbol, s.name as stock_name, s.isin, at.type_name as asset_type, b.name as broker_name,
+        SELECT t.*, s.ticker_symbol, s.name as stock_name, s.isin, at.type_name as asset_type,
+               COALESCE(b.name, CASE WHEN t.broker_id = 1 OR t.import_source LIKE '%etoro%' THEN 'Etoro' WHEN t.broker_id = 2 OR t.import_source LIKE '%degiro%' THEN 'Degiro' WHEN t.currency = 'USD' THEN 'Etoro' ELSE 'Degiro' END) as broker_name,
                er.rate as historical_exchange_rate,
                p2025.closing_price as baseline_price_2025,
                er2025.rate as baseline_fx_rate_2025
@@ -2007,6 +2036,7 @@ const addTransaction = async (req, res) => {
     }
     const user_id = getEffectiveUserId(req);
     const { aandeel_id, broker_id, transaction_type, quantity, currency, price, purchase_time, fees = 0, taxes = 0, exchange_rate = 1, import_source = 'manual' } = req.body;
+    const effectiveBrokerId = Number(broker_id) > 0 ? Number(broker_id) : (currency === 'EUR' ? 2 : 1);
     const pool = await sql.connect(config);
     const isCash = ['DEPOSIT', 'WITHDRAWAL'].includes(transaction_type);
     
@@ -2014,7 +2044,7 @@ const addTransaction = async (req, res) => {
     const duplicateCheck = await pool.request()
       .input('user_id', sql.Int, user_id)
       .input('aandeel_id', sql.Int, isCash ? null : aandeel_id)
-      .input('broker_id', sql.Int, broker_id || null)
+      .input('broker_id', sql.Int, effectiveBrokerId)
       .input('transaction_type', sql.VarChar, transaction_type)
       .input('quantity', sql.Decimal(18, 5), quantity)
       .input('price', sql.Decimal(18, 4), isCash ? 1 : price)
@@ -2037,7 +2067,7 @@ const addTransaction = async (req, res) => {
     await pool.request()
       .input('user_id', sql.Int, user_id)
       .input('aandeel_id', sql.Int, isCash ? null : aandeel_id)
-      .input('broker_id', sql.Int, broker_id)
+      .input('broker_id', sql.Int, effectiveBrokerId)
       .input('transaction_type', sql.VarChar, transaction_type)
       .input('quantity', sql.Decimal(18, 5), quantity)
       .input('currency', sql.VarChar, currency)
