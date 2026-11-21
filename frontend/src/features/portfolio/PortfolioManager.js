@@ -162,6 +162,13 @@ const PortfolioManager = () => {
   const [actionsDropdownOpen, setActionsDropdownOpen] = useState(false);
   const [toolsDropdownOpen, setToolsDropdownOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+
+  useEffect(() => {
+    const handleToggleDrawer = () => setMobileDrawerOpen(prev => !prev);
+    window.addEventListener('togglePortfolioDrawer', handleToggleDrawer);
+    return () => window.removeEventListener('togglePortfolioDrawer', handleToggleDrawer);
+  }, []);
   const [logMessages, setLogMessages] = useState([]);
   const [showLogModal, setShowLogModal] = useState(false);
   const [logModalTitle, setLogModalTitle] = useState('');
@@ -1975,617 +1982,230 @@ const PortfolioManager = () => {
   // Global loading screen removed to keep layout stable and tab items interactive
 
   return (
-    <div className="space-y-3 sm:space-y-6 font-sans text-gray-900 bg-gray-50/50 min-h-screen">
-      {/* Top Card: Hero Header + Tabs (Snowball Stijl) */}
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-visible">
-        <div className="p-2 sm:p-5 pb-0 sm:pb-0">
-          <div className="hidden sm:flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 sm:gap-4 mb-3 sm:mb-4">
-            <div className="flex items-center justify-between w-full sm:w-auto">
-              <h1 className="text-xl sm:text-2xl font-extrabold text-gray-900 tracking-tight">Mijn Portfolio</h1>
+    <div className="font-sans text-gray-900 w-full">
+      {/* Verborgen file input voor imports */}
+      <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
 
-              {/* Currency Toggle op mobiel (direct naast titel) */}
-              {!isDemo && (
-                <div className="flex sm:hidden bg-gray-100 p-0.5 rounded-lg border border-gray-200 h-[32px] items-center">
-                  <button type="button" onClick={() => setDisplayCurrency('USD')}
-                    className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}>
-                    USD ($)
-                  </button>
-                  <button type="button" onClick={() => setDisplayCurrency('EUR')}
-                    className={`px-2 py-1 text-[11px] font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500 hover:text-gray-700'}`}>
-                    EUR (€)
-                  </button>
-                </div>
-              )}
+      {/* Twee-koloms indeling op Desktop (Links deeltabs, Rechts inhoud) */}
+      <div className="flex flex-col md:flex-row items-start gap-4 lg:gap-6 w-full">
+        {/* Linkse deel: Deeltabs Navigatie (Desktop) */}
+        <aside className="hidden md:flex flex-col w-56 lg:w-60 bg-white rounded-2xl border border-gray-200/90 shadow-2xs p-3 shrink-0 sticky top-20 min-h-[calc(100vh-6rem)]">
+          <div className="space-y-1">
+            <div className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wider text-gray-400">
+              Navigatie
             </div>
+            {TABS.map(tab => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => startTransition(() => setActiveTab(tab.id))}
+                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm transition-all text-left ${
+                    isActive
+                      ? 'font-black text-blue-600 bg-blue-50/90 shadow-2xs'
+                      : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <i className={`ph-fill ${tab.icon} text-lg ${isActive ? 'text-blue-600' : 'text-gray-400'}`}></i>
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
 
-            {/* Top Actieknoppen */}
-            {!isDemo && (
-              <div className="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto justify-end">
-                {/* Currency Toggle inside header (desktop) */}
-                <div className="hidden sm:flex bg-gray-100 p-0.5 rounded-lg border border-gray-200 h-[36px] items-center mr-1">
-                  <button type="button" onClick={() => setDisplayCurrency('USD')}
-                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                    USD ($)
-                  </button>
-                  <button type="button" onClick={() => setDisplayCurrency('EUR')}
-                    className={`px-3 py-1.5 text-xs font-bold rounded-md transition-all h-full flex items-center ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-700'}`}>
-                    EUR (€)
-                  </button>
-                </div>
-
-                {/* Data Leeftijd & Versheid Badge */}
-                {portfolioFreshness && (
-                  <button
-                    type="button"
-                    onClick={() => setIsBrokerSyncOpen(true)}
-                    className="hidden sm:inline-flex items-center gap-2 bg-slate-100 hover:bg-slate-200/90 text-slate-700 border border-slate-200/90 font-medium px-3 py-1.5 rounded-xl text-xs transition-all mr-2 group shadow-2xs"
-                    title={`Meest recente transactie: ${portfolioFreshness.latestTradeStr} (${portfolioFreshness.tradeAgeDays}d oud)\nLaatste import: ${portfolioFreshness.latestImportStr}\nKlik om nieuwe exports te uploaden of cash aan te passen`}
-                  >
-                    <span className="relative flex h-2 w-2">
-                      <span className={`animate-ping absolute inline-flex h-full w-full rounded-full ${portfolioFreshness.isRecent ? 'bg-emerald-400 opacity-75' : 'bg-amber-400 opacity-75'}`}></span>
-                      <span className={`relative inline-flex rounded-full h-2 w-2 ${portfolioFreshness.isRecent ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-                    </span>
-                    <span className="text-[11px] font-semibold text-slate-800">
-                      Data: <span className="font-bold">{portfolioFreshness.tradeDateFormatted}</span>
-                    </span>
-                    <span className="text-slate-300 text-[10px] hidden md:inline">|</span>
-                    <span className="text-slate-500 text-[11px] hidden md:inline">
-                      Upload: <span className="font-medium text-slate-700">{portfolioFreshness.importAgoFormatted}</span>
-                    </span>
-                  </button>
-                )}
-
-                {/* Brokers & Synchronisatie Knop */}
+          {/* Valuta Keuze Desktop */}
+          <div className="pt-3 border-t border-gray-100 mt-4 space-y-2">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Valuta</span>
+              <div className="inline-flex rounded-lg p-0.5 bg-gray-100 text-[11px] font-bold">
                 <button
                   type="button"
-                  onClick={() => setIsBrokerSyncOpen(true)}
-                  className="flex items-center gap-1.5 bg-gradient-to-r from-indigo-600 to-blue-600 hover:from-indigo-500 hover:to-blue-500 text-white font-bold px-2.5 sm:px-3.5 py-1.5 sm:py-2 rounded-xl shadow-xs transition-all text-xs"
-                  title="Koppel eToro, DeGiro of importeer rekeningoverzichten"
+                  onClick={() => setDisplayCurrency('EUR')}
+                  className={`px-2 py-0.5 rounded-md transition-all ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
                 >
-                  <i className="ph-fill ph-plug-charging text-sm sm:text-base text-amber-300"></i>
-                  <span>Brokers & Sync</span>
+                  EUR (€)
                 </button>
+                <button
+                  type="button"
+                  onClick={() => setDisplayCurrency('USD')}
+                  className={`px-2 py-0.5 rounded-md transition-all ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
+                >
+                  USD ($)
+                </button>
+              </div>
+            </div>
+          </div>
 
-                <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
-                
-                {/* Actions Dropdown: Template, Upload, Add Transaction (Visible ONLY on transactions or dividends tab) */}
-                {['transactions', 'dividends'].includes(activeTab) && (
-                  <div className="relative inline-block text-left">
-                    <button 
-                      onClick={() => setActionsDropdownOpen(!actionsDropdownOpen)} 
-                      className="text-sm font-bold flex items-center bg-blue-600 text-white px-4 py-2 rounded-lg shadow-sm hover:bg-blue-700 transition-all gap-2"
-                    >
-                      <i className="ph-fill ph-plus-circle text-lg"></i>
-                      Transacties beheren
-                      <span className="text-[10px] opacity-80">▼</span>
-                    </button>
-                    {actionsDropdownOpen && (
-                      <>
-                        <div className="fixed inset-0 z-40" onClick={() => setActionsDropdownOpen(false)}></div>
-                        <div className="origin-top-right absolute right-0 mt-2 w-64 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden py-1">
-                          <button 
-                            onClick={() => { setIsAddModalOpen(true); setActionsDropdownOpen(false); }} 
-                            className="flex items-center w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-blue-50 font-semibold gap-3"
-                          >
-                            <i className="ph-fill ph-plus-circle text-blue-600 text-lg"></i>
-                            Transactie toevoegen
-                          </button>
-                          
-                          <div className="border-t border-gray-100 my-1"></div>
-                          
-                          <div className="px-4 py-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
-                            Importeren
-                          </div>
-                          <button 
-                            onClick={() => { triggerUpload('template'); setActionsDropdownOpen(false); }} 
-                            className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 pl-6"
-                          >
-                            <i className="ph ph-file-xls text-gray-500 text-lg"></i>
-                            Standaard Excel template
-                          </button>
-                          <button 
-                            onClick={() => { triggerUpload('etoro'); setActionsDropdownOpen(false); }} 
-                            className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 pl-6"
-                          >
-                            <i className="ph ph-file-csv text-gray-500 text-lg"></i>
-                            eToro afschrift
-                          </button>
-                          <button 
-                            onClick={() => { triggerUpload('degiro'); setActionsDropdownOpen(false); }} 
-                            className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 pl-6"
-                          >
-                            <i className="ph ph-file-csv text-gray-500 text-lg"></i>
-                            DeGiro afschrift
-                          </button>
-                          
-                          <div className="border-t border-gray-100 my-1"></div>
-                          
-                          <button 
-                            onClick={() => { handleDownloadTemplate(); setActionsDropdownOpen(false); }} 
-                            className="flex items-center w-full text-left px-4 py-2.5 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3"
-                          >
-                            <i className="ph-fill ph-download-simple text-gray-500 text-lg"></i>
-                            Standaard template downloaden
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
+          {/* Linkse deel (onderaan uitgelijnd): Synchroniseer */}
+          <div className="mt-auto pt-4 border-t border-gray-100 space-y-2">
+            <button
+              type="button"
+              onClick={() => fetchPortfolioData()}
+              disabled={loading}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-black transition-all shadow-xs"
+              title="Data en Synchronisatie Status vernieuwen"
+            >
+              <i className={`ph-bold ph-arrows-clockwise text-base ${loading ? 'animate-spin' : ''}`}></i>
+              <span>Synchroniseer</span>
+            </button>
 
-                {/* System Tools Dropdown */}
-                <div className="relative inline-block text-left">
-                  <button 
-                    onClick={() => setToolsDropdownOpen(!toolsDropdownOpen)} 
-                    className="p-2 text-gray-500 bg-white hover:bg-gray-100 border border-gray-300 rounded-lg shadow-sm transition-all flex items-center justify-center"
-                    title="Systeemhulpmiddelen"
-                  >
-                    <i className={`ph-fill ph-gear text-xl ${isRecalculating || isRepairing || loading ? 'animate-spin text-blue-600' : ''}`}></i>
-                  </button>
-                  {toolsDropdownOpen && (
-                    <>
-                      <div className="fixed inset-0 z-40" onClick={() => setToolsDropdownOpen(false)}></div>
-                      <div className="origin-top-right absolute right-0 mt-2 w-72 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden py-1">
-                        <div className="px-4 py-1.5 text-xs font-bold text-gray-400 uppercase tracking-wider">
-                          Systeemonderhoud
-                        </div>
-                        
-                        <button 
-                          onClick={() => { handleRecalculateHistory(false); setToolsDropdownOpen(false); }} 
-                          disabled={isRecalculating}
-                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
-                        >
-                          <i className={`ph-fill ph-calculator text-blue-600 text-lg ${isRecalculating ? 'animate-pulse' : ''}`}></i>
-                          <div>
-                            <div className="font-semibold">Snel herberekenen</div>
-                            <div className="text-xs text-gray-400">Laatste 30 dagen bijwerken</div>
-                          </div>
-                        </button>
-                        
-                        <button 
-                          onClick={() => { handleRecalculateHistory(false, '1970-01-01'); setToolsDropdownOpen(false); }} 
-                          disabled={isRecalculating || isRepairing}
-                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
-                        >
-                          <i className={`ph-fill ph-clock-counter-clockwise text-purple-600 text-lg ${isRecalculating ? 'animate-pulse' : ''}`}></i>
-                          <div>
-                            <div className="font-semibold">Volledige herberekening</div>
-                            <div className="text-xs text-gray-400">Vanaf de allereerste transactie</div>
-                          </div>
-                        </button>
-                        
-                        <button 
-                          onClick={() => { handleCheckAndRepairPrices(); setToolsDropdownOpen(false); }} 
-                          disabled={isRepairing || isRecalculating}
-                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
-                        >
-                          <i className={`ph-fill ph-wrench text-orange-600 text-lg ${isRepairing ? 'animate-spin' : ''}`}></i>
-                          <div>
-                            <div className="font-semibold">Prijsdata controleren & herstellen</div>
-                            <div className="text-xs text-gray-400">Herstel ontbrekende of onjuiste koersen</div>
-                          </div>
-                        </button>
-                        
-                        <button 
-                          onClick={() => { handleUpdateExchangeRates(); setToolsDropdownOpen(false); }} 
-                          disabled={isRepairing || isRecalculating}
-                          className="flex items-center w-full text-left px-4 py-2 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3 disabled:opacity-50"
-                        >
-                          <i className="ph-fill ph-currency-dollar text-green-600 text-lg"></i>
-                          <div>
-                            <div className="font-semibold">EUR/USD wisselkoers ophalen</div>
-                            <div className="text-xs text-gray-400">Laad 10 jaar historie van wisselkoersen</div>
-                          </div>
-                        </button>
-                        
-                        <div className="border-t border-gray-100 my-1"></div>
-                        
-                        <button 
-                          onClick={() => { fetchPortfolioData(); setToolsDropdownOpen(false); }} 
-                          className="flex items-center w-full text-left px-4 py-3 text-sm text-gray-700 hover:bg-blue-50 font-medium gap-3"
-                        >
-                          <i className={`ph-fill ph-arrows-clockwise text-gray-600 text-lg ${loading ? 'animate-spin' : ''}`}></i>
-                          <div className="font-semibold">Data Vernieuwen (Refresh)</div>
-                        </button>
-                      </div>
-                    </>
-                  )}
-                </div>
+            {/* Platform / Broker Koppelingen */}
+            <button
+              type="button"
+              onClick={() => setIsBrokerSyncOpen(true)}
+              className="w-full flex items-center justify-center gap-1.5 py-1 text-[11px] text-gray-500 hover:text-indigo-600 font-semibold transition-colors"
+              title="Brokers beheren en bestanden importeren"
+            >
+              <i className="ph-fill ph-plug-charging text-amber-500"></i>
+              <span>Brokers &amp; Koppelingen</span>
+            </button>
+
+            {portfolioFreshness && (
+              <div className="text-[10px] text-gray-400 text-center font-medium">
+                Data: <strong className="text-gray-600">{portfolioFreshness.tradeDateFormatted}</strong>
               </div>
             )}
           </div>
+        </aside>
 
-          {/* Tab Navigatie + Mobiele Optieknop */}
-          <div className="flex items-center justify-between gap-1 pb-1 sm:pb-0">
-            <nav className="flex space-x-1 sm:space-x-6 overflow-x-auto no-scrollbar flex-1" aria-label="Tabs">
-              {TABS.map(tab => (
-                <button
-                  key={tab.id}
-                  onClick={() => startTransition(() => setActiveTab(tab.id))}
-                  className={`whitespace-nowrap py-1.5 sm:py-3 px-2 sm:px-1 border-b-2 font-bold sm:font-medium text-xs sm:text-sm transition-colors flex items-center gap-1.5 sm:gap-2 shrink-0 ${
-                    activeTab === tab.id 
-                      ? 'border-blue-600 text-blue-600' 
-                      : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-                  }`}
-                >
-                  <i className={`ph-fill ${tab.icon} text-sm sm:text-lg`}></i>
-                  {tab.label}
-                </button>
-              ))}
-            </nav>
-
-            {/* Mobile Options Button (Alleen zichtbaar op mobiel) */}
-            <div className="sm:hidden relative shrink-0">
-              <button
-                type="button"
-                onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
-                className="w-8 h-8 text-gray-600 hover:text-gray-900 bg-gray-100 hover:bg-gray-200 active:bg-gray-300 rounded-lg transition-colors flex items-center justify-center border border-gray-200"
-                title="Opties & Instellingen"
-                aria-label="Opties menu"
-              >
-                <i className="ph-bold ph-dots-three-vertical text-lg"></i>
-              </button>
-
-              {mobileMenuOpen && (
-                <>
-                  <div className="fixed inset-0 z-40 bg-black/30 backdrop-blur-xs" onClick={() => setMobileMenuOpen(false)}></div>
-                  <div className="origin-top-right absolute right-0 mt-2 w-72 max-w-[88vw] rounded-2xl shadow-2xl bg-white ring-1 ring-black/10 z-50 overflow-hidden py-2 text-left animate-fade-in divide-y divide-gray-100">
-                    {/* Valuta Keuze */}
-                    <div className="px-3.5 py-2.5">
-                      <div className="text-[10px] font-bold text-gray-400 uppercase tracking-wider mb-1.5 flex items-center gap-1">
-                        <i className="ph-bold ph-currency-dollar"></i> Weergave Valuta
-                      </div>
-                      <div className="grid grid-cols-2 gap-1.5 bg-gray-100 p-1 rounded-xl">
-                        <button
-                          type="button"
-                          onClick={() => { setDisplayCurrency('USD'); setMobileMenuOpen(false); }}
-                          className={`py-1.5 text-xs font-bold rounded-lg transition-all text-center ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500'}`}
-                        >
-                          USD ($)
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setDisplayCurrency('EUR'); setMobileMenuOpen(false); }}
-                          className={`py-1.5 text-xs font-bold rounded-lg transition-all text-center ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-xs' : 'text-gray-500'}`}
-                        >
-                          EUR (€)
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Brokers & Sync */}
-                    <div className="px-3 py-2">
-                      <button
-                        type="button"
-                        onClick={() => { setIsBrokerSyncOpen(true); setMobileMenuOpen(false); }}
-                        className="flex items-center justify-between w-full px-3 py-2 text-xs font-bold text-white bg-gradient-to-r from-indigo-600 to-blue-600 rounded-xl shadow-xs"
-                      >
-                        <div className="flex items-center gap-2">
-                          <i className="ph-fill ph-plug-charging text-amber-300 text-sm"></i>
-                          <span>Brokers & Synchronisatie</span>
-                        </div>
-                        <i className="ph-bold ph-arrow-right text-xs opacity-75"></i>
-                      </button>
-                      {portfolioFreshness && (
-                        <div className="mt-1.5 text-[10px] text-gray-500 flex items-center gap-1.5 px-1">
-                          <span className={`w-1.5 h-1.5 rounded-full ${portfolioFreshness.isRecent ? 'bg-emerald-500' : 'bg-amber-500'}`}></span>
-                          <span>Data: <strong>{portfolioFreshness.tradeDateFormatted}</strong> ({portfolioFreshness.importAgoFormatted})</span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Data Vernieuwen */}
-                    <div className="px-2 py-1">
-                      <button
-                        type="button"
-                        onClick={() => { fetchPortfolioData(); setMobileMenuOpen(false); }}
-                        className="flex items-center w-full px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-xl gap-2.5 transition-colors"
-                      >
-                        <i className={`ph-fill ph-arrows-clockwise text-blue-600 text-base ${loading ? 'animate-spin' : ''}`}></i>
-                        <span>Data Vernieuwen (Refresh)</span>
-                      </button>
-                    </div>
-
-                    {/* Transacties beheren indien van toepassing */}
-                    {['transactions', 'dividends'].includes(activeTab) && (
-                      <div className="px-2 py-1.5">
-                        <div className="px-3 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-                          Transacties
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => { setIsAddModalOpen(true); setMobileMenuOpen(false); }}
-                          className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2"
-                        >
-                          <i className="ph-fill ph-plus-circle text-blue-600 text-base"></i>
-                          <span>Transactie Toevoegen</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { triggerUpload('template'); setMobileMenuOpen(false); }}
-                          className="flex items-center w-full px-3 py-1.5 text-xs text-gray-600 hover:bg-blue-50 rounded-lg gap-2 pl-6"
-                        >
-                          <i className="ph ph-file-xls text-gray-400"></i>
-                          <span>Excel Template</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { triggerUpload('etoro'); setMobileMenuOpen(false); }}
-                          className="flex items-center w-full px-3 py-1.5 text-xs text-gray-600 hover:bg-blue-50 rounded-lg gap-2 pl-6"
-                        >
-                          <i className="ph ph-file-csv text-gray-400"></i>
-                          <span>eToro CSV</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { triggerUpload('degiro'); setMobileMenuOpen(false); }}
-                          className="flex items-center w-full px-3 py-1.5 text-xs text-gray-600 hover:bg-blue-50 rounded-lg gap-2 pl-6"
-                        >
-                          <i className="ph ph-file-csv text-gray-400"></i>
-                          <span>DeGiro CSV</span>
-                        </button>
-                      </div>
-                    )}
-
-                    {/* Systeemonderhoud */}
-                    <div className="px-2 py-1.5">
-                      <div className="px-3 py-1 text-[10px] font-bold text-gray-400 uppercase tracking-wider">
-                        Systeemonderhoud
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => { handleRecalculateHistory(false); setMobileMenuOpen(false); }}
-                        disabled={isRecalculating}
-                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
-                      >
-                        <i className="ph-fill ph-calculator text-blue-600 text-base"></i>
-                        <span>Snel herberekenen (30d)</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { handleRecalculateHistory(false, '1970-01-01'); setMobileMenuOpen(false); }}
-                        disabled={isRecalculating || isRepairing}
-                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
-                      >
-                        <i className="ph-fill ph-clock-counter-clockwise text-purple-600 text-base"></i>
-                        <span>Volledige herberekening</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { handleCheckAndRepairPrices(); setMobileMenuOpen(false); }}
-                        disabled={isRepairing || isRecalculating}
-                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
-                      >
-                        <i className="ph-fill ph-wrench text-orange-600 text-base"></i>
-                        <span>Prijsdata herstellen</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { handleUpdateExchangeRates(); setMobileMenuOpen(false); }}
-                        disabled={isRepairing || isRecalculating}
-                        className="flex items-center w-full px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-blue-50 rounded-lg gap-2 disabled:opacity-50"
-                      >
-                        <i className="ph-fill ph-currency-dollar text-green-600 text-base"></i>
-                        <span>EUR/USD wisselkoersen ophalen</span>
-                      </button>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* 4 Stats Cards Row (Snowball Style - Common tab only - 2x2 op mobiel) */}
-      {activeTab === 'common' && (() => {
-        const useFilteredSummary = isViewingHistoricalDate || (selectedBrokerFilter && selectedBrokerFilter !== 'ALL');
-        const displayVal = useFilteredSummary
-          ? summary.totalValue
-          : (displayCurrency === 'EUR' ? (latestPortfolioData?.total_value_eur ?? summary.totalValue) : (latestPortfolioData?.total_value ?? summary.totalValue));
-        const displayInv = useFilteredSummary
-          ? summary.totalInvested
-          : (displayCurrency === 'EUR' ? (latestPortfolioData?.net_invested_eur ?? summary.totalInvested) : (latestPortfolioData?.net_invested ?? summary.totalInvested));
-        const displayProfitVal = useFilteredSummary ? summary.overallGainLoss : totalProfit.value;
-        const displayProfitPct = useFilteredSummary ? summary.overallGainLossPercentage : totalProfit.percent;
-
-        return (
-        <>
-          {/* MOBIELE HERO KAART (eToro / DEGIRO Stijl - Clean, Geen Overbodige Tekst) */}
-          <div className="block md:hidden bg-white p-4 rounded-2xl shadow-sm border border-gray-200 space-y-3">
-            <div className="flex items-start justify-between">
+        {/* Mobiele Deeltabs Drawer (als ☰ geklikt is) */}
+        {mobileDrawerOpen && (
+          <div className="md:hidden fixed inset-0 z-50 flex">
+            {/* Drawer Links */}
+            <div className="w-72 max-w-[80vw] bg-white h-full shadow-2xl flex flex-col justify-between p-4 z-50 animate-slide-in">
               <div>
-                <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider block">
-                  Waarde portefeuille {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''}
-                </span>
-                <div className="text-2xl font-black text-gray-900 tracking-tight privacy-blur mt-0.5">
-                  {loading ? '...' : formatCurrency(displayVal)}
+                <div className="flex items-center justify-between pb-3 border-b border-gray-100 mb-3">
+                  <span className="font-black text-gray-900 text-base">Portfolio</span>
+                  <button
+                    type="button"
+                    onClick={() => setMobileDrawerOpen(false)}
+                    className="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                    title="Sluit menu"
+                  >
+                    <i className="ph-bold ph-x text-lg"></i>
+                  </button>
                 </div>
-                <div className="flex flex-wrap items-center gap-2 mt-1 text-xs font-bold">
-                  <span className={`inline-flex items-center gap-0.5 ${dailyChange.value >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {dailyChange.value >= 0 ? '▲' : '▼'} {formatCurrency(Math.abs(dailyChange.value))} ({dailyChange.percent.toFixed(2)}%) Vandaag
-                  </span>
-                  <span className="text-gray-300">•</span>
-                  <span className={`inline-flex items-center gap-0.5 ${displayProfitVal >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {displayProfitVal >= 0 ? '+' : ''}{formatCurrency(displayProfitVal)} ({displayProfitPct.toFixed(1)}%) P/L
-                  </span>
+
+                <div className="space-y-1">
+                  {TABS.map(tab => {
+                    const isActive = activeTab === tab.id;
+                    return (
+                      <button
+                        key={tab.id}
+                        type="button"
+                        onClick={() => {
+                          startTransition(() => setActiveTab(tab.id));
+                          setMobileDrawerOpen(false);
+                        }}
+                        className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm transition-all text-left ${
+                          isActive
+                            ? 'font-black text-blue-600 bg-blue-50/90 shadow-2xs'
+                            : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                        }`}
+                      >
+                        <i className={`ph-fill ${tab.icon} text-lg ${isActive ? 'text-blue-600' : 'text-gray-400'}`}></i>
+                        <span>{tab.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Valuta Keuze Mobiel */}
+                <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between px-1">
+                  <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Valuta</span>
+                  <div className="inline-flex rounded-lg p-0.5 bg-gray-100 text-[11px] font-bold">
+                    <button
+                      type="button"
+                      onClick={() => setDisplayCurrency('EUR')}
+                      className={`px-2.5 py-1 rounded-md transition-all ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
+                    >
+                      EUR (€)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setDisplayCurrency('USD')}
+                      className={`px-2.5 py-1 rounded-md transition-all ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
+                    >
+                      USD ($)
+                    </button>
+                  </div>
                 </div>
               </div>
 
-              {/* 3 puntjes optiemenu knop */}
-              <button
-                type="button"
-                onClick={() => setMobileMenuOpen(true)}
-                className="p-2 rounded-xl bg-gray-100 hover:bg-gray-200 active:bg-gray-300 text-gray-700 transition-colors shrink-0"
-                title="Opties en instellingen"
-              >
-                <i className="ph-bold ph-dots-three-vertical text-lg"></i>
-              </button>
-            </div>
-
-            {/* Compacte chip rij (Cash, IRR, Dividend) - eToro stijl */}
-            <div className="grid grid-cols-3 gap-2 pt-2 border-t border-gray-100 text-left">
-              <div className="bg-slate-50 p-2 rounded-xl border border-gray-100">
-                <span className="text-[10px] font-bold text-gray-400 block uppercase">Beschikbaar</span>
-                <span className="text-xs font-black text-gray-900 privacy-blur block truncate">
-                  {formatCurrency(totalCashDisplay)}
-                </span>
-              </div>
-              <div className="bg-slate-50 p-2 rounded-xl border border-gray-100">
-                <span className="text-[10px] font-bold text-gray-400 block uppercase">IRR Rendement</span>
-                <span className="text-xs font-black text-purple-700 block truncate">
-                  {latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100).toFixed(1) + '%' : '0.0%'}
-                </span>
-              </div>
-              <div className="bg-slate-50 p-2 rounded-xl border border-gray-100">
-                <span className="text-[10px] font-bold text-gray-400 block uppercase">Geschat Div.</span>
-                <span className="text-xs font-black text-amber-700 privacy-blur block truncate">
-                  {formatCurrency(passiveIncome.annual)}/jr
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* DESKTOP 4 STATS CARDS ROW (Snowball Style - Verborgen op mobiel) */}
-          <div className="hidden md:grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-6">
-          {/* Card 1: Value */}
-          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
-            <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <span className="flex items-center gap-1.5">
-                <i className="ph ph-wallet text-xs sm:text-sm text-blue-500"></i>
-                Belegd {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''} <span className="text-[10px] font-semibold text-gray-400 lowercase">(excl. cash)</span>
-              </span>
-              {isViewingHistoricalDate && activeTimeMachinePoint?.date && (
-                <span className="px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-800 text-[10px] font-black">
-                  📅 {activeTimeMachinePoint.date}
-                </span>
-              )}
-            </div>
-            <div className="mt-1.5 sm:mt-3">
-              <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
-                {loading ? '...' : formatCurrency(displayVal)}
-              </span>
-              <div className="flex items-center justify-between gap-1 mt-0.5 sm:mt-1 flex-wrap">
-                <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur truncate">
-                  {loading ? '...' : formatCurrency(displayInv)} inleg • (excl. cash)
-                </span>
-                {totalCashDisplay > 0 && selectedBrokerFilter === 'ALL' && (
-                  <span className="text-[10px] font-bold text-indigo-600 bg-indigo-50 px-1.5 py-0.2 rounded privacy-blur">
-                    Totaal incl. cash: {formatCurrency(displayVal + totalCashDisplay)}
-                  </span>
+              {/* Onderaan in mobiel menu: Synchroniseer */}
+              <div className="pt-4 border-t border-gray-100 space-y-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    fetchPortfolioData();
+                    setMobileDrawerOpen(false);
+                  }}
+                  disabled={loading}
+                  className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 text-white rounded-xl text-xs font-black shadow-xs active:opacity-90"
+                >
+                  <i className={`ph-bold ph-arrows-clockwise text-base ${loading ? 'animate-spin' : ''}`}></i>
+                  <span>Synchroniseer</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsBrokerSyncOpen(true);
+                    setMobileDrawerOpen(false);
+                  }}
+                  className="w-full flex items-center justify-center gap-1.5 py-1 text-[11px] text-gray-500 hover:text-indigo-600 font-semibold"
+                >
+                  <i className="ph-fill ph-plug-charging text-amber-500"></i>
+                  <span>Brokers &amp; Koppelingen</span>
+                </button>
+                {portfolioFreshness && (
+                  <div className="text-[10px] text-gray-400 text-center font-medium">
+                    Data: {portfolioFreshness.tradeDateFormatted} ({portfolioFreshness.importAgoFormatted})
+                  </div>
                 )}
               </div>
             </div>
-          </div>
 
-          {/* Card 2: Total profit */}
-          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-chart-line-up text-xs sm:text-sm text-teal-500"></i>
-              Profit {selectedBrokerFilter !== 'ALL' ? `(${selectedBrokerFilter})` : ''}
-            </div>
-            <div className="mt-1.5 sm:mt-3">
-              <div className="flex items-baseline gap-1 sm:gap-2 flex-wrap">
-                <span className={`text-lg sm:text-3xl font-extrabold tracking-tight privacy-blur block ${displayProfitVal >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                  {loading ? '...' : (displayProfitVal >= 0 ? '+' : '') + formatCurrency(displayProfitVal)}
-                </span>
-                <span className={`text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-full flex items-center gap-0.5 ${displayProfitVal >= 0 ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'}`}>
-                  {displayProfitVal >= 0 ? '▲' : '▼'} {Math.abs(displayProfitPct).toFixed(1)}%
-                </span>
-              </div>
-              <span className={`text-[10px] sm:text-xs font-semibold mt-0.5 sm:mt-1 block truncate ${dailyChange.value >= 0 ? 'text-emerald-500' : 'text-rose-500'}`}>
-                {loading ? '...' : (dailyChange.value >= 0 ? '+' : '') + formatCurrency(dailyChange.value)} ({dailyChange.percent.toFixed(2)}%)
-              </span>
-            </div>
+            {/* Rechts: Wazige achtergrond over de pagina (klik om te sluiten) */}
+            <div
+              className="flex-1 bg-black/40 backdrop-blur-xs cursor-pointer"
+              onClick={() => setMobileDrawerOpen(false)}
+            />
           </div>
+        )}
 
-          {/* Card 3: IRR */}
-          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-trend-up text-xs sm:text-sm text-purple-500"></i>
-              IRR
-            </div>
-            <div className="mt-1.5 sm:mt-3">
-              <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight privacy-blur block">
-                {loading ? '...' : (latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100).toFixed(2) + '%' : '0.00%')}
+        {/* Rechtse deel: Inhoud van de pagina */}
+        <div className="flex-1 min-w-0 w-full space-y-5">
+          {/* Actiebalk voor transactions of dividends */}
+          {['transactions', 'dividends'].includes(activeTab) && (
+            <div className="bg-white p-3 sm:p-4 rounded-2xl border border-gray-200/90 shadow-2xs flex flex-wrap items-center justify-between gap-3">
+              <span className="text-sm font-bold text-gray-800 flex items-center gap-2">
+                <i className="ph-fill ph-list-dashes text-blue-600 text-base"></i>
+                <span>Transactie Beheer</span>
               </span>
-              <span className="text-[10px] sm:text-xs font-semibold text-gray-400 block mt-0.5 sm:mt-1 truncate">
-                {loading ? '...' : (latestPortfolioData?.asset_xirr ? (latestPortfolioData.asset_xirr * 100 * 0.85).toFixed(1) + '%' : '0.0%')} current
-              </span>
-            </div>
-          </div>
-
-          {/* Card 4: Passive income */}
-          <div className="bg-white p-3.5 sm:p-5 rounded-xl shadow-sm border border-gray-200 flex flex-col justify-between min-h-[95px] sm:min-h-[120px]">
-            <div className="flex items-center gap-1.5 text-[10px] sm:text-xs font-bold text-gray-400 uppercase tracking-wider">
-              <i className="ph ph-hand-coins text-xs sm:text-sm text-amber-500"></i>
-              Div. Yield
-            </div>
-            <div className="mt-1.5 sm:mt-3">
-              <div className="flex items-baseline gap-1 sm:gap-2 flex-wrap">
-                <span className="text-lg sm:text-3xl font-extrabold text-gray-900 tracking-tight block">
-                  {loading ? '...' : passiveIncome.yield.toFixed(1)}%
-                </span>
-                <span className="text-[10px] sm:text-xs font-bold px-1.5 sm:px-2 py-0.2 sm:py-0.5 rounded-full bg-emerald-50 text-emerald-600 flex items-center gap-0.5">
-                  ▲ 4.1%
-                </span>
-              </div>
-              <span className="text-[10px] sm:text-xs font-semibold text-gray-400 privacy-blur block mt-0.5 sm:mt-1 truncate">
-                {loading ? '...' : formatCurrency(passiveIncome.annual)}/jr
-              </span>
-            </div>
-          </div>
-        </div>
-        </>
-        );
-      })()}
-
-      {/* Cash Breakdown Banner (De Belegger / Snowball Style - Hidden op mobiel voor maximale rust) */}
-      {activeTab === 'common' && (() => {
-        return (
-          <div className="hidden md:flex bg-white px-5 py-3.5 rounded-xl shadow-sm border border-gray-200 flex-wrap items-center justify-between gap-4">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xl border border-emerald-100 shadow-sm">
-                <i className="ph ph-coins"></i>
-              </div>
-              <div>
-                <div className="flex items-center gap-2">
-                  <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Beschikbaar Saldo (Cash)</span>
-                  <span className="text-lg font-extrabold text-emerald-600 privacy-blur">
-                    € {totalCashDisplay.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                    Gekoppeld & Vrij
-                  </span>
-                  <span className="text-[11px] text-gray-400 font-medium">
-                    (Niet meegerekend in 'Belegd Vermogen', direct inzetbaar)
-                  </span>
-                </div>
-                <div className="text-xs text-gray-600 flex items-center gap-2 mt-1 flex-wrap font-medium">
-                  <span>DeGiro Cash: <strong className="text-gray-900 font-bold privacy-blur">€ {(brokerCash?.degiro?.amount || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
-                  <span className="text-gray-300">•</span>
-                  <span>eToro Cash: <strong className="text-gray-900 font-bold privacy-blur">$ {(brokerCash?.etoro?.amount || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong> <span className="text-gray-400 privacy-blur">(≈ € {(brokerCash?.etoro?.amountEur || 0).toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })})</span></span>
-                  <span className="text-gray-300">•</span>
-                  <span>Overige Rekeningen: <strong className="text-gray-900 font-bold privacy-blur">€ {otherCashSum.toLocaleString('nl-NL', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong></span>
-                </div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setIsAddModalOpen(true)}
+                  className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition-all shadow-xs flex items-center gap-1.5"
+                >
+                  <i className="ph-bold ph-plus text-sm"></i>
+                  <span>Transactie toevoegen</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsBrokerSyncOpen(true)}
+                  className="px-3 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5"
+                >
+                  <i className="ph-fill ph-file-csv text-sm"></i>
+                  <span>Import / Brokers</span>
+                </button>
               </div>
             </div>
+          )}
 
-            <div className="flex items-center gap-2">
-              <button 
-                onClick={() => setIsBrokerSyncOpen(true)} 
-                className="text-xs font-semibold px-3.5 py-2 rounded-lg border border-gray-200 bg-gray-50 text-gray-700 hover:bg-gray-100 hover:border-gray-300 transition-all flex items-center gap-1.5 shadow-sm"
-                title="Beheer broker API sleutels en imports"
-              >
-                <i className="ph ph-sliders"></i> Platform Koppelingen
-              </button>
-            </div>
-          </div>
-        );
-      })()}
-
-      {/* --- TAB CONTENT: COMMON --- */}
-      {activeTab === 'common' && (
+          {/* --- TAB CONTENT: COMMON --- */}
+          {activeTab === 'common' && (
         <OverviewTab
           history={history}
           lineData={lineData}
@@ -2813,6 +2433,8 @@ const PortfolioManager = () => {
               onUpdate={fetchPortfolioData}
           />
       )}
+        </div>
+      </div>
 
       <Suspense fallback={<ModalLoadingFallback />}>
         {/* Modal Overlay voor Add Transaction */}

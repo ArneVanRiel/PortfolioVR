@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Routes, Route, Link, useLocation, Navigate, useNavigate } from 'react-router-dom';
-import { Toaster } from 'react-hot-toast';
+import toast, { Toaster } from 'react-hot-toast';
 
 // Feature-gebaseerde component imports
 import http from './http-common';
@@ -9,11 +9,13 @@ import Analysis from './features/analysis/Analysis.js';
 import StrategyStudioPage from './features/strategy/StrategyStudioPage.js';
 import PortfolioManager from './features/portfolio/PortfolioManager.js';
 import Settings from './features/settings/settings.js';
+import PortfolioSettings from './features/settings/PortfolioSettings.js';
 import Profile from './features/profile/Profile.js';
 import LoginPageTest from './features/auth/components/loginTest.js';
 import MicrosoftCallback from './features/auth/components/MicrosoftCallback.js';
 
 import SearchModal from './components/ui/SearchModal.js';
+import FeedbackModal from './components/ui/FeedbackModal.js';
 import HeaderBalanceDisplay from './features/dashboard/HeaderBalanceDisplay.js';
 import NotificationBell from './components/ui/NotificationBell.js';
 import DataStatusIndicator from './components/ui/DataStatusIndicator.js';
@@ -33,18 +35,16 @@ const SidebarLink = ({ to, iconClass, children, isActive, onClick, isSidebarPinn
     <Link
       to={to}
       onClick={onClick}
-      className={`group relative flex items-center transition-all duration-300 ease-in-out ${
-        isActive
-          ? 'bg-blue-600 text-white shadow-md'
-          : 'text-gray-600 hover:bg-gray-100 hover:text-blue-600'
-      } ${
-        isSidebarPinned 
-          ? 'justify-start px-4 py-3 mx-4 rounded-xl' 
+      className={`group relative flex items-center transition-all duration-300 ease-in-out ${isActive
+        ? 'bg-blue-600 text-white shadow-md'
+        : 'text-gray-600 hover:bg-gray-100 hover:text-blue-600'
+        } ${isSidebarPinned
+          ? 'justify-start px-4 py-3 mx-4 rounded-xl'
           : 'justify-center w-12 h-12 mx-auto rounded-xl'
-      }`}
+        }`}
     >
       <i className={`${iconClass} text-2xl flex-shrink-0 flex items-center justify-center`}></i>
-      
+
       {isSidebarPinned ? (
         <span className="ml-3 font-medium whitespace-nowrap">{children}</span>
       ) : (
@@ -61,9 +61,8 @@ const MobileBottomLink = ({ to, iconClass, children, isActive, onClick }) => {
     <Link
       to={to}
       onClick={onClick}
-      className={`relative flex flex-col items-center justify-center flex-1 h-full py-1 ${
-        isActive ? 'text-blue-600 bg-blue-50/50' : 'text-gray-500 hover:bg-gray-50 hover:text-blue-600'
-      }`}
+      className={`relative flex flex-col items-center justify-center flex-1 h-full py-1 ${isActive ? 'text-blue-600 bg-blue-50/50' : 'text-gray-500 hover:bg-gray-50 hover:text-blue-600'
+        }`}
     >
       <div className={`absolute top-0 left-0 right-0 h-1 bg-blue-600 ${isActive ? 'block' : 'hidden'}`}></div>
       <i className={`${iconClass} text-2xl mb-1 flex-shrink-0 flex items-center justify-center`}></i>
@@ -91,7 +90,7 @@ const getStoredPermissions = () => {
   try {
     const raw = localStorage.getItem('user_permissions');
     if (raw) return JSON.parse(raw);
-  } catch (e) {}
+  } catch (e) { }
   return {
     canViewDashboard: true,
     canViewPortfolio: true,
@@ -117,6 +116,7 @@ function App() {
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [isSidebarPinned, setIsSidebarPinned] = useState(false);
   const [showSearchModal, setShowSearchModal] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
   const [isIncognito, setIsIncognito] = useState(isDemo || localStorage.getItem('incognito') === 'true');
   const location = useLocation();
   const navigate = useNavigate();
@@ -170,8 +170,9 @@ function App() {
     if (path.startsWith('/dashboard')) setActiveTab('Dashboard');
     else if (path.startsWith('/analysis')) setActiveTab('Analysis');
     else if (path.startsWith('/strategy-builder')) setActiveTab('StrategyBuilder');
+    else if (path.startsWith('/portfolio-settings')) setActiveTab('PortfolioSettings');
     else if (path.startsWith('/portfolio')) setActiveTab('Portfolio');
-    else if (path.startsWith('/settings')) setActiveTab('Settings');
+    else if (path.startsWith('/settings') || path.startsWith('/admin')) setActiveTab('AdminSettings');
     else if (path.startsWith('/profile')) setActiveTab('Profile');
     else setActiveTab('/dashboard');
   }, [location]);
@@ -242,27 +243,111 @@ function App() {
 
       {!isLoginPage && (
         /* Header */
-        <header className="flex-shrink-0 z-50 w-full bg-white/80 backdrop-blur-md border-b border-gray-200 transition-all duration-300">
-          <div className="container mx-auto flex h-14 items-center justify-between px-4">
-            {/* Logo/Merknaam */}
-            <Link to="/dashboard" className="flex-shrink-0 flex items-center gap-2">
-                <i className="ph-fill ph-chart-polar text-blue-500 text-3xl"></i>
-                <span className="hidden sm:inline text-gray-800 font-bold text-xl tracking-tight">Portfolio<span className="text-blue-500">VR</span></span>
-            </Link>
+        <header className="flex-shrink-0 z-50 w-full bg-white/90 backdrop-blur-md border-b border-gray-200 transition-all duration-300">
+          <div className="w-full flex h-14 items-center justify-between px-3 sm:px-6">
+            {/* Linkerzone: Mobiel = ☰ (Deeltabs) + 🔍 | Desktop = Hoofdtabbladen */}
+            <div className="flex items-center gap-1 sm:gap-2">
+              {/* Mobiele Hamburger Knop (opent deelmenu) */}
+              <button
+                type="button"
+                onClick={() => window.dispatchEvent(new CustomEvent('togglePortfolioDrawer'))}
+                className="md:hidden p-2 text-gray-700 hover:text-blue-600 hover:bg-gray-100 rounded-xl transition-colors"
+                title="Deelmenu openen"
+                aria-label="Deelmenu"
+              >
+                <i className="ph-bold ph-list text-2xl"></i>
+              </button>
 
-            {/* Filler in het midden */}
-            <div className="flex-grow"></div>
-
-            {/* Rechtergroep: Zoekveld, Vermogensdisplays, Gebruikersprofiel */}
-            <div className="flex items-center gap-1.5 sm:gap-3 md:gap-6">
-              {/* Klein zoekveld dat de modal opent */}
-              <input
-                type="text"
-                readOnly
-                placeholder="Zoek..."
+              {/* Mobiele Zoekknop (logo) */}
+              <button
+                type="button"
                 onClick={handleOpenSearchModal}
-                className="hidden md:block w-32 focus:w-64 transition-all duration-300 ease-in-out cursor-pointer rounded-full border border-gray-200 bg-gray-100 px-4 py-2 text-sm text-gray-700 placeholder-gray-400 focus:border-blue-500 focus:bg-white focus:outline-none focus:ring-2 focus:ring-blue-200"
-              />
+                className="md:hidden p-2 text-gray-600 hover:text-blue-600 hover:bg-gray-100 rounded-xl transition-colors"
+                title="Zoeken"
+                aria-label="Zoeken"
+              >
+                <i className="ph-bold ph-magnifying-glass text-xl"></i>
+              </button>
+
+              {/* Desktop Hoofdtabbladen */}
+              <nav className="hidden md:flex items-center gap-1 lg:gap-2" aria-label="Hoofdnavigatie">
+                {(isAdmin || permissions.canViewPortfolio !== false) && (
+                  <Link
+                    to="/portfolio"
+                    className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
+                      location.pathname.startsWith('/portfolio')
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                    }`}
+                  >
+                    <i className="ph-fill ph-briefcase text-base"></i>
+                    <span>Portfolio</span>
+                  </Link>
+                )}
+                {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
+                  <Link
+                    to="/strategy-builder"
+                    className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
+                      location.pathname.startsWith('/strategy-builder')
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                    }`}
+                  >
+                    <i className="ph-fill ph-sliders-horizontal text-base"></i>
+                    <span>Strategie builder</span>
+                  </Link>
+                )}
+                {(isAdmin || permissions.canViewAnalysis !== false) && (
+                  <Link
+                    to="/analysis"
+                    className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
+                      location.pathname.startsWith('/analysis')
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                    }`}
+                  >
+                    <i className="ph-fill ph-chart-line-up text-base"></i>
+                    <span>Analyse</span>
+                  </Link>
+                )}
+                {(isAdmin || permissions.canViewDashboard !== false) && (
+                  <Link
+                    to="/dashboard"
+                    className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
+                      location.pathname === '/dashboard' || location.pathname === '/'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-gray-600 hover:text-gray-900 hover:bg-gray-100'
+                    }`}
+                  >
+                    <i className="ph-fill ph-squares-four text-base"></i>
+                    <span>Dashboard</span>
+                  </Link>
+                )}
+              </nav>
+            </div>
+
+            {/* Middenzone: PortfolioVR Logo (Desktop) */}
+            <div className="hidden md:flex items-center justify-center">
+              <Link to="/dashboard" className="flex items-center gap-2 group">
+                <i className="ph-fill ph-chart-polar text-blue-600 text-2xl lg:text-3xl transition-transform group-hover:scale-110"></i>
+                <span className="text-gray-900 font-extrabold text-lg lg:text-xl tracking-tight">
+                  Portfolio<span className="text-blue-600">VR</span>
+                </span>
+              </Link>
+            </div>
+
+            {/* Rechterzone: Zoekfunctie, Vermogensdisplay, Meldingen, Gebruikersprofiel */}
+            <div className="flex items-center gap-1.5 sm:gap-3 md:gap-4">
+              {/* Desktop Zoekfunctie (Logo / compact veld) */}
+              <button
+                type="button"
+                onClick={handleOpenSearchModal}
+                className="hidden md:flex items-center gap-2 px-3 py-1.5 rounded-full border border-gray-200 bg-gray-100 hover:bg-gray-200/80 text-gray-500 hover:text-gray-700 text-xs font-medium transition-all"
+                title="Zoeken"
+              >
+                <i className="ph-bold ph-magnifying-glass text-sm"></i>
+                <span>Zoeken</span>
+              </button>
 
               {/* Incognito Knop */}
               {!isDemo && (
@@ -273,134 +358,225 @@ function App() {
                   }`}
                   title={isIncognito ? "Privacy modus uitschakelen" : "Privacy modus inschakelen"}
                 >
-                  <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-lg sm:text-xl`}></i>
+                  <i className={`ph-fill ${isIncognito ? 'ph-eye-slash' : 'ph-eye'} text-lg`}></i>
                 </button>
               )}
 
-              {/* Beschikbaar Vermogen Display */}
-              <div className="flex items-center space-x-2 sm:space-x-4">
+              {/* Belegd bedrag + Beschikbare cash */}
+              <div className="flex items-center space-x-1 sm:space-x-3">
                 <HeaderBalanceDisplay />
               </div>
 
-              {/* Data & Sync Status Indicator */}
+              {/* Data & Sync Status Indicator (indien gewenst) */}
               {!isDemo && <DataStatusIndicator />}
 
-              {/* Meldingen element (alleen als gebruiker strategie-meldingen mag ontvangen of Admin is) */}
+              {/* Meldingen element */}
               {!isDemo && (isAdmin || permissions.canReceiveStrategyAlerts !== false) && <NotificationBell />}
 
               {/* Gebruikersprofiel en dropdown */}
-              <div
-                className="relative"
-              >
+              <div className="relative">
                 {/* Onzichtbare overlay om het menu te sluiten als je ernaast klikt */}
                 {dropdownOpen && (
                   <div className="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)}></div>
                 )}
-                <div 
-                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDropdownOpen(!dropdownOpen); }} 
-                  className="relative z-50 flex cursor-pointer items-center space-x-2 p-1 rounded-full hover:bg-gray-100 transition-colors duration-200" 
-                  role="button" 
-                  id="userDropdown" 
+
+                {/* Knop met gebruikersnaam en avatar */}
+                <div
+                  onClick={(e) => { e.preventDefault(); e.stopPropagation(); setDropdownOpen(!dropdownOpen); }}
+                  className="relative z-50 flex cursor-pointer items-center space-x-1.5 sm:space-x-2 py-1 sm:py-1.5 px-2 sm:px-3 rounded-full hover:bg-gray-100 border border-gray-200 bg-white shadow-2xs transition-all duration-200 select-none"
+                  role="button"
+                  id="userDropdown"
                   aria-expanded={dropdownOpen}
+                  title="Accountmenu & instellingen"
                 >
-                  <img className="h-8 w-8 rounded-full object-cover ring-2 ring-white shadow-sm" src={`https://ui-avatars.com/api/?name=${user.name.replace(' ', '+')}&background=3b82f6&color=fff`} alt="User avatar" />
-                  <span className="hidden md:inline mr-1 font-semibold text-gray-800">{user.name}</span>
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" className={`bi bi-chevron-down text-gray-400 transition-transform duration-200 ${dropdownOpen ? 'rotate-180' : ''}`} viewBox="0 0 16 16">
-                    <path fillRule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z"/>
+                  <img
+                    className="h-6 w-6 sm:h-7 sm:w-7 rounded-full object-cover ring-2 ring-blue-500/20 shadow-xs"
+                    src={`https://ui-avatars.com/api/?name=${user.name.replace(' ', '+')}&background=2563eb&color=fff&bold=true`}
+                    alt="User avatar"
+                  />
+                  <span className="hidden sm:inline font-semibold text-gray-800 text-sm tracking-tight">{user.name}</span>
+                  <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" fill="currentColor" className={`bi bi-chevron-down text-gray-400 transition-transform duration-200 ${dropdownOpen ? 'rotate-180 text-blue-600' : ''}`} viewBox="0 0 16 16">
+                    <path fillRule="evenodd" d="M1.646 4.646a.5.5 0 0 1 .708 0L8 10.293l5.646-5.647a.5.5 0 0 1 .708.708l-6 6a.5.5 0 0 1-.708 0l-6-6a.5.5 0 0 1 0-.708z" />
                   </svg>
                 </div>
-                <ul className={`absolute right-0 mt-2 w-48 origin-top-right rounded-xl bg-white py-2 shadow-xl ring-1 ring-black ring-opacity-5 focus:outline-none transition-all duration-200 transform z-50 ${dropdownOpen ? 'opacity-100 translate-y-0 scale-100' : 'opacity-0 -translate-y-2 scale-95 pointer-events-none'}`} aria-labelledby="userDropdown">
-                  <li><Link to="/profile" onClick={() => setDropdownOpen(false)} className="block px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 hover:text-gray-900">Mijn Profiel</Link></li>
-                  <li className="border-t border-gray-100 my-1"></li>
-                  <li><button onClick={handleLogout} className="block w-full text-left px-4 py-2 text-sm text-red-600 hover:bg-red-50 hover:text-red-700 font-medium transition-colors">Uitloggen</button></li>
-                </ul>
+
+                {/* Dropdown menu */}
+                <div
+                  className={`absolute right-0 mt-2 w-64 sm:w-72 origin-top-right rounded-2xl bg-white shadow-2xl ring-1 ring-black/5 divide-y divide-gray-100 focus:outline-none transition-all duration-200 transform z-50 overflow-hidden ${
+                    dropdownOpen ? 'opacity-100 translate-y-0 scale-100 pointer-events-auto' : 'opacity-0 -translate-y-2 scale-95 pointer-events-none'
+                  }`}
+                  aria-labelledby="userDropdown"
+                >
+                  {/* Header: Gebruikersnaam + snelle uitloglink zoals op screenshot */}
+                  <div className="px-4 py-3 bg-gray-50/70 flex items-center justify-between">
+                    <div>
+                      <div className="font-bold text-gray-900 text-sm leading-tight">{user.name}</div>
+                      <div className="text-[11px] text-gray-500 font-medium mt-0.5">
+                        {isAdmin ? '👑 Beheerder' : isDemo ? 'Demo-account' : 'Belegger'}
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => { setDropdownOpen(false); handleLogout(); }}
+                      className="text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline transition-colors"
+                    >
+                      Uitloggen
+                    </button>
+                  </div>
+
+                  {/* Menu Items */}
+                  <div className="p-2 space-y-1">
+                    {/* Persoonlijk */}
+                    <div className="px-2.5 pt-1.5 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400">
+                      Persoonlijk
+                    </div>
+                    <Link
+                      to="/profile"
+                      onClick={() => setDropdownOpen(false)}
+                      className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-gray-700 hover:bg-gray-100 transition-colors text-xs sm:text-sm font-medium"
+                    >
+                      <i className="ph-fill ph-user text-gray-500 text-base flex-shrink-0"></i>
+                      <span>Profiel</span>
+                    </Link>
+
+                    {/* Portfolio */}
+                    <div className="pt-2 px-2.5 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
+                      Portfolio
+                    </div>
+                    <Link
+                      to="/portfolio-settings"
+                      onClick={() => setDropdownOpen(false)}
+                      className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-gray-700 hover:bg-gray-100 transition-colors text-xs sm:text-sm font-medium"
+                    >
+                      <i className="ph-fill ph-sliders text-gray-500 text-base flex-shrink-0"></i>
+                      <span>Instellingen</span>
+                    </Link>
+
+                    {/* Tools */}
+                    <div className="pt-2 px-2.5 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
+                      Tools
+                    </div>
+                    <div
+                      onClick={() => {
+                        toast('De pagina Meerwaardebelasting (2026) wordt binnenkort toegevoegd.', {
+                          icon: 'ℹ️',
+                          id: 'tax-tool-info'
+                        });
+                        setDropdownOpen(false);
+                      }}
+                      className="flex items-center justify-between px-2.5 py-2 rounded-xl text-gray-600 hover:bg-gray-50 cursor-pointer transition-colors text-xs sm:text-sm font-medium"
+                    >
+                      <div className="flex items-center gap-3">
+                        <i className="ph-fill ph-calculator text-gray-400 text-base flex-shrink-0"></i>
+                        <span>Meerwaardebelasting</span>
+                      </div>
+                      <span className="text-[9px] font-bold uppercase tracking-wider bg-amber-50 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full">
+                        Binnenkort
+                      </span>
+                    </div>
+
+                    {/* Help & feedback */}
+                    <div className="pt-2 px-2.5 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-gray-400 border-t border-gray-100 mt-1">
+                      Help &amp; Feedback
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        setShowFeedbackModal(true);
+                      }}
+                      className="w-full flex items-center justify-between px-2.5 py-2 rounded-xl text-blue-700 hover:bg-blue-50/80 transition-colors text-xs sm:text-sm font-semibold text-left"
+                    >
+                      <div className="flex items-center gap-3">
+                        <i className="ph-fill ph-lightbulb text-amber-500 text-base flex-shrink-0"></i>
+                        <span>Feedback &amp; Roadmap</span>
+                      </div>
+                      <span className="text-[10px] bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full">
+                        Ideeën
+                      </span>
+                    </button>
+
+                    {/* Beheerderspaneel (Enkel zichtbaar voor Arne / Admin) */}
+                    {isAdmin && (
+                      <>
+                        <div className="pt-2 px-2.5 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-500 border-t border-gray-100 mt-1">
+                          Beheer
+                        </div>
+                        <Link 
+                          to="/admin" 
+                          onClick={() => setDropdownOpen(false)} 
+                          className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-indigo-700 hover:bg-indigo-50 transition-colors text-xs sm:text-sm font-semibold"
+                        >
+                          <i className="ph-fill ph-shield-check text-indigo-600 text-base flex-shrink-0"></i>
+                          <span>Beheerderspaneel</span>
+                        </Link>
+                      </>
+                    )}
+
+                    {/* Uitloggen onderaan */}
+                    <div className="pt-1.5 border-t border-gray-100 mt-1">
+                      <button
+                        onClick={() => {
+                          setDropdownOpen(false);
+                          handleLogout();
+                        }}
+                        className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl text-red-600 hover:bg-red-50 hover:text-red-700 transition-colors text-xs sm:text-sm font-medium text-left"
+                      >
+                        <i className="ph-fill ph-sign-out text-red-500 text-base flex-shrink-0"></i>
+                        <span>Uitloggen</span>
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </header>
       )}
 
-      {/* Zijbalk + Hoofdinhoud Layout */}
-      <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
-        {/* Sidebar Navigatie */}
-        {!isLoginPage && (
-          <aside
-            className={`hidden md:flex bg-white border-r border-gray-200 transition-all duration-300 ease-in-out flex-col py-4 z-40 ${
-              isSidebarPinned ? 'w-64' : 'w-20'
-            }`}
-          >
-            {/* Menu knop om zijbalk vast te zetten */}
-            <div className="flex items-center justify-center mb-6">
-              <button
-                onClick={() => setIsSidebarPinned(!isSidebarPinned)}
-                className="p-2 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors focus:outline-none"
-                title={isSidebarPinned ? 'Maak zijbalk inklapbaar' : 'Zet zijbalk vast'}
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2" className={`transition-transform duration-300 ${isSidebarPinned ? 'rotate-90 text-blue-600' : ''}`}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
-            </div>
-            
-            <nav className="flex flex-col flex-1 gap-2">
-              {(isAdmin || permissions.canViewDashboard !== false) && (
-                <SidebarLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')} isSidebarPinned={isSidebarPinned}>Dashboard</SidebarLink>
-              )}
-              {(isAdmin || permissions.canViewAnalysis !== false) && (
-                <SidebarLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')} isSidebarPinned={isSidebarPinned}>Analyse</SidebarLink>
-              )}
-              {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
-                <SidebarLink to="/strategy-builder" iconClass="ph-fill ph-sliders-horizontal" isActive={activeTab === 'StrategyBuilder'} onClick={() => setActiveTab('StrategyBuilder')} isSidebarPinned={isSidebarPinned}>Strategie Builder</SidebarLink>
-              )}
-              {(isAdmin || permissions.canViewPortfolio !== false) && (
-                <SidebarLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')} isSidebarPinned={isSidebarPinned}>Portfolio</SidebarLink>
-              )}
-              
-              {isAdmin && (
-                <div className="mt-auto mb-2">
-                  <SidebarLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')} isSidebarPinned={isSidebarPinned}>Settings</SidebarLink>
-                </div>
-              )}
-            </nav>
-          </aside>
-        )}
-
+      {/* Hoofdinhoud Layout (Geen desktop aside meer, hoofdnavigatie staat nu in de header) */}
+      <div className="flex flex-col flex-1 overflow-hidden">
         {/* Main Content Scroll Area */}
-        <main className="flex-1 overflow-y-auto min-h-0">
-          <div className="p-2.5 sm:p-4 md:p-6 lg:p-8 max-w-7xl mx-auto">
+        <main className="flex-1 overflow-y-auto min-h-0 bg-gray-50/50">
+          <div className="p-2.5 sm:p-4 md:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
             <Routes>
-              <Route path='/login' element={<LoginPageTest/>} />
+              <Route path='/login' element={<LoginPageTest />} />
               <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
-              <Route path='/dashboard' element={<ProtectedRoute>{(isAdmin || permissions.canViewDashboard !== false) ? <Dashboard/> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
+              <Route path='/dashboard' element={<ProtectedRoute>{(isAdmin || permissions.canViewDashboard !== false) ? <Dashboard /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/analysis/*' element={<ProtectedRoute>{(isAdmin || permissions.canViewAnalysis !== false) ? <Analysis /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/strategy-builder/*' element={<ProtectedRoute><StrategyStudioPage /></ProtectedRoute>} />
-              <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager/></ProtectedRoute>} />
-              <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings/> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
-              <Route path='/profile' element={<ProtectedRoute><Profile/></ProtectedRoute>} />
+              <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager /></ProtectedRoute>} />
+              <Route path='/portfolio-settings' element={<ProtectedRoute><PortfolioSettings /></ProtectedRoute>} />
+              <Route path='/admin' element={<ProtectedRoute>{isAdmin ? <Settings /> : <Navigate to="/portfolio-settings" replace />}</ProtectedRoute>} />
+              <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings /> : <Navigate to="/portfolio-settings" replace />}</ProtectedRoute>} />
+              <Route path='/profile' element={<ProtectedRoute><Profile /></ProtectedRoute>} />
               {/* Fallback route voor onbekende urls */}
               <Route path='*' element={<Navigate to={(isAdmin || permissions.canViewDashboard !== false) ? "/dashboard" : "/portfolio"} replace />} />
             </Routes>
           </div>
         </main>
 
-        {/* Mobile Bottom Navigation */}
+        {/* Mobile Bottom Navigation: [Portfolio] [Strategie builder] [Analyse] [Dashboard] */}
         {!isLoginPage && (
-          <nav className="md:hidden bg-white border-t border-gray-200 flex flex-row justify-around z-50 w-full h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)]">
-            {(isAdmin || permissions.canViewDashboard !== false) && (
-              <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={activeTab === 'Dashboard'} onClick={() => setActiveTab('Dashboard')}>Dashboard</MobileBottomLink>
-            )}
-            {(isAdmin || permissions.canViewAnalysis !== false) && (
-              <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={activeTab === 'Analysis'} onClick={() => setActiveTab('Analysis')}>Analyse</MobileBottomLink>
+          <nav className="md:hidden bg-white border-t border-gray-200 flex flex-row justify-around z-50 w-full h-[calc(4rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] shadow-xs">
+            {(isAdmin || permissions.canViewPortfolio !== false) && (
+              <MobileBottomLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={location.pathname.startsWith('/portfolio')}>
+                Portfolio
+              </MobileBottomLink>
             )}
             {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
-              <MobileBottomLink to="/strategy-builder" iconClass="ph-fill ph-sliders-horizontal" isActive={activeTab === 'StrategyBuilder'} onClick={() => setActiveTab('StrategyBuilder')}>Strategieën</MobileBottomLink>
+              <MobileBottomLink to="/strategy-builder" iconClass="ph-fill ph-sliders-horizontal" isActive={location.pathname.startsWith('/strategy-builder')}>
+                Strategie builder
+              </MobileBottomLink>
             )}
-            {(isAdmin || permissions.canViewPortfolio !== false) && (
-              <MobileBottomLink to="/portfolio" iconClass="ph-fill ph-briefcase" isActive={activeTab === 'Portfolio'} onClick={() => setActiveTab('Portfolio')}>Portfolio</MobileBottomLink>
+            {(isAdmin || permissions.canViewAnalysis !== false) && (
+              <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={location.pathname.startsWith('/analysis')}>
+                Analyse
+              </MobileBottomLink>
             )}
-            
-            {isAdmin && (
-              <MobileBottomLink to="/settings" iconClass="ph-fill ph-gear" isActive={activeTab === 'Settings'} onClick={() => setActiveTab('Settings')}>Settings</MobileBottomLink>
+            {(isAdmin || permissions.canViewDashboard !== false) && (
+              <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={location.pathname === '/dashboard' || location.pathname === '/'}>
+                Dashboard
+              </MobileBottomLink>
             )}
           </nav>
         )}
@@ -408,6 +584,14 @@ function App() {
 
       {/* Zoekmodal component */}
       {showSearchModal && <SearchModal onClose={handleCloseSearchModal} />}
+
+      {/* Feedback & Roadmap Modal */}
+      {showFeedbackModal && (
+        <FeedbackModal
+          show={showFeedbackModal}
+          onCancel={() => setShowFeedbackModal(false)}
+        />
+      )}
     </div>
   );
 }

@@ -63,6 +63,7 @@ const OverviewTab = ({
   const [includeCashInDonut, setIncludeCashInDonut] = useState(false);
   const [selectedHoldingForModal, setSelectedHoldingForModal] = useState(null);
   const [mobileSortOption, setMobileSortOption] = useState('pl_desc');
+  const [showTimeMachinePopup, setShowTimeMachinePopup] = useState(false);
 
   const totalValue = processedHoldings.reduce((sum, h) => sum + (h.value || 0), 0);
   const timeline = useMemo(() => historyTimelineData?.timeline || [], [historyTimelineData]);
@@ -257,58 +258,154 @@ const OverviewTab = ({
 
   return (
     <div className="space-y-6">
-      {/* 🕰️ MOBIELE COMPACTE TIJDMACHINE (eToro / DEGIRO Compact - Geen Lappen Tekst) */}
-      {timeline.length > 0 && (
-        <div className="block md:hidden bg-white p-3.5 rounded-2xl shadow-sm border border-gray-200 space-y-2.5">
-          <div className="flex items-center justify-between gap-2">
-            <span className="px-2.5 py-1 rounded-xl bg-indigo-600 text-white font-black text-xs shadow-2xs">
-              📅 {activeTimeMachinePoint?.date || 'Vandaag'} {!isViewingHistoricalDate && '(Live)'}
-            </span>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(0)}
-                disabled={timelineSliderIdx === 0}
-                className="p-1 px-2 rounded-lg bg-gray-100 text-gray-700 text-xs font-bold disabled:opacity-40"
-                title="Eerste datum"
-              >⏮</button>
-              <button
-                type="button"
-                onClick={jumpToPrevTrade}
-                disabled={timelineSliderIdx === 0}
-                className="p-1 px-2 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-bold disabled:opacity-40"
-                title="Vorige transactiedag"
-              >◀</button>
-              <button
-                type="button"
-                onClick={jumpToNextTrade}
-                disabled={timelineSliderIdx >= timeline.length - 1}
-                className="p-1 px-2 rounded-lg bg-indigo-50 text-indigo-700 text-xs font-bold disabled:opacity-40"
-                title="Volgende transactiedag"
-              >▶</button>
-              <button
-                type="button"
-                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1)}
-                disabled={timelineSliderIdx >= timeline.length - 1}
-                className="p-1 px-2 rounded-lg bg-indigo-600 text-white text-xs font-bold disabled:opacity-40"
-                title="Heden (Live)"
-              >⏭</button>
-            </div>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={Math.max(0, timeline.length - 1)}
-            value={timelineSliderIdx}
-            onChange={(e) => setTimelineSliderIdx && setTimelineSliderIdx(Number(e.target.value))}
-            className="w-full h-2 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-          />
-          {/* Snelle filter pills voor brokers en types */}
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
+      {/* DESKTOP COMMON HEADER: Links = Groeperingsmogelijkheden, Rechts = Time interval (Dropdown / Popup) */}
+      <div className="hidden md:flex items-center justify-between gap-4 bg-white p-3.5 rounded-2xl border border-gray-200/90 shadow-2xs">
+        {/* Bovenaan links: Groeperingsmogelijkheden */}
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Broker Filter Knoppen */}
+          <div className="flex items-center gap-1.5 flex-wrap">
             <button
               type="button"
               onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+              className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border ${
+                selectedBrokerFilter === 'ALL'
+                  ? 'bg-slate-900 text-white border-slate-900 shadow-2xs'
+                  : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
+              }`}
+            >
+              <span>Alle Brokers</span>
+              {totalAllBrokersVal > 0 && (
+                <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black privacy-blur ${
+                  selectedBrokerFilter === 'ALL' ? 'bg-white/20 text-white' : 'bg-gray-200/70 text-gray-700'
+                }`}>
+                  {formatCurrency(totalAllBrokersVal)}
+                </span>
+              )}
+            </button>
+
+            {brokerTotals.map(b => {
+              const isActive = selectedBrokerFilter.toLowerCase() === b.broker_name.toLowerCase();
+              const isEtoro = b.broker_name.toLowerCase().includes('etoro');
+              const isDegiro = b.broker_name.toLowerCase().includes('degiro');
+              return (
+                <button
+                  key={b.broker_name}
+                  type="button"
+                  onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border ${
+                    isActive
+                      ? isEtoro
+                        ? 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                        : isDegiro
+                        ? 'bg-blue-600 text-white border-blue-700 shadow-2xs'
+                        : 'bg-indigo-600 text-white border-indigo-700 shadow-2xs'
+                      : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
+                  }`}
+                >
+                  <span>{isEtoro ? '🟢' : isDegiro ? '🔵' : '🏦'} {b.broker_name}</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black privacy-blur ${
+                    isActive ? 'bg-white/20 text-white' : 'bg-gray-200/70 text-gray-700'
+                  }`}>
+                    {formatCurrency(b.value)} ({b.weightPct.toFixed(0)}%)
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          <span className="text-gray-300">|</span>
+
+          {/* Type Filter Knoppen (Alles, Aandelen, ETF's) */}
+          <div className="inline-flex rounded-xl p-0.5 bg-gray-100 text-xs font-extrabold border border-gray-200">
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes([])}
+              className={`px-2.5 py-1 rounded-lg transition-all ${
+                !selectedTypes || selectedTypes.length === 0
+                  ? 'bg-white text-gray-900 shadow-2xs font-black'
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              Alles
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
+              className={`px-2.5 py-1 rounded-lg transition-all ${
+                selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase()))
+                  ? 'bg-teal-600 text-white shadow-2xs font-black'
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              💎 Aandelen
+            </button>
+            <button
+              type="button"
+              onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
+              className={`px-2.5 py-1 rounded-lg transition-all ${
+                selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase()))
+                  ? 'bg-amber-600 text-white shadow-2xs font-black'
+                  : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              📊 ETF's
+            </button>
+          </div>
+        </div>
+
+        {/* Bovenaan rechts: Time interval popup trigger */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setShowTimeMachinePopup(true)}
+            className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-2 border shadow-2xs ${
+              isViewingHistoricalDate
+                ? 'bg-amber-500 text-white border-amber-600 ring-2 ring-amber-300'
+                : 'bg-white hover:bg-gray-50 text-gray-800 border-gray-200 hover:border-gray-300'
+            }`}
+            title="Historische Portfolio Tijdmachine & Broker-Controle openen"
+          >
+            <i className="ph-fill ph-clock-counter-clockwise text-indigo-600 text-base"></i>
+            <span>
+              {isViewingHistoricalDate
+                ? `⚠️ ${activeTimeMachinePoint?.date}`
+                : '🕰️ Tijdmachine (Live)'}
+            </span>
+            <i className="ph-bold ph-caret-down text-gray-400 text-xs"></i>
+          </button>
+        </div>
+      </div>
+
+      {/* GSM/IPHONE COMMON HEADER: Titel + Time Interval, daaronder Groepering over de hele breedte */}
+      <div className="block md:hidden space-y-2.5">
+        {/* Bovenste rij: Links Common (titel), Rechts Time interval */}
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-xl font-black text-gray-900 tracking-tight">Common</h2>
+          <button
+            type="button"
+            onClick={() => setShowTimeMachinePopup(true)}
+            className={`px-2.5 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shadow-2xs ${
+              isViewingHistoricalDate
+                ? 'bg-amber-500 text-white border-amber-600 ring-2 ring-amber-300'
+                : 'bg-white hover:bg-gray-50 text-gray-800 border-gray-200'
+            }`}
+            title="Historische Portfolio Tijdmachine openen"
+          >
+            <i className="ph-fill ph-clock-counter-clockwise text-indigo-600 text-sm"></i>
+            <span>
+              {isViewingHistoricalDate ? activeTimeMachinePoint?.date : 'Tijdmachine'}
+            </span>
+            <i className="ph-bold ph-caret-down text-gray-400 text-xs"></i>
+          </button>
+        </div>
+
+        {/* Groeperingszone (hele breedte) */}
+        <div className="bg-white p-2.5 rounded-2xl border border-gray-200 shadow-2xs">
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+            <button
+              type="button"
+              onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border ${
                 selectedBrokerFilter === 'ALL' ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
               }`}
             >
@@ -322,7 +419,7 @@ const OverviewTab = ({
                   key={b.broker_name}
                   type="button"
                   onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
-                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border ${
                     isActive ? (isEtoro ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-blue-600 text-white border-blue-600') : 'bg-gray-100 text-gray-700 border-gray-200'
                   }`}
                 >
@@ -334,7 +431,7 @@ const OverviewTab = ({
             <button
               type="button"
               onClick={() => setSelectedTypes && setSelectedTypes([])}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border ${
                 !selectedTypes || selectedTypes.length === 0 ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
               }`}
             >
@@ -343,7 +440,7 @@ const OverviewTab = ({
             <button
               type="button"
               onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border ${
                 selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase())) ? 'bg-teal-600 text-white border-teal-600' : 'bg-gray-100 text-gray-700 border-gray-200'
               }`}
             >
@@ -352,7 +449,7 @@ const OverviewTab = ({
             <button
               type="button"
               onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
+              className={`px-2.5 py-1 rounded-lg text-xs font-bold shrink-0 border ${
                 selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase())) ? 'bg-amber-600 text-white border-amber-600' : 'bg-gray-100 text-gray-700 border-gray-200'
               }`}
             >
@@ -360,98 +457,86 @@ const OverviewTab = ({
             </button>
           </div>
         </div>
-      )}
+      </div>
 
-      {/* 🕰️ DESKTOP TIJDMACHINE (Verborgen op Mobiel) */}
-      {timeline.length > 0 && (
-        <div className={`hidden md:block bg-white rounded-2xl p-4 sm:p-5 border-2 shadow-sm space-y-4 transition-all ${
-          isViewingHistoricalDate ? 'border-indigo-400 ring-2 ring-indigo-100' : 'border-indigo-200/80'
-        }`}>
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-gray-100 pb-3">
-            <div>
-              <div className="flex items-center gap-2 flex-wrap mb-1">
-                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-900 border border-indigo-200">
-                  🕰️ Historische Portfolio Tijdmachine &amp; Broker-Controle
-                </span>
-                {isViewingHistoricalDate && (
-                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300">
-                    ⚠️ Je bekijkt een datum in het verleden ({activeTimeMachinePoint?.date})
+      {/* 🕰️ TIJDMACHINE POPUP / MODAL (Historische Portfolio Tijdmachine & Broker-Controle) */}
+      {showTimeMachinePopup && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/50 backdrop-blur-xs animate-fade-in">
+          <div className="bg-white rounded-3xl shadow-2xl border border-gray-200 max-w-2xl w-full p-4 sm:p-6 space-y-4 max-h-[90vh] overflow-y-auto">
+            {/* Modal Header */}
+            <div className="flex items-start justify-between gap-3 pb-3 border-b border-gray-100">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap mb-1">
+                  <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-indigo-100 text-indigo-900 border border-indigo-200">
+                    🕰️ Historische Portfolio Tijdmachine
                   </span>
-                )}
+                  {isViewingHistoricalDate && (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-black bg-amber-100 text-amber-900 border border-amber-300">
+                      ⚠️ Historische datum: {activeTimeMachinePoint?.date}
+                    </span>
+                  )}
+                </div>
+                <h3 className="text-base sm:text-lg font-black text-gray-900">
+                  Portfolio Tijdmachine &amp; Broker-Controle
+                </h3>
+                <p className="text-xs text-gray-500">
+                  Schuif de balk om je portefeuille en donut-verdeling op elke dag in het verleden te bekijken.
+                </p>
               </div>
-              <h3 className="text-sm sm:text-base font-black text-gray-900">
-                Bekijk je Echte Portefeuille op Elke Dag in het Verleden &amp; Controleer per Broker (eToro / DEGIRO)
-              </h3>
-              <p className="text-xs text-gray-500">
-                Schuif de slider om je echte posities en donut-verdeling op een historische datum te bekijken, of klik op een broker om te controleren of je huidige situatie klopt.
-              </p>
-            </div>
-
-            {/* Navigatieknoppen Tijdmachine */}
-            <div className="flex flex-wrap items-center gap-1.5 shrink-0">
               <button
                 type="button"
-                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(0)}
-                disabled={timelineSliderIdx === 0}
-                className="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-extrabold disabled:opacity-40 transition-all"
+                onClick={() => setShowTimeMachinePopup(false)}
+                className="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                title="Sluiten"
               >
-                ⏮ Start
-              </button>
-              <button
-                type="button"
-                onClick={jumpToPrevTrade}
-                disabled={timelineSliderIdx === 0}
-                className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-extrabold disabled:opacity-40 transition-all"
-              >
-                ◀ Vorige Transactiedag
-              </button>
-              <button
-                type="button"
-                onClick={jumpToNextTrade}
-                disabled={timelineSliderIdx >= timeline.length - 1}
-                className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-extrabold disabled:opacity-40 transition-all"
-              >
-                Volgende Transactiedag ▶
-              </button>
-              <button
-                type="button"
-                onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1)}
-                disabled={timelineSliderIdx >= timeline.length - 1}
-                className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all ${
-                  isViewingHistoricalDate
-                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
-                    : 'bg-indigo-600 text-white opacity-40'
-                }`}
-              >
-                Heden (Live) ⏭
+                <i className="ph-bold ph-x text-lg"></i>
               </button>
             </div>
-          </div>
 
-          {/* Slider & Datum Status */}
-          <div className="p-3.5 rounded-xl bg-gradient-to-r from-slate-50 via-indigo-50/50 to-emerald-50/40 border border-indigo-100 space-y-2.5">
+            {/* Navigatieknoppen */}
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className={`px-3 py-1 rounded-xl font-black text-xs sm:text-sm shadow-2xs ${
-                  isViewingHistoricalDate ? 'bg-amber-500 text-amber-950' : 'bg-indigo-600 text-white'
-                }`}>
-                  📅 {activeTimeMachinePoint?.date
-                    ? new Date(activeTimeMachinePoint.date).toLocaleDateString('nl-BE', { day: '2-digit', month: 'short', year: 'numeric' })
-                    : 'Vandaag'}
-                  {!isViewingHistoricalDate && ' (Huidige Live Situatie)'}
-                </span>
-
-                {activeTimeMachinePoint?.hadTrade && (
-                  <span className="px-2.5 py-1 rounded-lg bg-amber-100 text-amber-900 border border-amber-300 text-xs font-black">
-                    ⚡ {activeTimeMachinePoint.tradesOnDate?.length || 1} transactie(s) op deze dag
-                  </span>
-                )}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <button
+                  type="button"
+                  onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(0)}
+                  disabled={timelineSliderIdx === 0}
+                  className="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-bold disabled:opacity-40"
+                >
+                  ⏮ Start
+                </button>
+                <button
+                  type="button"
+                  onClick={jumpToPrevTrade}
+                  disabled={timelineSliderIdx === 0}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold disabled:opacity-40"
+                >
+                  ◀ Vorige
+                </button>
+                <button
+                  type="button"
+                  onClick={jumpToNextTrade}
+                  disabled={timelineSliderIdx >= timeline.length - 1}
+                  className="px-3 py-1.5 rounded-xl bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border border-indigo-200 text-xs font-bold disabled:opacity-40"
+                >
+                  Volgende ▶
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1)}
+                  disabled={timelineSliderIdx >= timeline.length - 1}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold ${
+                    isViewingHistoricalDate
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-xs'
+                      : 'bg-indigo-600 text-white opacity-40'
+                  }`}
+                >
+                  Heden (Live) ⏭
+                </button>
               </div>
 
-              {/* Jaar-Snelknoppen */}
+              {/* Jaar Knoppen */}
               {availableYears.length > 1 && (
-                <div className="flex flex-wrap items-center gap-1">
-                  <span className="text-[11px] font-bold text-gray-500 mr-1">Jaar:</span>
+                <div className="flex items-center gap-1">
                   {availableYears.map(yr => {
                     const isCurrentYr = activeTimeMachinePoint?.date?.startsWith(yr);
                     return (
@@ -459,10 +544,8 @@ const OverviewTab = ({
                         key={yr}
                         type="button"
                         onClick={() => jumpToYear(yr)}
-                        className={`px-2 py-0.5 rounded-lg text-xs font-extrabold transition-all ${
-                          isCurrentYr
-                            ? 'bg-indigo-600 text-white shadow-2xs'
-                            : 'bg-white hover:bg-indigo-50 text-gray-700 border border-gray-200'
+                        className={`px-2 py-0.5 rounded-lg text-xs font-bold transition-all ${
+                          isCurrentYr ? 'bg-indigo-600 text-white shadow-2xs' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
                         }`}
                       >
                         {yr}
@@ -473,102 +556,80 @@ const OverviewTab = ({
               )}
             </div>
 
-            <input
-              type="range"
-              min={0}
-              max={Math.max(0, timeline.length - 1)}
-              value={timelineSliderIdx}
-              onChange={(e) => setTimelineSliderIdx && setTimelineSliderIdx(Number(e.target.value))}
-              className="w-full h-2.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-            />
-            <div className="flex items-center justify-between text-[11px] font-bold text-gray-500">
-              <span>Eerste transactie: {timeline[0]?.date}</span>
-              <span>Stap {timelineSliderIdx + 1} van {timeline.length}</span>
-              <span>Heden: {timeline[timeline.length - 1]?.date}</span>
-            </div>
-
-            {/* Uitgevoerde transacties op de gekozen datum */}
-            {Array.isArray(activeTimeMachinePoint?.tradesOnDate) && activeTimeMachinePoint.tradesOnDate.length > 0 && (
-              <div className="pt-2 border-t border-indigo-100 flex flex-wrap items-center gap-1.5">
-                <span className="text-[11px] font-black text-indigo-950 mr-1">
-                  Transacties op {activeTimeMachinePoint.date}:
+            {/* Slider Input */}
+            <div className="p-3.5 rounded-2xl bg-indigo-50/60 border border-indigo-100 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="font-extrabold text-sm text-indigo-950">
+                  📅 Geselecteerde datum: <strong>{activeTimeMachinePoint?.date || 'Vandaag'}</strong>
                 </span>
-                {activeTimeMachinePoint.tradesOnDate.map((tr, idx) => (
-                  <span
-                    key={idx}
-                    className={`px-2 py-0.5 rounded-lg text-[11px] font-bold border ${
-                      tr.type === 'BUY'
-                        ? 'bg-emerald-100 text-emerald-950 border-emerald-300'
-                        : tr.type === 'SELL'
-                        ? 'bg-rose-100 text-rose-950 border-rose-300'
-                        : 'bg-purple-100 text-purple-950 border-purple-300'
-                    }`}
-                  >
-                    {tr.type === 'BUY' ? '🟢 KOOP' : tr.type === 'SELL' ? '🔴 VERKOOP' : '💰 DIVIDEND'}{' '}
-                    {tr.quantity}x <strong>{tr.ticker}</strong> @ {tr.currency === 'EUR' ? '€' : '$'}{tr.price} ({tr.broker_name})
+                {activeTimeMachinePoint?.hadTrade && (
+                  <span className="text-[11px] font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300">
+                    ⚡ {activeTimeMachinePoint.tradesOnDate?.length || 1} transactie(s)
                   </span>
-                ))}
+                )}
               </div>
-            )}
-          </div>
 
-          {/* 🏦 BROKER-FILTER KNOPPEN VOOR DIRECTE CONTROLE (Alle Brokers / eToro / DEGIRO) */}
-          {brokerTotals.length > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs font-extrabold text-gray-600 flex items-center gap-1">
-                  <i className="ph-fill ph-bank text-indigo-600"></i>
-                  <span>Filter &amp; Controleer per Broker:</span>
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 border ${
-                    selectedBrokerFilter === 'ALL'
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
-                      : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
-                  }`}
-                >
-                  <span>Alle Brokers</span>
-                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black privacy-blur ${
-                    selectedBrokerFilter === 'ALL' ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-600'
-                  }`}>
-                    {formatCurrency(totalAllBrokersVal)}
-                  </span>
-                </button>
+              <input
+                type="range"
+                min={0}
+                max={Math.max(0, timeline.length - 1)}
+                value={timelineSliderIdx}
+                onChange={(e) => setTimelineSliderIdx && setTimelineSliderIdx(Number(e.target.value))}
+                className="w-full h-2.5 bg-indigo-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+              />
 
-                {brokerTotals.map(b => {
-                  const isActive = selectedBrokerFilter.toLowerCase() === b.broker_name.toLowerCase();
-                  const isEtoro = b.broker_name.toLowerCase().includes('etoro');
-                  const isDegiro = b.broker_name.toLowerCase().includes('degiro');
-                  return (
-                    <button
-                      key={b.broker_name}
-                      type="button"
-                      onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
-                      className={`px-3 py-1.5 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 border ${
-                        isActive
-                          ? isEtoro
-                            ? 'bg-emerald-600 text-white border-emerald-700 shadow-xs'
-                            : isDegiro
-                            ? 'bg-blue-600 text-white border-blue-700 shadow-xs'
-                            : 'bg-indigo-600 text-white border-indigo-700 shadow-xs'
-                          : 'bg-white text-gray-800 border-gray-200 hover:bg-gray-50'
+              <div className="flex items-center justify-between text-[11px] text-gray-500 font-medium">
+                <span>{timeline[0]?.date || 'Eerste transactie'}</span>
+                <span>Stap {timelineSliderIdx + 1} van {timeline.length}</span>
+                <span>Heden ({timeline[timeline.length - 1]?.date})</span>
+              </div>
+
+              {/* Transacties op de dag */}
+              {Array.isArray(activeTimeMachinePoint?.tradesOnDate) && activeTimeMachinePoint.tradesOnDate.length > 0 && (
+                <div className="pt-2 border-t border-indigo-100 flex flex-wrap items-center gap-1.5">
+                  <span className="text-[11px] font-bold text-indigo-950">Transacties:</span>
+                  {activeTimeMachinePoint.tradesOnDate.map((tr, idx) => (
+                    <span
+                      key={idx}
+                      className={`px-2 py-0.5 rounded-lg text-[11px] font-bold border ${
+                        tr.type === 'BUY'
+                          ? 'bg-emerald-100 text-emerald-950 border-emerald-300'
+                          : tr.type === 'SELL'
+                          ? 'bg-rose-100 text-rose-950 border-rose-300'
+                          : 'bg-purple-100 text-purple-950 border-purple-300'
                       }`}
                     >
-                      <span>{isEtoro ? '🟢' : isDegiro ? '🔵' : '🏦'} {b.broker_name}</span>
-                      <span className="text-[11px] opacity-85">({b.count} pos.)</span>
-                      <span className={`px-1.5 py-0.2 rounded-md text-[10px] font-black privacy-blur ${
-                        isActive ? 'bg-white/20 text-white' : 'bg-gray-100 text-gray-700'
-                      }`}>
-                        {formatCurrency(b.value)} ({b.weightPct.toFixed(1)}%)
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
+                      {tr.type === 'BUY' ? '🟢 KOOP' : tr.type === 'SELL' ? '🔴 VERKOOP' : '💰 DIVIDEND'}{' '}
+                      {tr.quantity}x {tr.ticker} ({tr.broker_name})
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
-          )}
+
+            {/* Modal Footer */}
+            <div className="flex items-center justify-between pt-2">
+              {isViewingHistoricalDate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTimelineSliderIdx && setTimelineSliderIdx(timeline.length - 1);
+                    setShowTimeMachinePopup(false);
+                  }}
+                  className="text-xs font-bold text-indigo-600 hover:text-indigo-800 hover:underline"
+                >
+                  ↺ Reset naar Live weergave
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setShowTimeMachinePopup(false)}
+                className="ml-auto px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-bold transition-all shadow-xs"
+              >
+                Sluiten
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

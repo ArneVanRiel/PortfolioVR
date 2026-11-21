@@ -379,6 +379,7 @@ const updateProfile = async (req, res) => {
     const id = isAdminUser(req) ? requestedId : callerId;
     const { 
         username, 
+        email,
         default_currency, 
         manual_exchange_rate,
         allow_fractional_shares,
@@ -392,6 +393,7 @@ const updateProfile = async (req, res) => {
         const request = new sql.Request();
         request.input('id', sql.Int, id);
         request.input('username', sql.NVarChar, username);
+        request.input('email', sql.NVarChar, email || null);
         request.input('default_currency', sql.NVarChar, default_currency);
         request.input('manual_exchange_rate', sql.Decimal(18, 4), manual_exchange_rate);
         request.input('allow_fractional_shares', sql.Bit, allow_fractional_shares !== undefined ? (allow_fractional_shares ? 1 : 0) : 1);
@@ -406,6 +408,7 @@ const updateProfile = async (req, res) => {
         await request.query(`
             UPDATE PF_Users 
             SET username = @username, 
+                email = ISNULL(@email, email),
                 default_currency = @default_currency, 
                 manual_exchange_rate = @manual_exchange_rate,
                 allow_fractional_shares = @allow_fractional_shares,

@@ -982,3 +982,33 @@ CREATE TABLE WM_dev_users (
     last_login datetime2
 );
 
+-- ============================================================
+-- IDEAS (FEEDBACK & ROADMAP)
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'ideas')
+CREATE TABLE ideas (
+    id NVARCHAR(36) NOT NULL PRIMARY KEY,
+    title NVARCHAR(MAX) NOT NULL,
+    description NVARCHAR(MAX),
+    category NVARCHAR(255),
+    status NVARCHAR(100) DEFAULT 'proposed',
+    created_by INT,
+    created_at DATETIME DEFAULT GETDATE(),
+    planned_date NVARCHAR(50),
+    FOREIGN KEY (created_by) REFERENCES PF_Users(id) ON DELETE SET NULL
+);
+
+-- ============================================================
+-- IDEA_LIKES
+-- ============================================================
+IF NOT EXISTS (SELECT * FROM sys.tables WHERE name = 'idea_likes')
+CREATE TABLE idea_likes (
+    idea_id NVARCHAR(36) NOT NULL,
+    user_id INT NOT NULL,
+    created_at DATETIME DEFAULT GETDATE(),
+    PRIMARY KEY (idea_id, user_id),
+    FOREIGN KEY (idea_id) REFERENCES ideas(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES PF_Users(id) ON DELETE CASCADE
+);
+
+

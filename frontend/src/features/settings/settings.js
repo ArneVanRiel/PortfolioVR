@@ -4,7 +4,6 @@ import toast from "react-hot-toast";
 import BrokersTable from "./BrokersTable";
 import StockExchangeTable from "./StockExchangeTable";
 import AddStockForm from "./AddStockForm";
-import AvailableBalance from "../dashboard/AvailableBalance";
 import StocksManagementTable from "./StocksManagementTable";
 
 const STRATEGY_MODE_PRESETS = {
@@ -299,14 +298,17 @@ function Settings() {
             {/* Header */}
             <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
                 <div>
-                    <h1 className="text-3xl font-bold text-gray-800">Beheerderspaneel & Instellingen</h1>
+                    <h1 className="text-3xl font-bold text-gray-900 flex items-center gap-2.5">
+                        <i className="ph-fill ph-shield-check text-indigo-600"></i>
+                        Beheerderspaneel
+                    </h1>
                     <p className="text-sm text-gray-500 mt-1">
-                        Alleen jij (User 1 • Ontwikkelaar) kan nieuwe accounts aanmaken en exact bepalen wat andere gebruikers kunnen zien en gebruiken.
+                        Algemene systeeminstellingen van de applicatie: gebruikers &amp; rechten beheren, brokers &amp; beurzen configureren en de aandelen database onderhouden.
                     </p>
                 </div>
                 <span className="text-xs font-extrabold text-indigo-800 bg-indigo-100 border border-indigo-200 px-4 py-2 rounded-full shadow-2xs flex items-center gap-1.5">
                     <i className="ph-fill ph-crown text-amber-500 text-base"></i>
-                    Ontwikkelaar (User 1)
+                    Beheerder (User 1)
                 </span>
             </div>
 
@@ -743,11 +745,6 @@ function Settings() {
                     </div>
                 </div>
             )}
-
-            {/* Financiën Sectie */}
-            <div className="bg-white p-6 rounded-xl shadow-sm border border-gray-100">
-                <AvailableBalance />
-            </div>
 
             {/* Brokers & Beurzen Sectie */}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

@@ -1192,9 +1192,8 @@ const GrowthTab = ({
             <button
               type="button"
               onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter('ALL')}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
-                selectedBrokerFilter === 'ALL' ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
-              }`}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${selectedBrokerFilter === 'ALL' ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
+                }`}
             >
               Alle Brokers
             </button>
@@ -1206,9 +1205,8 @@ const GrowthTab = ({
                   key={b.broker_name}
                   type="button"
                   onClick={() => setSelectedBrokerFilter && setSelectedBrokerFilter(isActive ? 'ALL' : b.broker_name)}
-                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
-                    isActive ? (isEtoro ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-blue-600 text-white border-blue-600') : 'bg-gray-100 text-gray-700 border-gray-200'
-                  }`}
+                  className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${isActive ? (isEtoro ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-blue-600 text-white border-blue-600') : 'bg-gray-100 text-gray-700 border-gray-200'
+                    }`}
                 >
                   {isEtoro ? '🟢 eToro' : '🔵 DEGIRO'} ({b.weightPct.toFixed(0)}%)
                 </button>
@@ -1218,27 +1216,24 @@ const GrowthTab = ({
             <button
               type="button"
               onClick={() => setSelectedTypes && setSelectedTypes([])}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
-                !selectedTypes || selectedTypes.length === 0 ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
-              }`}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${!selectedTypes || selectedTypes.length === 0 ? 'bg-slate-900 text-white border-slate-900' : 'bg-gray-100 text-gray-700 border-gray-200'
+                }`}
             >
               Alles
             </button>
             <button
               type="button"
               onClick={() => setSelectedTypes && setSelectedTypes(['Stocks'])}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
-                selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase())) ? 'bg-teal-600 text-white border-teal-600' : 'bg-gray-100 text-gray-700 border-gray-200'
-              }`}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${selectedTypes && selectedTypes.some(t => ['STOCK', 'STOCKS', 'AANDELEN'].includes(String(t).toUpperCase())) ? 'bg-teal-600 text-white border-teal-600' : 'bg-gray-100 text-gray-700 border-gray-200'
+                }`}
             >
               💎 Aandelen
             </button>
             <button
               type="button"
               onClick={() => setSelectedTypes && setSelectedTypes(['ETF'])}
-              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${
-                selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase())) ? 'bg-amber-600 text-white border-amber-600' : 'bg-gray-100 text-gray-700 border-gray-200'
-              }`}
+              className={`px-2 py-0.5 rounded-lg text-[11px] font-bold shrink-0 border ${selectedTypes && selectedTypes.some(t => ['ETF', 'ETFS', 'FUND'].includes(String(t).toUpperCase())) ? 'bg-amber-600 text-white border-amber-600' : 'bg-gray-100 text-gray-700 border-gray-200'
+                }`}
             >
               📊 ETF's
             </button>
@@ -1248,9 +1243,8 @@ const GrowthTab = ({
 
       {/* 🕰️ DESKTOP TIJDMACHINE (Verborgen op Mobiel) */}
       {timeline.length > 0 && (
-        <div className={`hidden md:block bg-white rounded-2xl p-3.5 sm:p-5 border-2 shadow-sm space-y-3 sm:space-y-4 transition-all ${
-          isViewingHistoricalDate ? 'border-purple-400 ring-2 ring-purple-100' : 'border-purple-200/80'
-        }`}>
+        <div className={`hidden md:block bg-white rounded-2xl p-3.5 sm:p-5 border-2 shadow-sm space-y-3 sm:space-y-4 transition-all ${isViewingHistoricalDate ? 'border-purple-400 ring-2 ring-purple-100' : 'border-purple-200/80'
+          }`}>
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-gray-100 pb-3">
             <div className="flex items-center gap-2">
               <span className="p-2 rounded-xl bg-purple-100 text-purple-700 font-black text-sm">🕰️</span>

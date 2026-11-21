@@ -18,6 +18,7 @@ const stockExchangeRoutes = require('./routes/stockExchangeRoutes');
 const screenerRoutes = require('./routes/screenerRoutes');
 const backtestRoutes = require('./routes/backtestRoutes');
 const strategyRoutes = require('./routes/strategyRoutes');
+const ideasRoutes = require('./routes/ideasRoutes');
 const authRoutes = require('./routes/authRoutes');
 const verifyToken = require('./middleware/authMiddleware');
 
@@ -129,6 +130,7 @@ app.use('/api/stockexchange', verifyToken, stockExchangeRoutes);
 app.use('/api/screener', verifyToken, screenerRoutes);
 app.use('/api/backtest', verifyToken, backtestRoutes);
 app.use('/api/strategies', strategyRoutes);
+app.use('/api/ideas', verifyToken, ideasRoutes);
 
 const notificationController = require('./controllers/notificationController');
 app.get('/api/notifications', verifyToken, notificationController.getNotifications);
