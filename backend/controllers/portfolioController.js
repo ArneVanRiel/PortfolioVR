@@ -1565,7 +1565,7 @@ const getPortfolioHistoryTimeline = async (req, res) => {
         LEFT JOIN Stocks s ON t.aandeel_id = s.aandeel_id
         LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
         LEFT JOIN Brokers b ON t.broker_id = b.broker_id
-        WHERE t.user_id = @userId AND t.aandeel_id IS NOT NULL
+        WHERE t.user_id = @userId
         ORDER BY t.purchase_time ASC, t.id ASC
       `);
 
@@ -1578,14 +1578,14 @@ const getPortfolioHistoryTimeline = async (req, res) => {
     const firstDateStr = new Date(transactions[0].purchase_time).toISOString().split('T')[0];
     const todayStr = new Date().toISOString().split('T')[0];
 
-    // 2. Haal slotkoersen en EUR/USD wisselkoersen op
-    const [pricesRes, fxRes] = await Promise.all([
+    // 2. Haal slotkoersen, wisselkoersen en actuele broker cash op
+    const [pricesRes, fxRes, credRes, availRes] = await Promise.all([
       pool.request()
         .input('firstDate', sql.Date, new Date(firstDateStr))
         .query(`
           SELECT aandeel_id, CAST(date AS DATE) AS date, closing_price
           FROM DailyClosingPrices
-          WHERE aandeel_id IN (${stockIds.join(',')})
+          WHERE aandeel_id IN (${stockIds.length > 0 ? stockIds.join(',') : '0'})
             AND date >= DATEADD(day, -10, @firstDate)
           ORDER BY date ASC
         `),
@@ -1594,8 +1594,62 @@ const getPortfolioHistoryTimeline = async (req, res) => {
         FROM DailyExchangeRates
         WHERE currency_pair = 'EURUSD'
         ORDER BY date ASC
-      `)
+      `),
+      pool.request()
+        .input('userId', sql.Int, userId)
+        .query(`
+          SELECT broker_name, cash_balance, cash_currency
+          FROM UserBrokerCredentials
+          WHERE user_id = @userId
+        `),
+      pool.request()
+        .input('userId', sql.Int, userId)
+        .query(`
+          WITH LatestBalances AS (
+            SELECT ab.balance_type_id, ab.amount,
+                   ROW_NUMBER() OVER (PARTITION BY ab.balance_type_id ORDER BY ab.update_date DESC, ab.balance_id DESC) as rn
+            FROM AvailableBalances ab
+            WHERE ab.user_id = @userId
+          )
+          SELECT balance_type_id, amount
+          FROM LatestBalances
+          WHERE rn = 1
+        `)
     ]);
+
+    // Huidige geverifieerde cashbalansen als referentiepunt
+    let currentDegiroCashEur = 0;
+    let currentEtoroCashUsd = 0;
+    for (const c of (credRes.recordset || [])) {
+      const b = String(c.broker_name || '').toLowerCase();
+      if (b.includes('degiro')) currentDegiroCashEur = Number(c.cash_balance || 0);
+      else if (b.includes('etoro')) currentEtoroCashUsd = Number(c.cash_balance || 0);
+    }
+    let currentOtherCashEur = 0;
+    for (const a of (availRes.recordset || [])) {
+      if (Number(a.balance_type_id) > 2) currentOtherCashEur += Number(a.amount || 0);
+    }
+
+    // Cashflows per transactie voorbereiden
+    const txCashFlows = transactions.map(tx => {
+      const isEtoro = Number(tx.broker_id) === 1 || String(tx.currency).toUpperCase() === 'USD' || String(tx.broker_name).toLowerCase().includes('etoro');
+      const qty = Number(tx.quantity || 0);
+      const price = Number(tx.price || 0);
+      const gross = qty * price;
+      const fees = Number(tx.fees || 0);
+      const taxes = Number(tx.taxes || 0);
+      let flow = 0;
+      if (tx.transaction_type === 'DEPOSIT') flow = gross;
+      else if (tx.transaction_type === 'WITHDRAWAL') flow = -gross;
+      else if (tx.transaction_type === 'BUY') flow = -(gross + fees + taxes);
+      else if (tx.transaction_type === 'SELL') flow = gross - fees - taxes;
+      else if (tx.transaction_type === 'DIVIDEND') flow = gross - taxes;
+      return {
+        date: new Date(tx.purchase_time).toISOString().split('T')[0],
+        isEtoro,
+        flow
+      };
+    });
 
     const fxMap = {};
     let lastKnownFx = 1.10;
@@ -1673,46 +1727,64 @@ const getPortfolioHistoryTimeline = async (req, res) => {
         const brokerName = String(tx.broker_name || 'Onbekend').trim();
         availableBrokersSet.add(brokerName);
 
-        if (!stateByStock.has(sid)) stateByStock.set(sid, new Map());
-        const brokerMap = stateByStock.get(sid);
-        if (!brokerMap.has(brokerName)) {
-          brokerMap.set(brokerName, { qty: 0, invEur: 0, invUsd: 0, divEur: 0, divUsd: 0 });
-        }
-        const bState = brokerMap.get(brokerName);
+        if (sid) {
+          if (!stateByStock.has(sid)) stateByStock.set(sid, new Map());
+          const brokerMap = stateByStock.get(sid);
+          if (!brokerMap.has(brokerName)) {
+            brokerMap.set(brokerName, { qty: 0, invEur: 0, invUsd: 0, divEur: 0, divUsd: 0 });
+          }
+          const bState = brokerMap.get(brokerName);
 
-        const qty = Number(tx.quantity || 0);
-        const price = Number(tx.price || 0);
-        if (!lastKnownPriceByStock[sid]) lastKnownPriceByStock[sid] = price;
+          const qty = Number(tx.quantity || 0);
+          const price = Number(tx.price || 0);
+          if (!lastKnownPriceByStock[sid]) lastKnownPriceByStock[sid] = price;
 
-        if (tx.transaction_type === 'BUY') {
-          bState.qty += qty;
-          if (tx.currency === 'EUR') bState.invEur += qty * price;
-          else bState.invUsd += qty * price;
-        } else if (tx.transaction_type === 'SELL') {
-          // Verminder inleg proportioneel met gewogen gemiddelde aankoopprijs (geen negatieve inleg!)
-          const avgCostEur = bState.qty > 0 ? (bState.invEur / bState.qty) : 0;
-          const avgCostUsd = bState.qty > 0 ? (bState.invUsd / bState.qty) : 0;
-          bState.invEur = Math.max(0, bState.invEur - (qty * avgCostEur));
-          bState.invUsd = Math.max(0, bState.invUsd - (qty * avgCostUsd));
-          bState.qty = Math.max(0, bState.qty - qty);
-        } else if (tx.transaction_type === 'DIVIDEND') {
-          const divNet = Math.max(0, (qty * price) - Number(tx.taxes || 0));
-          if (tx.currency === 'EUR') bState.divEur += divNet;
-          else bState.divUsd += divNet;
+          if (tx.transaction_type === 'BUY') {
+            bState.qty += qty;
+            if (tx.currency === 'EUR') bState.invEur += qty * price;
+            else bState.invUsd += qty * price;
+          } else if (tx.transaction_type === 'SELL') {
+            // Verminder inleg proportioneel met gewogen gemiddelde aankoopprijs (geen negatieve inleg!)
+            const avgCostEur = bState.qty > 0 ? (bState.invEur / bState.qty) : 0;
+            const avgCostUsd = bState.qty > 0 ? (bState.invUsd / bState.qty) : 0;
+            bState.invEur = Math.max(0, bState.invEur - (qty * avgCostEur));
+            bState.invUsd = Math.max(0, bState.invUsd - (qty * avgCostUsd));
+            bState.qty = Math.max(0, bState.qty - qty);
+          } else if (tx.transaction_type === 'DIVIDEND') {
+            const divNet = Math.max(0, (qty * price) - Number(tx.taxes || 0));
+            if (tx.currency === 'EUR') bState.divEur += divNet;
+            else bState.divUsd += divNet;
+          }
         }
 
         if (txDateStr === dateStr) {
           tradesOnDate.push({
             type: tx.transaction_type,
-            ticker: tx.ticker,
-            name: tx.stock_name || tx.ticker,
-            quantity: Number(qty.toFixed(4)),
-            price: Number(price.toFixed(2)),
+            ticker: tx.ticker || (tx.transaction_type === 'DEPOSIT' ? 'Storting' : (tx.transaction_type === 'WITHDRAWAL' ? 'Opname' : 'Cash')),
+            name: tx.stock_name || (tx.transaction_type === 'DEPOSIT' ? 'Cash Storting' : (tx.transaction_type === 'WITHDRAWAL' ? 'Cash Opname' : tx.ticker || 'Transactie')),
+            quantity: Number(Number(tx.quantity || 0).toFixed(4)),
+            price: Number(Number(tx.price || 0).toFixed(2)),
             currency: tx.currency,
             broker_name: brokerName
           });
         }
         txIdx++;
+      }
+
+      // Bereken dynamische historische cash op deze datum
+      let degiroFlowAfter = 0;
+      let etoroFlowAfter = 0;
+      for (let i = txCashFlows.length - 1; i >= 0; i--) {
+        const cf = txCashFlows[i];
+        if (cf.date <= dateStr) break;
+        if (cf.isEtoro) etoroFlowAfter += cf.flow;
+        else degiroFlowAfter += cf.flow;
+      }
+      const degiroCashAtDate = Math.max(0, currentDegiroCashEur - degiroFlowAfter);
+      const etoroCashAtDate = Math.max(0, currentEtoroCashUsd - etoroFlowAfter);
+      const totalCashAtDate = isEur
+        ? (degiroCashAtDate + (etoroCashAtDate / fx) + currentOtherCashEur)
+        : ((degiroCashAtDate * fx) + etoroCashAtDate + (currentOtherCashEur * fx));
       }
 
       const hadTradeToday = tradesOnDate.length > 0;
@@ -1835,6 +1907,12 @@ const getPortfolioHistoryTimeline = async (req, res) => {
         percentage: dayTotalVal > 0 ? Number(((b.value / dayTotalVal) * 100).toFixed(2)) : 0
       })).sort((a, b) => b.value - a.value);
 
+      // Voeg berekende broker cash toe
+      const degiroTotalEntry = dayBrokerTotals.find(b => b.broker_name.toLowerCase().includes('degiro'));
+      const etoroTotalEntry = dayBrokerTotals.find(b => b.broker_name.toLowerCase().includes('etoro'));
+      if (degiroTotalEntry) degiroTotalEntry.cash = Number((isEur ? degiroCashAtDate : degiroCashAtDate * fx).toFixed(2));
+      if (etoroTotalEntry) etoroTotalEntry.cash = Number((isEur ? etoroCashAtDate / fx : etoroCashAtDate).toFixed(2));
+
       timeline.push({
         date: dateStr,
         isToday: isLastDay,
@@ -1845,6 +1923,9 @@ const getPortfolioHistoryTimeline = async (req, res) => {
         totalGainLoss: Number(dayGain.toFixed(2)),
         totalGainLossPct: Number(dayGainPct.toFixed(2)),
         cumulativeDividends: Number(dayTotalDiv.toFixed(2)),
+        cash: Number(totalCashAtDate.toFixed(2)),
+        degiroCash: Number(degiroCashAtDate.toFixed(2)),
+        etoroCash: Number(etoroCashAtDate.toFixed(2)),
         brokerTotals: dayBrokerTotals,
         holdings: snapshotHoldings
       });

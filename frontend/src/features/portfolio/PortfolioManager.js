@@ -305,6 +305,7 @@ const PortfolioManager = () => {
       }));
       const trimmedTypes = typesRes.data.map(t => t.type_name ? String(t.type_name).trim() : 'Onbekend');
       setAvailableAssetTypes([...new Set(trimmedTypes)]); // Set verwijdert eventuele duplicaten
+      window.dispatchEvent(new Event('portfolioDataUpdated'));
     } catch (error) {
       console.error("Fout bij het ophalen van portfolio data:", error);
     } finally {
@@ -1987,11 +1988,12 @@ const PortfolioManager = () => {
       <input type="file" accept=".xlsx, .xls, .csv" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
 
       {/* Twee-koloms indeling op Desktop (Links deeltabs, Rechts inhoud) */}
-      <div className="flex flex-col md:flex-row items-start gap-4 lg:gap-6 w-full">
-        {/* Linkse deel: Deeltabs Navigatie (Desktop) */}
-        <aside className="hidden md:flex flex-col w-56 lg:w-60 bg-white rounded-2xl border border-gray-200/90 shadow-2xs p-3 shrink-0 sticky top-20 min-h-[calc(100vh-6rem)]">
-          <div className="space-y-1">
-            <div className="px-3 py-2 text-[11px] font-extrabold uppercase tracking-wider text-gray-400">
+      <div className="flex flex-col md:flex-row items-start gap-4 lg:gap-5 w-full -mt-1">
+        {/* Linkse deel: Deeltabs Navigatie (Desktop) - Zonder kader, op achtergrond, sticky en intern scrollbaar */}
+        <aside className="hidden md:flex flex-col w-52 lg:w-56 shrink-0 sticky top-14 h-[calc(100vh-4.8rem)] max-h-[calc(100vh-4.8rem)] justify-between -ml-1 lg:-ml-2 pb-1">
+          {/* Scrollbare lijst met deeltabs - min-h-0 is essentieel zodat de lijst intern scrollt en de onderkant altijd in beeld blijft */}
+          <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar space-y-0.5 pr-1">
+            <div className="px-3 py-1 text-[11px] font-black uppercase tracking-wider text-gray-400">
               Navigatie
             </div>
             {TABS.map(tab => {
@@ -2001,10 +2003,10 @@ const PortfolioManager = () => {
                   key={tab.id}
                   type="button"
                   onClick={() => startTransition(() => setActiveTab(tab.id))}
-                  className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm transition-all text-left ${
+                  className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-xl text-sm transition-all text-left ${
                     isActive
                       ? 'font-black text-blue-600 bg-blue-50/90 shadow-2xs'
-                      : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                      : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100/70'
                   }`}
                 >
                   <i className={`ph-fill ${tab.icon} text-lg ${isActive ? 'text-blue-600' : 'text-gray-400'}`}></i>
@@ -2014,8 +2016,9 @@ const PortfolioManager = () => {
             })}
           </div>
 
-          {/* Valuta Keuze Desktop */}
-          <div className="pt-3 border-t border-gray-100 mt-4 space-y-2">
+          {/* Onderste vaste sectie: Valuta + Synchroniseer + Brokers (Altijd direct zichtbaar in viewport!) */}
+          <div className="shrink-0 mt-auto pt-2 border-t border-gray-200/80 space-y-1.5 pb-1">
+            {/* Valuta Keuze Desktop */}
             <div className="flex items-center justify-between px-1">
               <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Valuta</span>
               <div className="inline-flex rounded-lg p-0.5 bg-gray-100 text-[11px] font-bold">
@@ -2035,15 +2038,13 @@ const PortfolioManager = () => {
                 </button>
               </div>
             </div>
-          </div>
 
-          {/* Linkse deel (onderaan uitgelijnd): Synchroniseer */}
-          <div className="mt-auto pt-4 border-t border-gray-100 space-y-2">
+            {/* Synchroniseer */}
             <button
               type="button"
               onClick={() => fetchPortfolioData()}
               disabled={loading}
-              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-black transition-all shadow-xs"
+              className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-black transition-all shadow-xs"
               title="Data en Synchronisatie Status vernieuwen"
             >
               <i className={`ph-bold ph-arrows-clockwise text-base ${loading ? 'animate-spin' : ''}`}></i>
@@ -2235,7 +2236,10 @@ const PortfolioManager = () => {
           setSelectedTypes={setSelectedTypes}
           brokerCash={brokerCash}
           totalCashDisplay={totalCashDisplay}
+          otherCashSum={otherCashSum}
+          availableBalanceData={availableBalanceData}
           brokerTotals={brokerTotals}
+          setIsBrokerSyncOpen={setIsBrokerSyncOpen}
         />
       )}
 

@@ -5,6 +5,7 @@ import { useIncognito } from '../../hooks/useIncognito';
 
 const HeaderBalanceDisplay = () => {
   const [balance, setBalance] = useState(0);
+  const [investedValue, setInvestedValue] = useState(0);
   const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [balanceTypes, setBalanceTypes] = useState([]);
   const [currentInputBalances, setCurrentInputBalances] = useState({});
@@ -14,6 +15,19 @@ const HeaderBalanceDisplay = () => {
   const isIncognito = useIncognito();
   const userRole = localStorage.getItem('role') || 'user';
   const isDemo = userRole === 'demo';
+
+  // Haal belegd vermogen op (som van alle holdings)
+  const fetchInvestedValue = useCallback(async () => {
+    try {
+      const res = await http.get('/portfolio/holdings');
+      if (Array.isArray(res.data)) {
+        const sum = res.data.reduce((acc, h) => acc + (Number(h.value) || 0), 0);
+        setInvestedValue(sum);
+      }
+    } catch (err) {
+      console.warn('Kon belegd vermogen niet ophalen:', err);
+    }
+  }, []);
 
   // Haal live broker cash saldi op
   const fetchBrokerCash = useCallback(async () => {
@@ -40,13 +54,21 @@ const HeaderBalanceDisplay = () => {
 
   useEffect(() => {
     fetchLatestBalanceOnly();
-  }, [fetchLatestBalanceOnly]);
+    fetchInvestedValue();
+  }, [fetchLatestBalanceOnly, fetchInvestedValue]);
 
   useEffect(() => {
-    const handleRefresh = () => fetchLatestBalanceOnly();
+    const handleRefresh = () => {
+      fetchLatestBalanceOnly();
+      fetchInvestedValue();
+    };
     window.addEventListener('availableBalanceUpdated', handleRefresh);
-    return () => window.removeEventListener('availableBalanceUpdated', handleRefresh);
-  }, [fetchLatestBalanceOnly]);
+    window.addEventListener('portfolioDataUpdated', handleRefresh);
+    return () => {
+      window.removeEventListener('availableBalanceUpdated', handleRefresh);
+      window.removeEventListener('portfolioDataUpdated', handleRefresh);
+    };
+  }, [fetchLatestBalanceOnly, fetchInvestedValue]);
 
   const handleDoubleClick = async () => {
     if (isDemo) return;
@@ -122,11 +144,24 @@ const HeaderBalanceDisplay = () => {
 
   return (
     <>
-      <div onDoubleClick={handleDoubleClick} onClick={handleDoubleClick} className={`${isDemo ? '' : 'cursor-pointer'} select-none`} title={isDemo ? '' : 'Klik om aan te passen'}>
-        <span className="text-[10px] sm:text-xs font-medium text-gray-500 uppercase tracking-wider block">Beschikbaar</span>
-        <p className="text-sm sm:text-lg font-bold text-green-600 privacy-blur leading-tight">
-          {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-        </p>
+      <div className="flex items-center gap-2 sm:gap-3.5 select-none">
+        {/* Belegd vermogen (altijd zichtbaar) */}
+        <div className="text-right sm:text-left">
+          <span className="text-[10px] sm:text-xs font-semibold text-gray-400 uppercase tracking-wider block">Belegd</span>
+          <p className="text-xs sm:text-sm md:text-base font-black text-gray-900 privacy-blur leading-tight">
+            {isIncognito ? '€ ••••••' : `€${investedValue.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          </p>
+        </div>
+
+        <div className="h-6 w-px bg-gray-200"></div>
+
+        {/* Beschikbaar Saldo */}
+        <div onDoubleClick={handleDoubleClick} onClick={handleDoubleClick} className={`${isDemo ? '' : 'cursor-pointer'} select-none`} title={isDemo ? '' : 'Klik om aan te passen'}>
+          <span className="text-[10px] sm:text-xs font-semibold text-gray-400 uppercase tracking-wider block">Beschikbaar</span>
+          <p className="text-xs sm:text-sm md:text-base font-black text-emerald-600 privacy-blur leading-tight">
+            {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          </p>
+        </div>
       </div>
 
       {/* Modal voor aanpassen */}

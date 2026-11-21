@@ -535,9 +535,9 @@ function App() {
 
       {/* Hoofdinhoud Layout (Geen desktop aside meer, hoofdnavigatie staat nu in de header) */}
       <div className="flex flex-col flex-1 overflow-hidden">
-        {/* Main Content Scroll Area */}
+        {/* Main Content Scroll Area - compactere padding zodat navigatiemenu hoger en strak links staat */}
         <main className="flex-1 overflow-y-auto min-h-0 bg-gray-50/50">
-          <div className="p-2.5 sm:p-4 md:p-6 lg:p-8 max-w-[1600px] mx-auto w-full">
+          <div className="px-2 sm:px-3 md:px-4 py-2 max-w-[1680px] mx-auto w-full">
             <Routes>
               <Route path='/login' element={<LoginPageTest />} />
               <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
