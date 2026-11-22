@@ -383,11 +383,15 @@ const StrategyStudioPage = () => {
                       }}
                       className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-bold text-gray-900 outline-none"
                     >
-                      {allStrategiesList.map(s => (
-                        <option key={s.strategy_id} value={s.strategy_id}>
-                          [{(s.strategy_type || 'STOCKS') === 'ETF' ? '📈 ETF' : '💎 Aandelen'}] {s.name}
-                        </option>
-                      ))}
+                      {allStrategiesList.map(s => {
+                        const sType = (s.strategy_type || 'STOCKS').toUpperCase();
+                        const typeLabel = sType === 'ETF' ? '📈 ETF' : sType === 'CRYPTO' ? '🪙 Crypto' : '💎 Aandelen';
+                        return (
+                          <option key={s.strategy_id} value={s.strategy_id}>
+                            [{typeLabel}] {s.name}
+                          </option>
+                        );
+                      })}
                     </select>
                   </div>
 

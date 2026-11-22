@@ -120,6 +120,7 @@ const StrategyAdvisorTab = () => {
     }
   });
   const [etfData, setEtfData] = useState(null);
+  const [cryptoData, setCryptoData] = useState(null);
   const [myStrategyConfig, setMyStrategyConfig] = useState(null);
   const [loading, setLoading] = useState(() => !stockData);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -136,7 +137,7 @@ const StrategyAdvisorTab = () => {
 
   // Donuts & Koopkans-Radar states
   const [currentDonutGroupMode, setCurrentDonutGroupMode] = useState('holdings'); // 'holdings' | 'brokers'
-  const [idealTableFilter, setIdealTableFilter] = useState('ALL'); // 'ALL' | 'WATCH_OR_BUY' | 'MACD_RED_TURNING' | 'UNDERVALUED' | 'RISING_WV' | 'ETF_ONLY'
+  const [idealTableFilter, setIdealTableFilter] = useState('ALL'); // 'ALL' | 'WATCH_OR_BUY' | 'MACD_RED_TURNING' | 'UNDERVALUED' | 'RISING_WV' | 'ETF_ONLY' | 'CRYPTO_ONLY'
   const [idealTableSort, setIdealTableSort] = useState('RADAR'); // 'RADAR' | 'WEIGHT'
   const [matrixFilter, setMatrixFilter] = useState('ALL');
 
@@ -156,9 +157,10 @@ const StrategyAdvisorTab = () => {
       const pot = parseFloat(localStorage.getItem('etf_dca_initial_pot')) || 0;
       const start = localStorage.getItem('etf_dca_start_date') || '2026-01-01';
 
-      const [stocksRes, etfRes, cfgRes] = await Promise.all([
+      const [stocksRes, etfRes, cryptoRes, cfgRes] = await Promise.all([
         http.get(`/portfolio/strategy-advisor?userId=${uid}&currency=EUR${force ? '&forceRefresh=true' : ''}`).catch(() => ({ data: null })),
         http.get(`/portfolio/etf-strategy?userId=${uid}&monthlyBudget=${budget}&initialPot=${pot}&startDate=${start}${force ? '&forceRefresh=true' : ''}`).catch(() => ({ data: null })),
+        http.get(`/portfolio/crypto-strategy?userId=${uid}${force ? '&forceRefresh=true' : ''}`).catch(() => ({ data: null })),
         http.get('/strategies/my-config').catch(() => ({ data: null }))
       ]);
 
@@ -172,6 +174,9 @@ const StrategyAdvisorTab = () => {
       }
       if (etfRes?.data) {
         setEtfData(etfRes.data);
+      }
+      if (cryptoRes?.data) {
+        setCryptoData(cryptoRes.data);
       }
       if (cfgRes?.data) {
         setMyStrategyConfig(cfgRes.data);
@@ -502,8 +507,66 @@ const StrategyAdvisorTab = () => {
       });
     });
 
+    // 4. Voeg Crypto Strategie Meldingen (BTC, ETH, SOL) toe in exact dezelfde lijst!
+    const defaultCryptoStratName = cryptoData?.activeStrategyConfig?.name || 'Arne Crypto MACD 2.0 (Min. €50)';
+    const cryptoTimeline = cryptoData?.timeline || [];
+    cryptoTimeline.forEach((cItem, idx) => {
+      const isMatched = cItem.status === 'EXECUTED' || cItem.status === 'EXECUTED_SELL';
+      const isOpenBuy = cItem.status === 'OPEN_OPPORTUNITY';
+      const isOpenSell = cItem.status === 'OPEN_SELL_ORDER';
+      const isSupervision = cItem.status === 'UNDER_SUPERVISION' || cItem.status === 'SKIPPED_SMALL_SELL';
+      const isSell = cItem.signalType === 'SELL' || isOpenSell || cItem.status === 'EXECUTED_SELL';
+
+      let statusCategory = 'EXPIRED';
+      let badgeTone = 'slate';
+      if (isOpenBuy) {
+        statusCategory = 'BUY';
+        badgeTone = 'emerald';
+      } else if (isOpenSell || (isSell && !isMatched)) {
+        statusCategory = 'SELL';
+        badgeTone = 'rose';
+      } else if (isMatched) {
+        statusCategory = 'MATCHED';
+        badgeTone = isSell ? 'rose' : 'emerald';
+      } else if (isSupervision) {
+        statusCategory = 'SUPERVISION';
+        badgeTone = 'amber';
+      }
+
+      items.push({
+        id: cItem.id || `crypto-tl-${idx}`,
+        strategyType: 'CRYPTO',
+        strategyName: cItem.strategyName || defaultCryptoStratName,
+        isFromOldStrategy: false,
+        date: cItem.date,
+        timestamp: cItem.timestamp || new Date(cItem.date).getTime(),
+        ticker: cItem.ticker,
+        name: cItem.name || cItem.ticker,
+        status: cItem.status,
+        statusCategory,
+        isActionRequired: Boolean(cItem.isActionRequired),
+        isSell,
+        isMatched,
+        shortBadge: cItem.statusBadge || (isSell ? '🔴 Verkoop' : '🟢 Koopkans'),
+        badgeTone,
+        shares: Number(cItem.shares || 0),
+        amountEur: Number(cItem.totalAmount || 0),
+        signalPrice: Number(cItem.signalPrice || 0),
+        actualPrice: Number(cItem.actualPrice || 0),
+        currentPrice: Number(cItem.actualPrice || cItem.signalPrice || 0),
+        priceDiff: Number(cItem.priceDiff || 0),
+        priceDiffPct: Number(cItem.priceDiffPct || 0),
+        isCheaper: Boolean(cItem.isCheaper),
+        executionDate: cItem.executionDate || null,
+        buyMultiplier: cItem.buyMultiplier,
+        percentageToSell: cItem.percentageToSell,
+        remainingPot: cItem.remainingPot,
+        summaryReason: cItem.note || ''
+      });
+    });
+
     return items;
-  }, [stockData, etfData, formatCurrency]);
+  }, [stockData, etfData, cryptoData, formatCurrency]);
 
   // Beschikbare strategienamen voor de filterknoppen
   const distinctStrategies = useMemo(() => {
@@ -787,13 +850,81 @@ const StrategyAdvisorTab = () => {
       };
     });
 
-    return [...stockRadar, ...etfRadar];
-  }, [stockData, etfData, formatCurrency]);
+    const cryptoStratName = cryptoData?.activeStrategyConfig?.name || 'Arne Crypto MACD 2.0 (Min. €50)';
+    const cryptoPot = Number(cryptoData?.activeStrategyConfig?.availableCryptoCash || 450);
+    const cryptoRadar = (cryptoData?.coins || []).map(coin => {
+      const isBuyNow = Boolean(coin.isBuyCrossoverNow);
+      const isTurning = Boolean(coin.isUnderZero && coin.isTurningUpInRed);
+      const radarStatus = isBuyNow
+        ? 'BUY_NOW'
+        : isTurning
+        ? 'WATCH_TURNING_GREEN'
+        : coin.isUnderZero
+        ? 'WATCH_IN_RED'
+        : 'WAIT_FOR_DIP';
+
+      return {
+        stockId: `crypto-${coin.ticker}`,
+        itemType: 'CRYPTO',
+        strategyName: cryptoStratName,
+        ticker: coin.ticker,
+        name: coin.name,
+        score: coin.isPrimaryBuy ? 'BTC' : 'CRYPTO',
+        currentPrice: coin.currentPrice,
+        targetWeightPct: coin.isPrimaryBuy ? 100 : 0,
+        targetValueEur: coin.isPrimaryBuy ? cryptoPot : coin.ownedValueEur,
+        targetShares: coin.liveBuyShares || 0,
+        currentShares: coin.ownedShares || 0,
+        currentWeightPct: coin.isPrimaryBuy ? 100 : 0,
+        diffValueEur: coin.liveBuyOrderEur || 0,
+        diffShares: coin.liveBuyShares || 0,
+        opportunityRadar: {
+          status: radarStatus,
+          priorityRank: isBuyNow ? 1 : isTurning ? 2 : 3,
+          badge: isBuyNow
+            ? (coin.isPrimaryBuy ? '🟢 Koopkans Nu!' : 'ℹ️ Koopsignaal')
+            : isTurning
+            ? '🔥 MACD Draait Groen'
+            : coin.isUnderZero
+            ? '🔴 MACD Onder 0'
+            : `📈 Bullish (Sell bij cross: ${coin.liveSellPct}%)`,
+          reason: coin.isPrimaryBuy
+            ? `Koopfactor: ${coin.liveBuyMultiplier}x • Verkoop-% bij top: ${coin.liveSellPct}%`
+            : `Alleen signalen & verkoop (${coin.liveSellPct}% bij crossunder)`
+        },
+        macdStatus: {
+          isGreenCrossover: isBuyNow,
+          wasRedAndTurningGreen: isTurning,
+          isRed: !coin.isMacdBullish,
+          recoveryPct: coin.recoveryPct || 0,
+          badge: coin.isMacdBullish ? '🟢 MACD > Signaal' : isTurning ? '🔄 Draait omhoog' : '🔴 MACD < Signaal',
+          detail: `MACD: ${coin.macdLine} / Signaal: ${coin.signalLine} (Hist: ${coin.histogram})`
+        },
+        valuationStatus: {
+          isUndervaluedEnough: true,
+          isDeeplyUndervalued: coin.isUnderZero,
+          badge: `🪙 Factor ${coin.liveBuyMultiplier}x (Sell: ${coin.liveSellPct}%)`
+        },
+        tomorrowOrder: {
+          canBuyTomorrow: coin.isPrimaryBuy && coin.liveBuyOrderEur >= 50,
+          fundingStatus: 'DIRECT_CASH',
+          shares: coin.liveBuyShares,
+          badge: coin.isPrimaryBuy
+            ? `Koop ${formatCurrency(coin.liveBuyOrderEur)} (${coin.liveBuyShares} BTC)`
+            : `Enkel BTC kopen (Signaal = ${formatCurrency(coin.liveBuyOrderEur)})`,
+          detail: `Vrije Coinbase cash: ${formatCurrency(cryptoPot)} (Min. €50)`
+        }
+      };
+    });
+
+    return [...stockRadar, ...etfRadar, ...cryptoRadar];
+  }, [stockData, etfData, cryptoData, formatCurrency]);
 
   const filteredRadarItems = useMemo(() => {
     return combinedRadarItems
       .filter(item => {
         if (idealTableFilter === 'ETF_ONLY') return item.itemType === 'ETF';
+        if (idealTableFilter === 'CRYPTO_ONLY') return item.itemType === 'CRYPTO';
         if (idealTableFilter === 'WATCH_OR_BUY') {
           return ['BUY_NOW', 'WATCH_TURNING_GREEN', 'WATCH_IN_RED'].includes(item.opportunityRadar?.status);
         }
@@ -946,7 +1077,9 @@ const StrategyAdvisorTab = () => {
           <div className="flex items-center justify-between lg:justify-end gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 flex-wrap">
               {activeStrategiesList.map((strat, idx) => {
-                const isEtf = (strat.strategy_type || '').toUpperCase() === 'ETF';
+                const sType = (strat.strategy_type || '').toUpperCase();
+                const isEtf = sType === 'ETF';
+                const isCrypto = sType === 'CRYPTO';
                 return (
                   <Link
                     key={strat.entry_id || idx}
@@ -954,12 +1087,14 @@ const StrategyAdvisorTab = () => {
                     state={{ tab: 'active' }}
                     title="Klik om deze strategie te bekijken in de Strategie Builder"
                     className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold border flex items-center gap-1 transition-all hover:opacity-90 ${
-                      isEtf
+                      isCrypto
+                        ? 'bg-amber-50 text-amber-900 border-amber-200'
+                        : isEtf
                         ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
                         : 'bg-indigo-50 text-indigo-900 border-indigo-200'
                     }`}
                   >
-                    <span>{isEtf ? '📈' : '💎'}</span>
+                    <span>{isCrypto ? '🪙' : isEtf ? '📈' : '💎'}</span>
                     <span className="truncate max-w-[155px]">{strat.name}</span>
                   </Link>
                 );
@@ -1011,6 +1146,7 @@ const StrategyAdvisorTab = () => {
               {distinctStrategies.map(s => {
                 const isSelected = strategyFilter === s.name;
                 const isEtf = s.type === 'ETF';
+                const isCrypto = s.type === 'CRYPTO';
                 return (
                   <button
                     key={s.name}
@@ -1021,12 +1157,14 @@ const StrategyAdvisorTab = () => {
                         ? 'bg-blue-600 text-white border-blue-700 shadow-2xs'
                         : s.isOld
                         ? 'bg-purple-50 hover:bg-purple-100 text-purple-900 border-purple-200'
+                        : isCrypto
+                        ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200'
                         : isEtf
                         ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200'
                         : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-900 border-indigo-200'
                     }`}
                   >
-                    <span>{s.isOld ? '🕰️' : isEtf ? '📈' : '💎'}</span>
+                    <span>{s.isOld ? '🕰️' : isCrypto ? '🪙' : isEtf ? '📈' : '💎'}</span>
                     <span className="truncate max-w-[180px]">{s.name}</span>
                     <span className={`text-[10px] px-1 rounded ${isSelected ? 'bg-white/20 text-white' : 'bg-black/5'}`}>
                       {s.count}
@@ -1080,11 +1218,22 @@ const StrategyAdvisorTab = () => {
                 </div>
                 <div className="h-6 w-px bg-gray-200"></div>
                 <div>
-                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">Vrije Cash</span>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">Vrije Aandelen Cash</span>
                   <span className="text-xs sm:text-sm font-black text-purple-600 privacy-blur block leading-tight">
                     {isIncognito ? '€ •••' : formatCurrency(freeStocksCash)}
                   </span>
                 </div>
+                {cryptoData?.activeStrategyConfig && (
+                  <>
+                    <div className="h-6 w-px bg-gray-200"></div>
+                    <div>
+                      <span className="text-[10px] font-bold text-gray-400 uppercase tracking-wider block">Coinbase Cash</span>
+                      <span className="text-xs sm:text-sm font-black text-amber-600 privacy-blur block leading-tight">
+                        {isIncognito ? '€ •••' : formatCurrency(cryptoData.activeStrategyConfig.availableCryptoCash)}
+                      </span>
+                    </div>
+                  </>
+                )}
               </div>
 
               {/* Zoekveld */}
@@ -1213,11 +1362,13 @@ const StrategyAdvisorTab = () => {
                         <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-extrabold border ${
                           item.isFromOldStrategy
                             ? 'bg-purple-50 text-purple-900 border-purple-200'
+                            : item.strategyType === 'CRYPTO'
+                            ? 'bg-amber-50 text-amber-900 border-amber-200'
                             : isEtf
                             ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
                             : 'bg-indigo-50 text-indigo-900 border-indigo-200'
                         }`}>
-                          <span>{item.isFromOldStrategy ? '🕰️' : isEtf ? '📈' : '💎'}</span>
+                          <span>{item.isFromOldStrategy ? '🕰️' : item.strategyType === 'CRYPTO' ? '🪙' : isEtf ? '📈' : '💎'}</span>
                           <span className="truncate max-w-[190px]">{item.strategyName}</span>
                         </span>
                       </td>
@@ -1370,11 +1521,13 @@ const StrategyAdvisorTab = () => {
                           <span className={`text-[10px] font-extrabold px-1.5 py-0.2 rounded truncate max-w-[195px] ${
                             item.isFromOldStrategy
                               ? 'bg-purple-50 text-purple-800'
+                              : item.strategyType === 'CRYPTO'
+                              ? 'bg-amber-50 text-amber-900'
                               : isEtf
                               ? 'bg-emerald-50 text-emerald-800'
                               : 'bg-indigo-50 text-indigo-800'
                           }`}>
-                            {item.isFromOldStrategy ? '🕰️ ' : isEtf ? '📈 ' : '💎 '}
+                            {item.isFromOldStrategy ? '🕰️ ' : item.strategyType === 'CRYPTO' ? '🪙 ' : isEtf ? '📈 ' : '💎 '}
                             {item.strategyName}
                           </span>
                         </div>
@@ -1553,7 +1706,8 @@ const StrategyAdvisorTab = () => {
                   { id: 'MACD_RED_TURNING', label: '🔄 MACD: Rood ➔ Groen' },
                   { id: 'UNDERVALUED', label: '🟢 Ondergewaardeerd ≤ 1.3x' },
                   { id: 'RISING_WV', label: '📈 Stijgende WV' },
-                  { id: 'ETF_ONLY', label: "📈 Kern-ETF's" }
+                  { id: 'ETF_ONLY', label: "📈 Kern-ETF's" },
+                  { id: 'CRYPTO_ONLY', label: '🪙 Crypto (BTC/ETH/SOL)' }
                 ].map(f => {
                   const isActive = idealTableFilter === f.id;
                   return (

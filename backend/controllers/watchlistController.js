@@ -599,8 +599,8 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
     for (const [index, stock] of stocksToProcess.entries()) {
       console.log(`Verwerken van ${stock.ticker_symbol} (${stock.name})...`);
 
-      // HIER KOMT LATER LOGICA VOOR VERSCHILLENDE API'S PER ASSET_TYPE
-      if (stock.asset_type === 'STOCK' || stock.asset_type === 'ETF') {
+      // Prijsdata & MACD (30/90/9) verwerken voor zowel Aandelen (STOCK), ETF's (ETF) als Crypto (CRYPTO)
+      if (stock.asset_type === 'STOCK' || stock.asset_type === 'ETF' || stock.asset_type === 'CRYPTO') {
           let needsApiFetch = true;
           const lastUpdatedAt = latestUpdatedMap[stock.aandeel_id];
           if (lastUpdatedAt) {
@@ -627,9 +627,13 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
               const apiFetchEndDate = todayFormatted;
 
-              if (stock.asset_type === 'ETF') {
+              if (stock.asset_type === 'ETF' || stock.asset_type === 'CRYPTO') {
                 let yahooTicker = stock.ticker_symbol;
-                if (!yahooTicker.includes('.')) {
+                if (stock.asset_type === 'CRYPTO') {
+                  if (!yahooTicker.includes('-')) {
+                    yahooTicker = `${yahooTicker}-EUR`;
+                  }
+                } else if (!yahooTicker.includes('.')) {
                   yahooTicker = `${yahooTicker}.DE`;
                 }
                 const period1 = Math.floor(apiFetchStartDate.getTime() / 1000);
@@ -837,6 +841,8 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
               if (!isNaN(macdLine) && !isNaN(signalLine) && !isNaN(previousMacdLine) && !isNaN(previousSignalLine)) {
                   if (macdLine > signalLine && previousMacdLine <= previousSignalLine) {
                       if (signalLine < 0) alertType = 'Koopsignaal';
+                  } else if (stock.asset_type === 'CRYPTO' && macdLine < signalLine && previousMacdLine >= previousSignalLine) {
+                      if (signalLine > 0) alertType = 'Verkoopsignaal';
                   }
 
                   if (alertType) {
@@ -871,10 +877,6 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
               const updatePayload = JSON.stringify({ type: 'stock_update', aandeel_id: stock.aandeel_id, current_price: lastData.price, current_signal_line: lastData.signalLine, latest_alert_type: alertType, latest_alert_date: new Date(lastData.date).toISOString().split("T")[0] }) + '\n';
               res.write(updatePayload);
           }
-      } else if (stock.asset_type === 'CRYPTO') {
-          console.log(`Ophalen van data voor CRYPTO (${stock.ticker_symbol}) wordt later geïmplementeerd.`);
-          // Hier komt logica voor het ophalen van crypto data van een crypto API
-          // en het verwerken hiervan.
       }
     }
 

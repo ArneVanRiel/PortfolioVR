@@ -6182,6 +6182,514 @@ const getEtfStrategyData = async (req, res) => {
     }
 };
 
+// === CRYPTO STRATEGIE ASSISTENT (Arne Crypto MACD 2.0 • BTC, ETH & SOL • Min. €50) ===
+// Gebruikt de exacte Pine Script v6 formules voor calc1_buy + calc2_buy en percentage_to_sell = |calc1_sell + calc2_sell| * 100
+// met een gesloten Crypto/Coinbase cashpot (standaard €450), 30% basis-tranche, minimumorder €50,
+// waarbij ALLEEN Bitcoin (BTC-EUR) actief gekocht wordt en ETH-EUR & SOL-EUR zowel koop- als verkoopsignalen tonen.
+const calculateCryptoStrategyInternal = async (userId = 1, options = {}) => {
+    try {
+        const pool = await sql.connect(config);
+
+        // 1. Haal gekoppelde Crypto strategie op uit PF_Strategies & PF_UserActiveStrategies
+        let activeCryptoRecord = null;
+        try {
+            const sRes = await pool.request()
+                .input('userId', sql.Int, userId)
+                .query(`
+                    SELECT TOP 1 s.strategy_id, s.name, s.description, s.parameters_json, ua.priority_order, ua.monthly_budget
+                    FROM PF_Strategies s
+                    LEFT JOIN PF_UserActiveStrategies ua ON ua.strategy_id = s.strategy_id AND ua.user_id = @userId
+                    WHERE s.strategy_type = 'CRYPTO'
+                    ORDER BY CASE WHEN ua.id IS NOT NULL THEN 0 ELSE 1 END, s.strategy_id ASC
+                `);
+            activeCryptoRecord = sRes.recordset?.[0] || null;
+        } catch (e) {}
+
+        let cryptoParams = {};
+        try {
+            if (activeCryptoRecord?.parameters_json) cryptoParams = JSON.parse(activeCryptoRecord.parameters_json);
+        } catch (e) {}
+
+        const fastLength = parseInt(options.fastLength || cryptoParams.macdFast || 30);
+        const slowLength = parseInt(options.slowLength || cryptoParams.macdSlow || 90);
+        const signalLength = parseInt(options.signalLength || cryptoParams.macdSignal || 9);
+        const baseTranchePct = parseFloat(options.baseTranchePct || cryptoParams.baseTranchePct || 30); // 30% van vrije crypto-cash
+        const minOrderAmount = parseFloat(options.minOrderAmount || cryptoParams.minOrderAmount || 50); // Min. €50 per order
+
+        // 2. Haal Crypto munten (asset_type_id = 3), hun koersen, gebruikerstransacties en beschikbare Crypto cash (balance_type_id = 6) op
+        const [coinsRes, cryptoTxRes, cryptoBalRes] = await Promise.all([
+            pool.request().query(`
+                SELECT aandeel_id, ticker_symbol, name
+                FROM Stocks
+                WHERE asset_type_id = 3 OR ticker_symbol IN ('BTC-EUR', 'ETH-EUR', 'SOL-EUR')
+                ORDER BY CASE WHEN ticker_symbol LIKE 'BTC%' THEN 1 WHEN ticker_symbol LIKE 'ETH%' THEN 2 ELSE 3 END
+            `),
+            pool.request().input('userId', sql.Int, userId).query(`
+                SELECT t.id, t.aandeel_id, s.ticker_symbol, s.name, t.transaction_type,
+                       t.quantity, t.price, (t.quantity * t.price) AS total_amount, t.purchase_time
+                FROM PF_transactions t
+                JOIN Stocks s ON t.aandeel_id = s.aandeel_id
+                WHERE t.user_id = @userId AND (s.asset_type_id = 3 OR s.ticker_symbol IN ('BTC-EUR', 'ETH-EUR', 'SOL-EUR'))
+                ORDER BY t.purchase_time ASC
+            `),
+            pool.request().input('userId', sql.Int, userId).query(`
+                SELECT TOP 1 amount
+                FROM AvailableBalances
+                WHERE user_id = @userId AND balance_type_id = 6
+                ORDER BY update_date DESC, balance_id DESC
+            `)
+        ]);
+
+        const coinsList = coinsRes.recordset || [];
+        const userCryptoTxs = cryptoTxRes.recordset || [];
+        const availableCryptoCash = cryptoBalRes.recordset?.[0]?.amount !== undefined
+            ? Number(cryptoBalRes.recordset[0].amount)
+            : Number(activeCryptoRecord?.monthly_budget || cryptoParams.initialCapital || 450);
+
+        // Bereken huidig werkelijk bezit per cryptomunt uit PF_transactions
+        const holdingsByStockId = {};
+        userCryptoTxs.forEach(tx => {
+            if (!holdingsByStockId[tx.aandeel_id]) {
+                holdingsByStockId[tx.aandeel_id] = { quantity: 0, netInvested: 0, txCount: 0 };
+            }
+            const qty = Number(tx.quantity || 0);
+            const amt = Number(tx.total_amount || 0);
+            if (tx.transaction_type === 'BUY') {
+                holdingsByStockId[tx.aandeel_id].quantity += qty;
+                holdingsByStockId[tx.aandeel_id].netInvested += amt;
+                holdingsByStockId[tx.aandeel_id].txCount += 1;
+            } else if (tx.transaction_type === 'SELL') {
+                holdingsByStockId[tx.aandeel_id].quantity = Math.max(0, holdingsByStockId[tx.aandeel_id].quantity - qty);
+                holdingsByStockId[tx.aandeel_id].netInvested = Math.max(0, holdingsByStockId[tx.aandeel_id].netInvested - amt);
+                holdingsByStockId[tx.aandeel_id].txCount += 1;
+            }
+        });
+
+        const calcEMA = (vals, period) => {
+            if (!vals || vals.length === 0) return [];
+            const k = 2 / (period + 1);
+            const ema = [vals[0]];
+            for (let i = 1; i < vals.length; i++) {
+                ema.push(vals[i] * k + ema[i - 1] * (1 - k));
+            }
+            return ema;
+        };
+
+        // Helper om koopbedrag te berekenen met 30% vrije cash * multiplier en €50 ondergrens
+        const calcBuyOrderWithFloor = (cashPot, multiplier) => {
+            if (cashPot < minOrderAmount) {
+                return { orderEur: 0, remainingCash: cashPot, skippedUnderMin: true };
+            }
+            const baseAmt = cashPot * (baseTranchePct / 100);
+            const rawAmt = baseAmt * Math.max(0.25, multiplier);
+            let orderEur = Math.max(minOrderAmount, Math.min(cashPot, rawAmt));
+            // Als er minder dan €50 restcash overblijft, voeg het restje toe zodat er geen onbruikbare kruimels achterblijven
+            if ((cashPot - orderEur) > 0 && (cashPot - orderEur) < minOrderAmount) {
+                orderEur = cashPot;
+            }
+            orderEur = +orderEur.toFixed(2);
+            return {
+                orderEur,
+                remainingCash: +(cashPot - orderEur).toFixed(2),
+                skippedUnderMin: false
+            };
+        };
+
+        const coinsResults = [];
+        const allSignals = [];
+        let latestPriceDateStr = '2020-01-01';
+
+        for (const coin of coinsList) {
+            const pricesRes = await pool.request()
+                .input('sid', sql.Int, coin.aandeel_id)
+                .query('SELECT closing_price, date FROM DailyClosingPrices WHERE aandeel_id = @sid ORDER BY date ASC');
+
+            const rows = pricesRes.recordset || [];
+            if (rows.length < slowLength + signalLength) continue;
+
+            const closes = rows.map(r => Number(r.closing_price));
+            const dates = rows.map(r => new Date(r.date));
+            const lastRowDateStr = dates[dates.length - 1].toISOString().split('T')[0];
+            if (lastRowDateStr > latestPriceDateStr) latestPriceDateStr = lastRowDateStr;
+
+            const fastEMA = calcEMA(closes, fastLength);
+            const slowEMA = calcEMA(closes, slowLength);
+            const macd = fastEMA.map((f, i) => f - slowEMA[i]);
+            const signal = calcEMA(macd, signalLength);
+            const hist = macd.map((m, i) => m - signal[i]);
+
+            const isPrimaryBuy = coin.ticker_symbol.toUpperCase().startsWith('BTC');
+
+            // Simuleer de Pine Script v6 state over de tijd (vanaf 2024-01-01 voor relevante tijdlijnmeldingen)
+            let simCash = availableCryptoCash;
+            let simShares = holdingsByStockId[coin.aandeel_id]?.quantity || 0;
+            let lastTradeSignal = null;
+            let lastTradePrice = null;
+
+            for (let i = slowLength; i < rows.length; i++) {
+                const dStr = dates[i].toISOString().split('T')[0];
+                const close = closes[i];
+                const currentSignalVal = signal[i - 1];
+                const currentCloseVal = closes[i - 1];
+                const noHistory = lastTradeSignal === null;
+
+                // Pine Script v6 Buy & Sell formules
+                const calc1Buy = 1 + (-currentSignalVal / currentCloseVal) * 4;
+                const calc2Buy = noHistory ? 0.0 : (lastTradeSignal - currentSignalVal) / currentCloseVal;
+                const buyMultiplier = Math.max(0.25, calc1Buy + calc2Buy);
+
+                const calc1Sell = 1 * (-currentSignalVal / currentCloseVal);
+                const calc2Sell = noHistory ? 0.0 : (lastTradeSignal - currentSignalVal) / currentCloseVal;
+                const percentageToSell = Math.max(0, Math.min(100, Math.abs(calc1Sell + calc2Sell) * 100));
+
+                const buyTrigger = currentSignalVal < 0 && hist[i] > 0 && hist[i - 1] <= 0;
+                const sellTrigger = currentSignalVal > 0 && hist[i] < 0 && hist[i - 1] >= 0;
+
+                if (buyTrigger) {
+                    const { orderEur, remainingCash, skippedUnderMin } = calcBuyOrderWithFloor(availableCryptoCash, buyMultiplier);
+                    const sharesAdvised = close > 0 ? +(orderEur / close).toFixed(6) : 0;
+
+                    if (dStr >= '2024-01-01') {
+                        allSignals.push({
+                            id: `crypto-buy-${coin.ticker_symbol}-${dStr}`,
+                            signalType: 'BUY',
+                            isPrimaryBuy,
+                            stockId: coin.aandeel_id,
+                            ticker: coin.ticker_symbol,
+                            name: coin.name,
+                            date: dStr,
+                            timestamp: dates[i].getTime(),
+                            price: close,
+                            signalVal: +currentSignalVal.toFixed(2),
+                            buyMultiplier: +buyMultiplier.toFixed(2),
+                            orderEur: isPrimaryBuy ? orderEur : +(Math.max(minOrderAmount, (availableCryptoCash * (baseTranchePct / 100)) * buyMultiplier)).toFixed(2),
+                            shares: isPrimaryBuy ? sharesAdvised : +((Math.max(minOrderAmount, (availableCryptoCash * (baseTranchePct / 100)) * buyMultiplier)) / close).toFixed(5),
+                            remainingCash,
+                            skippedUnderMin
+                        });
+                    }
+                    lastTradeSignal = currentSignalVal;
+                    lastTradePrice = currentCloseVal;
+                } else if (sellTrigger) {
+                    const userOwnedQty = holdingsByStockId[coin.aandeel_id]?.quantity || 0;
+                    const refPositionValue = userOwnedQty > 0 ? (userOwnedQty * close) : availableCryptoCash;
+                    const rawSellEur = +(refPositionValue * (percentageToSell / 100)).toFixed(2);
+                    const isBelowMinSell = rawSellEur < minOrderAmount;
+                    const sharesToSell = close > 0 ? +(rawSellEur / close).toFixed(6) : 0;
+
+                    if (dStr >= '2024-01-01') {
+                        allSignals.push({
+                            id: `crypto-sell-${coin.ticker_symbol}-${dStr}`,
+                            signalType: 'SELL',
+                            isPrimaryBuy,
+                            stockId: coin.aandeel_id,
+                            ticker: coin.ticker_symbol,
+                            name: coin.name,
+                            date: dStr,
+                            timestamp: dates[i].getTime(),
+                            price: close,
+                            signalVal: +currentSignalVal.toFixed(2),
+                            percentageToSell: +percentageToSell.toFixed(1),
+                            orderEur: rawSellEur,
+                            shares: sharesToSell,
+                            userOwnedQty,
+                            isBelowMinSell
+                        });
+                    }
+                    lastTradeSignal = currentSignalVal;
+                    lastTradePrice = currentCloseVal;
+                }
+            }
+
+            // Live status op de allerlaatste dag
+            const lastIdx = rows.length - 1;
+            const currentClose = closes[lastIdx];
+            const prevClose = closes[lastIdx - 1] || currentClose;
+            const changePct = prevClose > 0 ? ((currentClose - prevClose) / prevClose) * 100 : 0;
+
+            const curMacd = macd[lastIdx];
+            const curSignal = signal[lastIdx];
+            const curHist = hist[lastIdx];
+            const prevHist = hist[lastIdx - 1] || 0;
+
+            const curSigVal = signal[lastIdx - 1];
+            const curCloseVal = closes[lastIdx - 1];
+            const noHistNow = lastTradeSignal === null;
+            const c1BuyNow = 1 + (-curSigVal / curCloseVal) * 4;
+            const c2BuyNow = noHistNow ? 0.0 : (lastTradeSignal - curSigVal) / curCloseVal;
+            const liveBuyMultiplier = Math.max(0.25, c1BuyNow + c2BuyNow);
+
+            const c1SellNow = 1 * (-curSigVal / curCloseVal);
+            const c2SellNow = noHistNow ? 0.0 : (lastTradeSignal - curSigVal) / curCloseVal;
+            const liveSellPct = Math.max(0, Math.min(100, Math.abs(c1SellNow + c2SellNow) * 100));
+
+            const { orderEur: liveBuyOrderEur, remainingCash: liveRemCash } = calcBuyOrderWithFloor(availableCryptoCash, liveBuyMultiplier);
+            const liveBuyShares = currentClose > 0 ? +(liveBuyOrderEur / currentClose).toFixed(6) : 0;
+
+            // Bereken MACD voortgang richting crossover onder de 0-lijn
+            const isUnderZero = curSignal < 0;
+            const isMacdBullish = curMacd > curSignal;
+            const isBuyCrossoverNow = isUnderZero && curHist > 0 && prevHist <= 0;
+            const isSellCrossunderNow = curSignal > 0 && curHist < 0 && prevHist >= 0;
+            const isTurningUpInRed = !isMacdBullish && curHist > prevHist;
+
+            // Bereken recovery % richting 0-histogram
+            let recoveryPct = 0;
+            if (isMacdBullish) {
+                recoveryPct = 100;
+            } else {
+                const recentHists = hist.slice(Math.max(0, lastIdx - 60), lastIdx + 1).filter(h => h < 0);
+                const deepestHist = recentHists.length > 0 ? Math.min(...recentHists) : curHist;
+                if (deepestHist < 0) {
+                    recoveryPct = Math.round(Math.max(5, Math.min(99, (1 - (curHist / deepestHist)) * 100)));
+                }
+            }
+
+            const ownedInfo = holdingsByStockId[coin.aandeel_id] || { quantity: 0, netInvested: 0, txCount: 0 };
+
+            coinsResults.push({
+                stockId: coin.aandeel_id,
+                ticker: coin.ticker_symbol,
+                name: coin.name,
+                isPrimaryBuy,
+                currentPrice: currentClose,
+                changePercent: +changePct.toFixed(2),
+                lastDate: lastRowDateStr,
+                macdLine: +curMacd.toFixed(2),
+                signalLine: +curSignal.toFixed(2),
+                histogram: +curHist.toFixed(2),
+                isUnderZero,
+                isMacdBullish,
+                isBuyCrossoverNow,
+                isSellCrossunderNow,
+                isTurningUpInRed,
+                recoveryPct,
+                liveBuyMultiplier: +liveBuyMultiplier.toFixed(2),
+                liveSellPct: +liveSellPct.toFixed(1),
+                liveBuyOrderEur,
+                liveBuyShares,
+                liveRemainingCash: liveRemCash,
+                ownedShares: ownedInfo.quantity,
+                ownedValueEur: +(ownedInfo.quantity * currentClose).toFixed(2)
+            });
+        }
+
+        // 3. Bouw de Tijdlijn / Meldingen voor Strategie Assistent (inclusief 1-op-1 matching met transacties)
+        const stratName = activeCryptoRecord?.name || 'Arne Crypto MACD 2.0 (Enkel BTC Kopen • Min. €50)';
+        const stratId = activeCryptoRecord?.strategy_id || 3;
+        const usedTxIds = new Set();
+        const timeline = [];
+
+        allSignals.sort((a, b) => a.timestamp - b.timestamp);
+
+        for (const sig of allSignals) {
+            const sigDate = new Date(sig.date);
+            const nowMs = Date.now();
+            const daysOld = (nowMs - sigDate.getTime()) / (1000 * 3600 * 24);
+
+            // Check of er een werkelijke transactie in PF_transactions aan gekoppeld kan worden
+            let matchedTx = null;
+            for (const tx of userCryptoTxs) {
+                if (usedTxIds.has(tx.id)) continue;
+                if (tx.aandeel_id !== sig.stockId) continue;
+                if (tx.transaction_type !== sig.signalType) continue;
+                const txDate = new Date(tx.purchase_time);
+                const diffDays = (txDate.getTime() - sigDate.getTime()) / (1000 * 3600 * 24);
+                if (diffDays >= -1 && diffDays <= 45) {
+                    matchedTx = tx;
+                    usedTxIds.add(tx.id);
+                    break;
+                }
+            }
+
+            if (matchedTx) {
+                const txPrice = Number(matchedTx.price);
+                const priceDiff = txPrice - sig.price;
+                const priceDiffPct = sig.price > 0 ? (priceDiff / sig.price) * 100 : 0;
+                const isCheaper = sig.signalType === 'BUY' ? txPrice <= sig.price : txPrice >= sig.price;
+
+                timeline.push({
+                    id: `matched_${sig.id}_${matchedTx.id}`,
+                    strategyId: stratId,
+                    strategyName: stratName,
+                    strategyType: 'CRYPTO',
+                    signalType: sig.signalType,
+                    isPrimaryBuy: sig.isPrimaryBuy,
+                    status: sig.signalType === 'SELL' ? 'EXECUTED_SELL' : 'EXECUTED',
+                    statusBadge: sig.signalType === 'SELL' ? '✅ Verkocht (Gekoppeld)' : '✅ Gekocht (Gekoppeld)',
+                    ticker: sig.ticker,
+                    name: sig.name,
+                    stockId: sig.stockId,
+                    date: sig.date,
+                    executionDate: new Date(matchedTx.purchase_time).toISOString().split('T')[0],
+                    timestamp: sig.timestamp,
+                    signalPrice: sig.price,
+                    actualPrice: txPrice,
+                    priceDiff: +priceDiff.toFixed(2),
+                    priceDiffPct: +priceDiffPct.toFixed(1),
+                    isCheaper,
+                    shares: Number(matchedTx.quantity),
+                    totalAmount: +Number(matchedTx.total_amount).toFixed(2),
+                    buyMultiplier: sig.buyMultiplier,
+                    percentageToSell: sig.percentageToSell,
+                    note: sig.signalType === 'SELL'
+                        ? `MACD Verkoop uitgevoerd (${sig.percentageToSell}% advies)`
+                        : `MACD Aankoop uitgevoerd (factor ${sig.buyMultiplier}x)`
+                });
+            } else if (sig.signalType === 'BUY') {
+                const isRecent = daysOld <= 30;
+                if (!sig.isPrimaryBuy) {
+                    // ETH-EUR & SOL-EUR koopsignalen: wel tonen, maar niet actief kopen (focus op Bitcoin)
+                    timeline.push({
+                        id: sig.id,
+                        strategyId: stratId,
+                        strategyName: stratName,
+                        strategyType: 'CRYPTO',
+                        signalType: 'BUY',
+                        isPrimaryBuy: false,
+                        status: 'UNDER_SUPERVISION',
+                        statusBadge: 'ℹ️ Koopsignaal (Enkel BTC kopen)',
+                        ticker: sig.ticker,
+                        name: sig.name,
+                        stockId: sig.stockId,
+                        date: sig.date,
+                        timestamp: sig.timestamp,
+                        signalPrice: sig.price,
+                        shares: sig.shares,
+                        totalAmount: sig.orderEur,
+                        buyMultiplier: sig.buyMultiplier,
+                        isActionRequired: false,
+                        note: `MACD onder 0 draaide groen (factor ${sig.buyMultiplier}x = €${sig.orderEur}). Informatief signaal: jouw €${availableCryptoCash} pot is gereserveerd voor Bitcoin.`
+                    });
+                } else if (isRecent) {
+                    timeline.push({
+                        id: sig.id,
+                        strategyId: stratId,
+                        strategyName: stratName,
+                        strategyType: 'CRYPTO',
+                        signalType: 'BUY',
+                        isPrimaryBuy: true,
+                        status: sig.skippedUnderMin ? 'UNDER_SUPERVISION' : 'OPEN_OPPORTUNITY',
+                        statusBadge: sig.skippedUnderMin ? '⚠️ Cash < €50' : '🟢 Koopkans (Bitcoin)',
+                        ticker: sig.ticker,
+                        name: sig.name,
+                        stockId: sig.stockId,
+                        date: sig.date,
+                        timestamp: sig.timestamp,
+                        signalPrice: sig.price,
+                        shares: sig.shares,
+                        totalAmount: sig.orderEur,
+                        buyMultiplier: sig.buyMultiplier,
+                        remainingPot: sig.remainingCash,
+                        isActionRequired: !sig.skippedUnderMin,
+                        note: sig.skippedUnderMin
+                            ? `Beschikbare crypto-cash (€${availableCryptoCash}) is lager dan de €50 minimumorder.`
+                            : `MACD < 0 Golden Cross (dieptefactor ${sig.buyMultiplier}x op 30% van €${availableCryptoCash} vrije cash, min. €50). Restant cash na aankoop: €${sig.remainingCash}.`
+                    });
+                } else {
+                    timeline.push({
+                        id: sig.id,
+                        strategyId: stratId,
+                        strategyName: stratName,
+                        strategyType: 'CRYPTO',
+                        signalType: 'BUY',
+                        isPrimaryBuy: true,
+                        status: 'EXPIRED',
+                        statusBadge: '⚪ Verlopen Koopsignaal',
+                        ticker: sig.ticker,
+                        name: sig.name,
+                        stockId: sig.stockId,
+                        date: sig.date,
+                        timestamp: sig.timestamp,
+                        signalPrice: sig.price,
+                        shares: sig.shares,
+                        totalAmount: sig.orderEur,
+                        buyMultiplier: sig.buyMultiplier,
+                        isActionRequired: false,
+                        note: `Historisch Bitcoin MACD koopsignaal (factor ${sig.buyMultiplier}x • advies was €${sig.orderEur}).`
+                    });
+                }
+            } else if (sig.signalType === 'SELL') {
+                const isRecent = daysOld <= 30;
+                const hasPosition = sig.userOwnedQty > 0;
+                const isActionableSell = isRecent && hasPosition && !sig.isBelowMinSell;
+
+                timeline.push({
+                    id: sig.id,
+                    strategyId: stratId,
+                    strategyName: stratName,
+                    strategyType: 'CRYPTO',
+                    signalType: 'SELL',
+                    isPrimaryBuy: sig.isPrimaryBuy,
+                    status: isActionableSell ? 'OPEN_SELL_ORDER' : sig.isBelowMinSell ? 'SKIPPED_SMALL_SELL' : 'EXPIRED',
+                    statusBadge: isActionableSell
+                        ? `🔴 Verkoop ${sig.percentageToSell}%`
+                        : !hasPosition
+                        ? `📉 Verkoopsignaal (${sig.percentageToSell}%)`
+                        : `🟡 Verkoop < €50 (${sig.percentageToSell}%)`,
+                    ticker: sig.ticker,
+                    name: sig.name,
+                    stockId: sig.stockId,
+                    date: sig.date,
+                    timestamp: sig.timestamp,
+                    signalPrice: sig.price,
+                    shares: sig.shares,
+                    totalAmount: sig.orderEur,
+                    percentageToSell: sig.percentageToSell,
+                    isActionRequired: isActionableSell,
+                    note: isActionableSell
+                        ? `MACD > 0 Crossunder: Verkoop ${sig.percentageToSell}% van je ${sig.ticker} positie (€${sig.orderEur} vloeit terug naar je Coinbase cashpot).`
+                        : !hasPosition
+                        ? `MACD > 0 Crossunder: Strategie berekende ${sig.percentageToSell}% winstname op ${sig.ticker} (voeg je bezit toe onder Coinbase om exacte verkoop-euro's te berekenen).`
+                        : `Berekende deelverkoop (${sig.percentageToSell}% = €${sig.orderEur}) is kleiner dan de €50 minimumgrens.`
+                });
+            }
+        }
+
+        timeline.sort((a, b) => b.timestamp - a.timestamp);
+
+        return {
+            activeStrategyConfig: {
+                id: stratId,
+                name: stratName,
+                strategyType: 'CRYPTO',
+                availableCryptoCash,
+                baseTranchePct,
+                minOrderAmount,
+                fastLength,
+                slowLength,
+                signalLength
+            },
+            coins: coinsResults,
+            timeline,
+            dataFreshness: {
+                lastPriceDate: latestPriceDateStr,
+                isUpdatedToday: latestPriceDateStr >= new Date().toISOString().split('T')[0]
+            }
+        };
+    } catch (err) {
+        console.error('Fout bij berekenen Crypto strategie:', err);
+        throw err;
+    }
+};
+
+const getCryptoStrategyData = async (req, res) => {
+    try {
+        const userId = getEffectiveUserId(req);
+        const data = await calculateCryptoStrategyInternal(userId, {
+            baseTranchePct: req.query.baseTranchePct,
+            minOrderAmount: req.query.minOrderAmount,
+            fastLength: req.query.fastLength,
+            slowLength: req.query.slowLength,
+            signalLength: req.query.signalLength,
+            forceRefresh: req.query.forceRefresh === 'true'
+        });
+        res.json(data);
+    } catch (err) {
+        res.status(500).json({ message: 'Fout bij berekenen Crypto strategie', error: err.message });
+    }
+};
+
 const getDataStatus = async (req, res) => {
     try {
         const userId = getEffectiveUserId(req);
@@ -6318,6 +6826,8 @@ module.exports = {
   calculateStrategyAdvisorInternal,
   getEtfStrategyData,
   calculateEtfStrategyInternal,
+  getCryptoStrategyData,
+  calculateCryptoStrategyInternal,
   getDataStatus,
   clearAdvisorCache,
   clearPortfolioCache,
