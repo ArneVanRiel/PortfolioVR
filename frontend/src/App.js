@@ -362,13 +362,17 @@ function App() {
                 </button>
               )}
 
-              {/* Belegd bedrag + Beschikbare cash */}
+              {/* Belegd bedrag + Beschikbare cash (mobiel: boven elkaar gestapeld) */}
               <div className="flex items-center space-x-1 sm:space-x-3">
                 <HeaderBalanceDisplay />
               </div>
 
-              {/* Data & Sync Status Indicator (indien gewenst) */}
-              {!isDemo && <DataStatusIndicator />}
+              {/* Data & Sync Status Indicator (op desktop in de header, op mobiel in de zijbalk bij Synchroniseer) */}
+              {!isDemo && (
+                <div className="hidden lg:flex items-center">
+                  <DataStatusIndicator />
+                </div>
+              )}
 
               {/* Meldingen element */}
               {!isDemo && (isAdmin || permissions.canReceiveStrategyAlerts !== false) && <NotificationBell />}

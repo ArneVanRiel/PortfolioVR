@@ -7,6 +7,7 @@ import TransactionsTab from './components/TransactionsTab';
 import GrowthTab from './components/GrowthTab';
 import StrategyAdvisorTab from './StrategyAdvisorTab';
 import TaxesTab from './TaxesTab';
+import DataStatusIndicator from '../../components/ui/DataStatusIndicator';
 
 import { useIncognito } from '../../hooks/useIncognito';
 import {
@@ -2039,6 +2040,12 @@ const PortfolioManager = () => {
               </div>
             </div>
 
+            {/* Data & Synchronisatie Status Badge */}
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Status</span>
+              <DataStatusIndicator />
+            </div>
+
             {/* Synchroniseer */}
             <button
               type="button"
@@ -2070,72 +2077,76 @@ const PortfolioManager = () => {
           </div>
         </aside>
 
-        {/* Mobiele Deeltabs Drawer (als ☰ geklikt is) */}
+        {/* Mobiele Deeltabs Drawer (als ☰ geklikt is) - onder de header en boven de onderste tabs */}
         {mobileDrawerOpen && (
-          <div className="md:hidden fixed inset-0 z-50 flex">
+          <div className="md:hidden fixed top-14 bottom-[calc(4rem+env(safe-area-inset-bottom))] left-0 right-0 z-40 flex">
             {/* Drawer Links */}
-            <div className="w-72 max-w-[80vw] bg-white h-full shadow-2xl flex flex-col justify-between p-4 z-50 animate-slide-in">
-              <div>
-                <div className="flex items-center justify-between pb-3 border-b border-gray-100 mb-3">
-                  <span className="font-black text-gray-900 text-base">Portfolio</span>
+            <div className="w-72 max-w-[85vw] bg-white h-full shadow-2xl flex flex-col p-4 z-40 animate-slide-in overflow-y-auto min-h-0 border-r border-gray-200">
+              <div className="flex items-center justify-between pb-3 border-b border-gray-100 mb-3 shrink-0">
+                <span className="font-black text-gray-900 text-base">Portfolio</span>
+                <button
+                  type="button"
+                  onClick={() => setMobileDrawerOpen(false)}
+                  className="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
+                  title="Sluit menu"
+                >
+                  <i className="ph-bold ph-x text-lg"></i>
+                </button>
+              </div>
+
+              <div className="space-y-1 shrink-0">
+                {TABS.map(tab => {
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      onClick={() => {
+                        startTransition(() => setActiveTab(tab.id));
+                        setMobileDrawerOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm transition-all text-left ${
+                        isActive
+                          ? 'font-black text-blue-600 bg-blue-50/90 shadow-2xs'
+                          : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                      }`}
+                    >
+                      <i className={`ph-fill ${tab.icon} text-lg ${isActive ? 'text-blue-600' : 'text-gray-400'}`}></i>
+                      <span>{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Valuta Keuze Mobiel */}
+              <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between px-1 shrink-0">
+                <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Valuta</span>
+                <div className="inline-flex rounded-lg p-0.5 bg-gray-100 text-[11px] font-bold">
                   <button
                     type="button"
-                    onClick={() => setMobileDrawerOpen(false)}
-                    className="p-1.5 rounded-xl text-gray-400 hover:text-gray-700 hover:bg-gray-100 transition-colors"
-                    title="Sluit menu"
+                    onClick={() => setDisplayCurrency('EUR')}
+                    className={`px-2.5 py-1 rounded-md transition-all ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
                   >
-                    <i className="ph-bold ph-x text-lg"></i>
+                    EUR (€)
                   </button>
-                </div>
-
-                <div className="space-y-1">
-                  {TABS.map(tab => {
-                    const isActive = activeTab === tab.id;
-                    return (
-                      <button
-                        key={tab.id}
-                        type="button"
-                        onClick={() => {
-                          startTransition(() => setActiveTab(tab.id));
-                          setMobileDrawerOpen(false);
-                        }}
-                        className={`w-full flex items-center gap-3 px-3.5 py-3 rounded-xl text-sm transition-all text-left ${
-                          isActive
-                            ? 'font-black text-blue-600 bg-blue-50/90 shadow-2xs'
-                            : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                        }`}
-                      >
-                        <i className={`ph-fill ${tab.icon} text-lg ${isActive ? 'text-blue-600' : 'text-gray-400'}`}></i>
-                        <span>{tab.label}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {/* Valuta Keuze Mobiel */}
-                <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-between px-1">
-                  <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Valuta</span>
-                  <div className="inline-flex rounded-lg p-0.5 bg-gray-100 text-[11px] font-bold">
-                    <button
-                      type="button"
-                      onClick={() => setDisplayCurrency('EUR')}
-                      className={`px-2.5 py-1 rounded-md transition-all ${displayCurrency === 'EUR' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
-                    >
-                      EUR (€)
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setDisplayCurrency('USD')}
-                      className={`px-2.5 py-1 rounded-md transition-all ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
-                    >
-                      USD ($)
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setDisplayCurrency('USD')}
+                    className={`px-2.5 py-1 rounded-md transition-all ${displayCurrency === 'USD' ? 'bg-white text-gray-900 shadow-2xs font-black' : 'text-gray-500'}`}
+                  >
+                    USD ($)
+                  </button>
                 </div>
               </div>
 
+              {/* Data & Synchronisatie Status Badge */}
+              <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between px-1 shrink-0">
+                <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Status</span>
+                <DataStatusIndicator />
+              </div>
+
               {/* Onderaan in mobiel menu: Synchroniseer */}
-              <div className="pt-4 border-t border-gray-100 space-y-2">
+              <div className="pt-3 border-t border-gray-100 space-y-2 mt-2 shrink-0 pb-6">
                 <button
                   type="button"
                   onClick={() => {

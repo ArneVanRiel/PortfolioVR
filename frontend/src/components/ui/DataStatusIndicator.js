@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import http from '../../http-common';
 import toast from 'react-hot-toast';
 
@@ -166,105 +167,124 @@ const DataStatusIndicator = () => {
         )}
       </button>
 
-      {open && (
-        <div className="fixed sm:absolute right-2 sm:right-0 left-2 sm:left-auto mt-2 sm:w-96 bg-white rounded-2xl shadow-2xl border border-gray-100 p-4 z-50 text-xs text-gray-700">
-          <div className="flex items-center justify-between pb-3 mb-3 border-b border-gray-100">
-            <div>
-              <h4 className="text-sm font-bold text-gray-900">Data & Synchronisatie Status</h4>
-              <p className="text-[11px] text-gray-500">Overzicht van de laatst bekende brongegevens</p>
-            </div>
-            <span
-              className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                isSyncing
-                  ? 'bg-blue-100 text-blue-700'
-                  : isUpToDate
-                  ? 'bg-emerald-100 text-emerald-700'
-                  : 'bg-amber-100 text-amber-700'
-              }`}
-            >
-              {isSyncing ? 'Bezig met sync' : isUpToDate ? 'Vandaag bijgewerkt' : 'Wacht op update'}
-            </span>
-          </div>
-
-          <div className="space-y-2.5">
-            <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
+      {open && createPortal(
+        <div
+          className="fixed inset-0 bg-slate-950/60 backdrop-blur-xs z-[99999] flex items-center justify-center p-3 sm:p-4 animate-fade-in"
+          onClick={() => setOpen(false)}
+        >
+          <div
+            className="bg-white rounded-3xl shadow-2xl border border-gray-100 p-5 w-full max-w-md max-h-[90vh] overflow-y-auto text-xs text-gray-700"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between pb-3 mb-3 border-b border-gray-100">
               <div>
-                <span className="font-semibold text-gray-900 block">📈 Slotkoersen (Aandelen & ETF's)</span>
-                <span className="text-[11px] text-gray-500">Laatste sync: {formatDateTime(status?.lastPriceSyncAt || status?.lastMacdUpdate)}</span>
+                <h4 className="text-sm sm:text-base font-black text-gray-900">Data &amp; Synchronisatie Status</h4>
+                <p className="text-[11px] text-gray-500">Overzicht van de brongegevens &amp; live platformkoppelingen</p>
               </div>
-              <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
-                {formatDateOnly(status?.lastPriceDate)}
-              </span>
-            </div>
-
-            <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
-              <div>
-                <span className="font-semibold text-gray-900 block">💱 EUR/USD Wisselkoers</span>
-                <span className="text-[11px] text-gray-500">Datum: {formatDateOnly(status?.lastFxDate)}</span>
+              <div className="flex items-center gap-2">
+                <span
+                  className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                    isSyncing
+                      ? 'bg-blue-100 text-blue-700'
+                      : isUpToDate
+                      ? 'bg-emerald-100 text-emerald-700'
+                      : 'bg-amber-100 text-amber-700'
+                  }`}
+                >
+                  {isSyncing ? 'Bezig met sync' : isUpToDate ? 'Vandaag bijgewerkt' : 'Wacht op update'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="w-7 h-7 rounded-full bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-800 flex items-center justify-center font-bold text-sm transition-colors"
+                  title="Sluiten"
+                >
+                  ✕
+                </button>
               </div>
-              <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
-                {status?.lastFxRate ? `$ ${status.lastFxRate.toFixed(4)}` : 'Onbekend'}
-              </span>
             </div>
 
-            <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
-              <div>
-                <span className="font-semibold text-gray-900 block">📊 MACD & Koop/Verkoop-alerts</span>
-                <span className="text-[11px] text-gray-500">Signalen & crossovers</span>
-              </div>
-              <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
-                {formatDateTime(status?.lastMacdUpdate)}
-              </span>
-            </div>
-
-            <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
-              <div>
-                <span className="font-semibold text-gray-900 block">🏛️ DCF & Fundamentele Berekening</span>
-                <span className="text-[11px] text-gray-500">Intrinsieke waarde & Score (0–5)</span>
-              </div>
-              <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
-                {formatDateTime(status?.lastCalcUpdate)}
-              </span>
-            </div>
-
-            <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
-              <div>
-                <span className="font-semibold text-gray-900 block">💼 Portefeuillegrafiek Historie</span>
-                <span className="text-[11px] text-gray-500">Laatst opgeslagen dag in grafiek</span>
-              </div>
-              <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
-                {formatDateOnly(status?.lastPortfolioValueDate)}
-              </span>
-            </div>
-
-            <div className="flex justify-between items-start bg-emerald-50/70 border border-emerald-200/80 p-2.5 rounded-xl">
-              <div>
-                <span className="font-semibold text-emerald-950 block">🔄 eToro API (Transacties &amp; Cash)</span>
-                <span className="text-[11px] text-emerald-800">
-                  Laatste auto-sync: {status?.lastEtoroSyncAt ? formatDateTime(status.lastEtoroSyncAt) : 'Nog niet gesynchroniseerd'}
+            <div className="space-y-2.5">
+              <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
+                <div>
+                  <span className="font-semibold text-gray-900 block">📈 Slotkoersen (Aandelen &amp; ETF's)</span>
+                  <span className="text-[11px] text-gray-500">Laatste sync: {formatDateTime(status?.lastPriceSyncAt || status?.lastMacdUpdate)}</span>
+                </div>
+                <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
+                  {formatDateOnly(status?.lastPriceDate)}
                 </span>
               </div>
-              <span className="font-bold text-emerald-800 whitespace-nowrap ml-2">
-                {status?.etoroCashUsd != null ? `🟢 $ ${status.etoroCashUsd.toFixed(2)}` : (status?.etoroSyncStatus === 'ok' ? '🟢 Actief' : '⚪ -')}
-              </span>
+
+              <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
+                <div>
+                  <span className="font-semibold text-gray-900 block">💱 EUR/USD Wisselkoers</span>
+                  <span className="text-[11px] text-gray-500">Datum: {formatDateOnly(status?.lastFxDate)}</span>
+                </div>
+                <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
+                  {status?.lastFxRate ? `$ ${status.lastFxRate.toFixed(4)}` : 'Onbekend'}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
+                <div>
+                  <span className="font-semibold text-gray-900 block">📊 MACD &amp; Koop/Verkoop-alerts</span>
+                  <span className="text-[11px] text-gray-500">Signalen &amp; crossovers</span>
+                </div>
+                <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
+                  {formatDateTime(status?.lastMacdUpdate)}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
+                <div>
+                  <span className="font-semibold text-gray-900 block">🏛️ DCF &amp; Fundamentele Berekening</span>
+                  <span className="text-[11px] text-gray-500">Intrinsieke waarde &amp; Score (0–5)</span>
+                </div>
+                <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
+                  {formatDateTime(status?.lastCalcUpdate)}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-start bg-gray-50/80 p-2.5 rounded-xl">
+                <div>
+                  <span className="font-semibold text-gray-900 block">💼 Portefeuillegrafiek Historie</span>
+                  <span className="text-[11px] text-gray-500">Laatst opgeslagen dag in grafiek</span>
+                </div>
+                <span className="font-bold text-gray-800 whitespace-nowrap ml-2">
+                  {formatDateOnly(status?.lastPortfolioValueDate)}
+                </span>
+              </div>
+
+              <div className="flex justify-between items-start bg-emerald-50/70 border border-emerald-200/80 p-2.5 rounded-xl">
+                <div>
+                  <span className="font-semibold text-emerald-950 block">🔄 eToro API (Transacties &amp; Cash)</span>
+                  <span className="text-[11px] text-emerald-800">
+                    Laatste auto-sync: {status?.lastEtoroSyncAt ? formatDateTime(status.lastEtoroSyncAt) : 'Nog niet gesynchroniseerd'}
+                  </span>
+                </div>
+                <span className="font-bold text-emerald-800 whitespace-nowrap ml-2">
+                  {status?.etoroCashUsd != null ? `🟢 $ ${status.etoroCashUsd.toFixed(2)}` : (status?.etoroSyncStatus === 'ok' ? '🟢 Actief' : '⚪ -')}
+                </span>
+              </div>
             </div>
-          </div>
 
-          <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
-            <span>⚡ Auto-sync: elke 30 min (incl. eToro API)</span>
-            <span>Volgende check: {formatCountdown(countdown)}</span>
-          </div>
+            <div className="mt-3 pt-3 border-t border-gray-100 flex items-center justify-between text-[11px] text-gray-500">
+              <span>⚡ Auto-sync: elke 30 min (incl. eToro API)</span>
+              <span>Volgende check: {formatCountdown(countdown)}</span>
+            </div>
 
-          <button
-            type="button"
-            onClick={handleManualSync}
-            disabled={isSyncing}
-            className="mt-3 w-full py-2 px-3 rounded-xl font-bold text-xs text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
-          >
-            <i className={`ph-bold ph-arrows-clockwise ${isSyncing ? 'animate-spin' : ''}`}></i>
-            {isSyncing ? 'Bezig met synchroniseren...' : 'Nu eToro, Prijzen & Meldingen Synchroniseren'}
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={handleManualSync}
+              disabled={isSyncing}
+              className="mt-3 w-full py-2.5 px-3 rounded-xl font-black text-xs text-white bg-blue-600 hover:bg-blue-700 disabled:opacity-50 transition-colors flex items-center justify-center gap-2 shadow-sm"
+            >
+              <i className={`ph-bold ph-arrows-clockwise ${isSyncing ? 'animate-spin' : ''}`}></i>
+              <span>{isSyncing ? 'Bezig met synchroniseren...' : 'Nu eToro, Prijzen & Meldingen Synchroniseren'}</span>
+            </button>
+          </div>
+        </div>,
+        document.body
       )}
     </div>
   );

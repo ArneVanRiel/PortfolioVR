@@ -1785,7 +1785,6 @@ const getPortfolioHistoryTimeline = async (req, res) => {
       const totalCashAtDate = isEur
         ? (degiroCashAtDate + (etoroCashAtDate / fx) + currentOtherCashEur)
         : ((degiroCashAtDate * fx) + etoroCashAtDate + (currentOtherCashEur * fx));
-      }
 
       const hadTradeToday = tradesOnDate.length > 0;
       const isLastDay = dIdx === sortedDates.length - 1;

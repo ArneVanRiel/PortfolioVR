@@ -144,11 +144,12 @@ const HeaderBalanceDisplay = () => {
 
   return (
     <>
-      <div className="flex items-center gap-2 sm:gap-3.5 select-none">
-        {/* Belegd vermogen (altijd zichtbaar) */}
-        <div className="text-right sm:text-left">
+      {/* Desktop Layout: Belegd en Beschikbaar naast elkaar met labels */}
+      <div className="hidden sm:flex items-center gap-2 sm:gap-3.5 select-none">
+        {/* Belegd vermogen */}
+        <div className="text-left">
           <span className="text-[10px] sm:text-xs font-semibold text-gray-400 uppercase tracking-wider block">Belegd</span>
-          <p className="text-xs sm:text-sm md:text-base font-black text-gray-900 privacy-blur leading-tight">
+          <p className="text-sm md:text-base font-black text-gray-900 privacy-blur leading-tight">
             {isIncognito ? '€ ••••••' : `€${investedValue.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </p>
         </div>
@@ -158,10 +159,25 @@ const HeaderBalanceDisplay = () => {
         {/* Beschikbaar Saldo */}
         <div onDoubleClick={handleDoubleClick} onClick={handleDoubleClick} className={`${isDemo ? '' : 'cursor-pointer'} select-none`} title={isDemo ? '' : 'Klik om aan te passen'}>
           <span className="text-[10px] sm:text-xs font-semibold text-gray-400 uppercase tracking-wider block">Beschikbaar</span>
-          <p className="text-xs sm:text-sm md:text-base font-black text-emerald-600 privacy-blur leading-tight">
+          <p className="text-sm md:text-base font-black text-emerald-600 privacy-blur leading-tight">
             {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
           </p>
         </div>
+      </div>
+
+      {/* Mobiel / GSM Layout: Boven elkaar en ZONDER de woorden Belegd/Beschikbaar */}
+      <div
+        onDoubleClick={handleDoubleClick}
+        onClick={handleDoubleClick}
+        className="flex sm:hidden flex-col items-end justify-center select-none cursor-pointer leading-tight py-0.5 px-0.5"
+        title="Tik om beschikbaar vermogen aan te passen"
+      >
+        <span className="text-xs font-black text-gray-900 privacy-blur leading-none">
+          {isIncognito ? '€ ••••••' : `€${investedValue.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+        </span>
+        <span className="text-xs font-black text-emerald-600 privacy-blur leading-none mt-1">
+          {isIncognito ? '€ ••••••' : `€${balance.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+        </span>
       </div>
 
       {/* Modal voor aanpassen */}
