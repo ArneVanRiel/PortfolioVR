@@ -5,7 +5,15 @@ const { getEffectiveUserId, isAdminUser } = require('../middleware/authMiddlewar
 const getAllBrokers = async (req, res) => {
     try {
         const pool = await sql.connect(config);
-        const result = await pool.request().query('SELECT broker_id, name FROM Brokers ORDER BY name ASC');
+        const result = await pool.request().query(`
+            SELECT 
+                b.broker_id, 
+                b.name,
+                (SELECT COUNT(*) FROM PF_transactions t WHERE t.broker_id = b.broker_id) AS tx_count,
+                (SELECT COUNT(DISTINCT t.user_id) FROM PF_transactions t WHERE t.broker_id = b.broker_id) AS user_count
+            FROM Brokers b
+            ORDER BY b.name ASC
+        `);
         res.json(result.recordset);
     } catch (err) {
         console.error('Fout bij ophalen brokers:', err);

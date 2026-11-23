@@ -2,7 +2,14 @@ const { sql } = require('../config/database');
 
 const getAllStockExchanges = async (req, res) => {
     try {
-        const result = await sql.query`SELECT stock_exchange_id, name FROM StockExchange ORDER BY name ASC`;
+        const result = await sql.query(`
+            SELECT 
+                se.stock_exchange_id, 
+                se.name,
+                (SELECT COUNT(*) FROM Stocks s WHERE s.stock_exchange_id = se.stock_exchange_id) AS stock_count
+            FROM StockExchange se
+            ORDER BY se.name ASC
+        `);
         res.json(result.recordset);
     } catch (err) {
         console.error('Fout bij ophalen beurzen:', err);

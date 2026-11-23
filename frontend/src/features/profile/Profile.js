@@ -11,6 +11,7 @@ const Profile = () => {
   
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [mustChangePassword, setMustChangePassword] = useState(() => localStorage.getItem('must_change_password') === 'true');
   
   const [linkedProviders, setLinkedProviders] = useState([]);
   const [preferredMethod, setPreferredMethod] = useState('password');
@@ -28,6 +29,11 @@ const Profile = () => {
       setEmail(res.data.email || '');
       setPreferredMethod(res.data.preferred_login_method || 'password');
       setLinkedProviders(res.data.linkedProviders || []);
+      if (res.data.must_change_password !== undefined) {
+        const mustChange = Boolean(res.data.must_change_password);
+        setMustChangePassword(mustChange);
+        localStorage.setItem('must_change_password', String(mustChange));
+      }
       if (res.data.role) {
         setRole(res.data.role);
         localStorage.setItem('role', res.data.role);
@@ -201,9 +207,12 @@ const Profile = () => {
     e.preventDefault();
     try {
       await http.put(`/auth/password/${userId}`, { currentPassword, newPassword });
-      toast.success('Wachtwoord succesvol gewijzigd!');
+      toast.success('Wachtwoord succesvol gewijzigd! Je kunt nu verder naar je portfolio.');
       setCurrentPassword('');
       setNewPassword('');
+      setMustChangePassword(false);
+      localStorage.setItem('must_change_password', 'false');
+      window.dispatchEvent(new Event('authChanged'));
     } catch (err) {
       toast.error(err.response?.data?.message || 'Fout bij wijzigen wachtwoord.');
     }
@@ -214,6 +223,26 @@ const Profile = () => {
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-12">
       <h1 className="text-3xl font-bold text-gray-900">Mijn Profiel</h1>
+
+      {mustChangePassword && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-2xl p-5 shadow-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="text-sm font-black text-amber-950 flex items-center gap-2">
+              <i className="ph-fill ph-key text-amber-600 text-lg"></i>
+              <span>Kies direct je eigen wachtwoord</span>
+            </div>
+            <p className="text-xs text-amber-900 leading-relaxed">
+              Je bent voor het eerst ingelogd met het tijdelijke wachtwoord dat Arne voor je heeft aangemaakt. Vul hieronder rechts bij <strong>Wachtwoord Wijzigen</strong> je tijdelijke wachtwoord en je nieuwe persoonlijke wachtwoord in.
+            </p>
+          </div>
+          <a
+            href="#security-password-section"
+            className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-extrabold whitespace-nowrap shadow-2xs"
+          >
+            Naar Wachtwoord Wijzigen ↓
+          </a>
+        </div>
+      )}
 
       {/* Account & Basisgegevens (Screenshot 4 stijl) */}
       <div className="bg-white p-6 sm:p-8 rounded-2xl shadow-sm border border-gray-100">

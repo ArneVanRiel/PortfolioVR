@@ -75,12 +75,18 @@ const LoginPageTest = () => {
         return () => clearInterval(interval);
     }, [preferredMethod, step]);
 
-    const handleLoginSuccess = (token, userID, role, name, strategyMode = 'arne_advies', permissions = null, defaultCurrency = 'EUR') => {
+    const handleLoginSuccess = (token, userID, role, name, strategyMode = 'portfolio_only', permissions = null, defaultCurrency = 'EUR', mustChangePassword = false) => {
         localStorage.setItem('token', token);
         localStorage.setItem('userID', userID);
         localStorage.setItem('role', Number(userID) === 1 ? 'admin' : role);
         localStorage.setItem('username', name);
         localStorage.setItem('strategy_mode', Number(userID) === 1 ? 'full_access' : strategyMode);
+        localStorage.setItem('must_change_password', String(Boolean(mustChangePassword)));
+        // Zorg dat een eventuele admin-preview van een vorige sessie gewist is
+        localStorage.removeItem('admin_preview_role');
+        localStorage.removeItem('admin_preview_role_name');
+        localStorage.removeItem('admin_preview_permissions');
+
         if (defaultCurrency) {
             localStorage.setItem('preferred_currency', defaultCurrency);
         }
@@ -93,7 +99,11 @@ const LoginPageTest = () => {
         }
 
         window.dispatchEvent(new Event('authChanged'));
-        const canViewDashboard = Number(userID) === 1 || role === 'admin' || (permissions ? permissions.canViewDashboard !== false : strategyMode !== 'portfolio_only');
+        if (mustChangePassword && Number(userID) !== 1) {
+            navigate('/profile');
+            return;
+        }
+        const canViewDashboard = Number(userID) === 1 || role === 'admin' || Boolean(permissions?.canViewDashboard);
         navigate(canViewDashboard ? '/dashboard' : '/portfolio');
     };
 
@@ -213,8 +223,8 @@ const LoginPageTest = () => {
         setLoading(true);
         try {
             const response = await axios.post(`${API_URL}/auth/login-step2`, { username, otp, rememberMe });
-            const { token, userID, role, strategy_mode, permissions, default_currency } = response.data;
-            handleLoginSuccess(token, userID, role, username, strategy_mode, permissions, default_currency);
+            const { token, userID, role, strategy_mode, permissions, default_currency, must_change_password } = response.data;
+            handleLoginSuccess(token, userID, role, username, strategy_mode, permissions, default_currency, must_change_password);
         } catch (error) {
             setAlert({ type: 'error', message: error.response?.data?.message || 'Onjuiste verificatiecode.' });
         } finally {

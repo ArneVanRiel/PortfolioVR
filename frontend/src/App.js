@@ -73,13 +73,36 @@ const MobileBottomLink = ({ to, iconClass, children, isActive, onClick }) => {
 
 const getStoredPermissions = () => {
   const uid = Number(localStorage.getItem('userID'));
-  const role = localStorage.getItem('role') || 'user';
-  if (uid === 1 || role === 'admin') {
+  const role = localStorage.getItem('role') || 'starter';
+  const isRealAdmin = uid === 1 || role === 'admin';
+  const previewRole = localStorage.getItem('admin_preview_role');
+
+  if (isRealAdmin && previewRole) {
+    try {
+      const previewPerms = localStorage.getItem('admin_preview_permissions');
+      if (previewPerms) return JSON.parse(previewPerms);
+    } catch (e) { }
+    return {
+      canViewDashboard: false,
+      canViewPortfolio: true,
+      canUseStockStrategy: false,
+      canUseEtfStrategy: false,
+      canViewStrategyBuilder: false,
+      canViewAnalysis: false,
+      canViewScreener: false,
+      canViewFormulas: false,
+      canEditSystemData: false,
+      canReceiveStrategyAlerts: false,
+    };
+  }
+
+  if (isRealAdmin) {
     return {
       canViewDashboard: true,
       canViewPortfolio: true,
       canUseStockStrategy: true,
       canUseEtfStrategy: true,
+      canViewStrategyBuilder: true,
       canViewAnalysis: true,
       canViewScreener: true,
       canViewFormulas: true,
@@ -89,28 +112,50 @@ const getStoredPermissions = () => {
   }
   try {
     const raw = localStorage.getItem('user_permissions');
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        canViewDashboard: false,
+        canViewPortfolio: true,
+        canUseStockStrategy: false,
+        canUseEtfStrategy: false,
+        canViewStrategyBuilder: false,
+        canViewAnalysis: false,
+        canViewScreener: false,
+        canViewFormulas: false,
+        canEditSystemData: false,
+        canReceiveStrategyAlerts: false,
+        ...parsed
+      };
+    }
   } catch (e) { }
   return {
-    canViewDashboard: true,
+    canViewDashboard: false,
     canViewPortfolio: true,
-    canUseStockStrategy: true,
-    canUseEtfStrategy: true,
-    canViewAnalysis: true,
+    canUseStockStrategy: false,
+    canUseEtfStrategy: false,
+    canViewStrategyBuilder: false,
+    canViewAnalysis: false,
     canViewScreener: false,
     canViewFormulas: false,
     canEditSystemData: false,
-    canReceiveStrategyAlerts: true,
+    canReceiveStrategyAlerts: false,
   };
 };
 
 function App() {
   const [userID, setUserID] = useState(() => Number(localStorage.getItem('userID')) || 0);
-  const [userRole, setUserRole] = useState(() => localStorage.getItem('role') || 'user');
+  const [userRole, setUserRole] = useState(() => localStorage.getItem('role') || 'starter');
   const [permissions, setPermissions] = useState(getStoredPermissions);
+  const [previewRole, setPreviewRole] = useState(() => localStorage.getItem('admin_preview_role') || '');
+  const [previewRoleName, setPreviewRoleName] = useState(() => localStorage.getItem('admin_preview_role_name') || 'Nieuwe Belegger');
+  const [mustChangePassword, setMustChangePassword] = useState(() => localStorage.getItem('must_change_password') === 'true');
 
   const isDemo = userRole === 'demo';
-  const isAdmin = userID === 1 || userRole === 'admin';
+  const isRealAdmin = userID === 1 || userRole === 'admin';
+  const isPreviewMode = isRealAdmin && Boolean(previewRole);
+  // Wanneer de beheerder 'Bekijk als Gebruiker' aanzet, volgt heel de app de rechten van die rol (behalve toegang tot het Beheerpaneel zelf!)
+  const isAdmin = isRealAdmin && !isPreviewMode;
 
   const [activeTab, setActiveTab] = useState('');
   const [dropdownOpen, setDropdownOpen] = useState(false);
@@ -129,15 +174,17 @@ function App() {
       try {
         const res = await http.get('/auth/me');
         if (res.data) {
-          const { userID: uid, role, strategy_mode, permissions: perms, username, default_currency } = res.data;
+          const { userID: uid, role, strategy_mode, permissions: perms, username, default_currency, must_change_password } = res.data;
           localStorage.setItem('userID', uid);
           localStorage.setItem('role', role);
           if (username) localStorage.setItem('username', username);
           if (strategy_mode) localStorage.setItem('strategy_mode', strategy_mode);
           if (default_currency) localStorage.setItem('preferred_currency', default_currency);
           if (perms) localStorage.setItem('user_permissions', JSON.stringify(perms));
+          localStorage.setItem('must_change_password', String(Boolean(must_change_password)));
           setUserID(Number(uid));
           setUserRole(role);
+          setMustChangePassword(Boolean(must_change_password));
           setPermissions(getStoredPermissions());
           window.dispatchEvent(new Event('permissionsUpdated'));
         }
@@ -152,12 +199,23 @@ function App() {
     syncAuthSession();
     const onAuthChanged = () => {
       setUserID(Number(localStorage.getItem('userID')) || 0);
-      setUserRole(localStorage.getItem('role') || 'user');
+      setUserRole(localStorage.getItem('role') || 'starter');
+      setMustChangePassword(localStorage.getItem('must_change_password') === 'true');
       setPermissions(getStoredPermissions());
       syncAuthSession();
     };
+    const onAdminPreviewChanged = () => {
+      setPreviewRole(localStorage.getItem('admin_preview_role') || '');
+      setPreviewRoleName(localStorage.getItem('admin_preview_role_name') || 'Nieuwe Belegger');
+      setPermissions(getStoredPermissions());
+      window.dispatchEvent(new Event('permissionsUpdated'));
+    };
     window.addEventListener('authChanged', onAuthChanged);
-    return () => window.removeEventListener('authChanged', onAuthChanged);
+    window.addEventListener('adminPreviewChanged', onAdminPreviewChanged);
+    return () => {
+      window.removeEventListener('authChanged', onAuthChanged);
+      window.removeEventListener('adminPreviewChanged', onAdminPreviewChanged);
+    };
   }, [navigate]);
 
   // Functies voor zoekmodal
@@ -185,8 +243,24 @@ function App() {
     localStorage.removeItem('username');
     localStorage.removeItem('strategy_mode');
     localStorage.removeItem('user_permissions');
+    localStorage.removeItem('must_change_password');
+    localStorage.removeItem('admin_preview_role');
+    localStorage.removeItem('admin_preview_role_name');
+    localStorage.removeItem('admin_preview_permissions');
+    setPreviewRole('');
+    setMustChangePassword(false);
     setDropdownOpen(false);
     navigate('/login');
+  };
+
+  const stopAdminPreview = () => {
+    localStorage.removeItem('admin_preview_role');
+    localStorage.removeItem('admin_preview_role_name');
+    localStorage.removeItem('admin_preview_permissions');
+    setPreviewRole('');
+    setPermissions(getStoredPermissions());
+    window.dispatchEvent(new Event('adminPreviewChanged'));
+    toast.success('Gebruikersweergave uitgeschakeld. Je ziet weer alles als Beheerder!');
   };
 
   // Nieuwe functie om incognito te togglen en een signaal uit te zenden naar de hele app
@@ -284,7 +358,7 @@ function App() {
                     <span>Portfolio</span>
                   </Link>
                 )}
-                {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
+                {(isAdmin || Boolean(permissions.canViewStrategyBuilder)) && (
                   <Link
                     to="/strategy-builder"
                     className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
@@ -297,7 +371,7 @@ function App() {
                     <span>Strategie builder</span>
                   </Link>
                 )}
-                {(isAdmin || permissions.canViewAnalysis !== false) && (
+                {(isAdmin || Boolean(permissions.canViewAnalysis)) && (
                   <Link
                     to="/analysis"
                     className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
@@ -310,7 +384,7 @@ function App() {
                     <span>Analyse</span>
                   </Link>
                 )}
-                {(isAdmin || permissions.canViewDashboard !== false) && (
+                {(isAdmin || Boolean(permissions.canViewDashboard)) && (
                   <Link
                     to="/dashboard"
                     className={`px-3.5 py-1.5 rounded-xl text-sm font-bold transition-all flex items-center gap-1.5 ${
@@ -321,6 +395,21 @@ function App() {
                   >
                     <i className="ph-fill ph-squares-four text-base"></i>
                     <span>Dashboard</span>
+                  </Link>
+                )}
+                {/* Beheerpaneel altijd zichtbaar voor de echte beheerder als gebruikersweergave aan staat zodat deze altijd terug afgezet kan worden */}
+                {isPreviewMode && (
+                  <Link
+                    to="/admin"
+                    className={`px-3 py-1.5 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 border ${
+                      location.pathname.startsWith('/admin') || location.pathname.startsWith('/settings')
+                        ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                        : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100'
+                    }`}
+                    title="Het Beheerderspaneel blijft voor jou als beheerder altijd bereikbaar"
+                  >
+                    <i className="ph-fill ph-shield-check text-sm"></i>
+                    <span>Beheerpaneel</span>
                   </Link>
                 )}
               </nav>
@@ -499,8 +588,8 @@ function App() {
                       </span>
                     </button>
 
-                    {/* Beheerderspaneel (Enkel zichtbaar voor Arne / Admin) */}
-                    {isAdmin && (
+                    {/* Beheerderspaneel (ALTIJD zichtbaar voor echte Admin, óók tijdens Gebruikersweergave!) */}
+                    {isRealAdmin && (
                       <>
                         <div className="pt-2 px-2.5 pb-0.5 text-[10px] font-bold uppercase tracking-wider text-indigo-500 border-t border-gray-100 mt-1">
                           Beheer
@@ -508,11 +597,31 @@ function App() {
                         <Link 
                           to="/admin" 
                           onClick={() => setDropdownOpen(false)} 
-                          className="flex items-center gap-3 px-2.5 py-2 rounded-xl text-indigo-700 hover:bg-indigo-50 transition-colors text-xs sm:text-sm font-semibold"
+                          className="flex items-center justify-between px-2.5 py-2 rounded-xl text-indigo-700 hover:bg-indigo-50 transition-colors text-xs sm:text-sm font-semibold"
                         >
-                          <i className="ph-fill ph-shield-check text-indigo-600 text-base flex-shrink-0"></i>
-                          <span>Beheerderspaneel</span>
+                          <div className="flex items-center gap-3">
+                            <i className="ph-fill ph-shield-check text-indigo-600 text-base flex-shrink-0"></i>
+                            <span>Beheerderspaneel</span>
+                          </div>
+                          {isPreviewMode && (
+                            <span className="text-[9px] font-black bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded-full">
+                              Weergave Actief
+                            </span>
+                          )}
                         </Link>
+                        {isPreviewMode && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setDropdownOpen(false);
+                              stopAdminPreview();
+                            }}
+                            className="w-full flex items-center gap-3 px-2.5 py-2 rounded-xl text-amber-800 bg-amber-50 hover:bg-amber-100 transition-colors text-xs font-extrabold text-left mt-1"
+                          >
+                            <i className="ph-bold ph-eye-slash text-amber-600 text-base flex-shrink-0"></i>
+                            <span>Stop Gebruikersweergave</span>
+                          </button>
+                        )}
                       </>
                     )}
 
@@ -537,6 +646,51 @@ function App() {
         </header>
       )}
 
+      {/* Banner wanneer Beheerder in 'Bekijk als Gebruiker' modus zit */}
+      {!isLoginPage && isPreviewMode && (
+        <div className="bg-amber-500 text-white px-3 sm:px-6 py-1.5 flex flex-wrap items-center justify-between gap-2 text-xs font-bold shadow-xs z-40 shrink-0">
+          <div className="flex items-center gap-2">
+            <i className="ph-fill ph-eye text-base"></i>
+            <span>
+              Gebruikersweergave actief: je bekijkt de app nu precies zoals een gebruiker met de rol <strong>{previewRoleName}</strong> (enkel het Beheerderspaneel blijft voor jou zichtbaar).
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              to="/admin"
+              className="px-2.5 py-1 bg-amber-700/80 hover:bg-amber-800 text-white rounded-lg text-[11px] font-extrabold transition-colors"
+            >
+              Naar Beheerpaneel
+            </Link>
+            <button
+              type="button"
+              onClick={stopAdminPreview}
+              className="px-2.5 py-1 bg-white text-amber-900 hover:bg-amber-50 rounded-lg text-[11px] font-black transition-colors shadow-2xs"
+            >
+              ✕ Weergave Uitzetten
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Banner voor nieuwe gebruikers met een tijdelijk wachtwoord */}
+      {!isLoginPage && mustChangePassword && !isRealAdmin && (
+        <div className="bg-indigo-600 text-white px-3 sm:px-6 py-2 flex flex-wrap items-center justify-between gap-2 text-xs font-bold shadow-xs z-40 shrink-0">
+          <div className="flex items-center gap-2">
+            <i className="ph-fill ph-key text-base text-amber-300"></i>
+            <span>
+              Welkom bij PortfolioVR! Je bent ingelogd met een tijdelijk wachtwoord. Kies direct je eigen wachtwoord op je profielpagina.
+            </span>
+          </div>
+          <Link
+            to="/profile#security-password-section"
+            className="px-3 py-1 bg-white text-indigo-900 hover:bg-indigo-50 rounded-lg text-[11px] font-black transition-colors shadow-2xs"
+          >
+            Nu Wachtwoord Kiezen →
+          </Link>
+        </div>
+      )}
+
       {/* Hoofdinhoud Layout (Geen desktop aside meer, hoofdnavigatie staat nu in de header) */}
       <div className="flex flex-col flex-1 overflow-hidden">
         {/* Main Content Scroll Area - compactere padding zodat navigatiemenu hoger en strak links staat */}
@@ -545,16 +699,16 @@ function App() {
             <Routes>
               <Route path='/login' element={<LoginPageTest />} />
               <Route path='/microsoft-callback' element={<MicrosoftCallback />} />
-              <Route path='/dashboard' element={<ProtectedRoute>{(isAdmin || permissions.canViewDashboard !== false) ? <Dashboard /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
-              <Route path='/analysis/*' element={<ProtectedRoute>{(isAdmin || permissions.canViewAnalysis !== false) ? <Analysis /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
-              <Route path='/strategy-builder/*' element={<ProtectedRoute><StrategyStudioPage /></ProtectedRoute>} />
+              <Route path='/dashboard' element={<ProtectedRoute>{(isAdmin || Boolean(permissions.canViewDashboard)) ? <Dashboard /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
+              <Route path='/analysis/*' element={<ProtectedRoute>{(isAdmin || Boolean(permissions.canViewAnalysis)) ? <Analysis /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
+              <Route path='/strategy-builder/*' element={<ProtectedRoute>{(isAdmin || Boolean(permissions.canViewStrategyBuilder)) ? <StrategyStudioPage /> : <Navigate to="/portfolio" replace />}</ProtectedRoute>} />
               <Route path='/portfolio' element={<ProtectedRoute><PortfolioManager /></ProtectedRoute>} />
               <Route path='/portfolio-settings' element={<ProtectedRoute><PortfolioSettings /></ProtectedRoute>} />
-              <Route path='/admin' element={<ProtectedRoute>{isAdmin ? <Settings /> : <Navigate to="/portfolio-settings" replace />}</ProtectedRoute>} />
-              <Route path='/settings' element={<ProtectedRoute>{isAdmin ? <Settings /> : <Navigate to="/portfolio-settings" replace />}</ProtectedRoute>} />
+              <Route path='/admin' element={<ProtectedRoute>{isRealAdmin ? <Settings /> : <Navigate to="/portfolio-settings" replace />}</ProtectedRoute>} />
+              <Route path='/settings' element={<ProtectedRoute>{isRealAdmin ? <Settings /> : <Navigate to="/portfolio-settings" replace />}</ProtectedRoute>} />
               <Route path='/profile' element={<ProtectedRoute><Profile /></ProtectedRoute>} />
               {/* Fallback route voor onbekende urls */}
-              <Route path='*' element={<Navigate to={(isAdmin || permissions.canViewDashboard !== false) ? "/dashboard" : "/portfolio"} replace />} />
+              <Route path='*' element={<Navigate to={(isAdmin || Boolean(permissions.canViewDashboard)) ? "/dashboard" : "/portfolio"} replace />} />
             </Routes>
           </div>
         </main>
@@ -567,19 +721,24 @@ function App() {
                 Portfolio
               </MobileBottomLink>
             )}
-            {(isAdmin || permissions.canUseStockStrategy !== false || permissions.canViewScreener !== false) && (
+            {(isAdmin || Boolean(permissions.canViewStrategyBuilder)) && (
               <MobileBottomLink to="/strategy-builder" iconClass="ph-fill ph-sliders-horizontal" isActive={location.pathname.startsWith('/strategy-builder')}>
                 Strategie builder
               </MobileBottomLink>
             )}
-            {(isAdmin || permissions.canViewAnalysis !== false) && (
+            {(isAdmin || Boolean(permissions.canViewAnalysis)) && (
               <MobileBottomLink to="/analysis" iconClass="ph-fill ph-chart-line-up" isActive={location.pathname.startsWith('/analysis')}>
                 Analyse
               </MobileBottomLink>
             )}
-            {(isAdmin || permissions.canViewDashboard !== false) && (
+            {(isAdmin || Boolean(permissions.canViewDashboard)) && (
               <MobileBottomLink to="/dashboard" iconClass="ph-fill ph-squares-four" isActive={location.pathname === '/dashboard' || location.pathname === '/'}>
                 Dashboard
+              </MobileBottomLink>
+            )}
+            {isPreviewMode && (
+              <MobileBottomLink to="/admin" iconClass="ph-fill ph-shield-check" isActive={location.pathname.startsWith('/admin')}>
+                Beheer
               </MobileBottomLink>
             )}
           </nav>

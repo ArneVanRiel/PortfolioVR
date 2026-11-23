@@ -6,7 +6,8 @@ const DEFAULT_PERMISSIONS_BY_MODE = {
     canViewPortfolio: true,
     canUseStockStrategy: false,
     canUseEtfStrategy: false,
-    canViewAnalysis: true,
+    canViewStrategyBuilder: false,
+    canViewAnalysis: false,
     canViewScreener: false,
     canViewFormulas: false,
     canEditSystemData: false,
@@ -17,6 +18,7 @@ const DEFAULT_PERMISSIONS_BY_MODE = {
     canViewPortfolio: true,
     canUseStockStrategy: true,
     canUseEtfStrategy: true,
+    canViewStrategyBuilder: true,
     canViewAnalysis: true,
     canViewScreener: false,
     canViewFormulas: false,
@@ -28,6 +30,7 @@ const DEFAULT_PERMISSIONS_BY_MODE = {
     canViewPortfolio: true,
     canUseStockStrategy: true,
     canUseEtfStrategy: true,
+    canViewStrategyBuilder: true,
     canViewAnalysis: true,
     canViewScreener: true,
     canViewFormulas: true,
@@ -36,7 +39,7 @@ const DEFAULT_PERMISSIONS_BY_MODE = {
   },
 };
 
-const buildUserPermissions = (roleOrUserObj, strategyMode = 'arne_advies', rawPermissionsJson = null, userId = null) => {
+const buildUserPermissions = (roleOrUserObj, strategyMode = 'portfolio_only', rawPermissionsJson = null, userId = null) => {
   let role = roleOrUserObj;
   let mode = strategyMode;
   let rawPerms = rawPermissionsJson;
@@ -44,8 +47,8 @@ const buildUserPermissions = (roleOrUserObj, strategyMode = 'arne_advies', rawPe
 
   if (roleOrUserObj && typeof roleOrUserObj === 'object') {
     uid = roleOrUserObj.id || roleOrUserObj.userID || null;
-    role = Number(uid) === 1 ? 'admin' : (roleOrUserObj.role || 'user');
-    mode = Number(uid) === 1 ? 'full_access' : (roleOrUserObj.strategy_mode || 'arne_advies');
+    role = Number(uid) === 1 ? 'admin' : (roleOrUserObj.role || 'starter');
+    mode = Number(uid) === 1 ? 'full_access' : (roleOrUserObj.strategy_mode || (role === 'starter' || role === 'user' ? 'portfolio_only' : 'arne_advies'));
     rawPerms = roleOrUserObj.permissions || null;
   }
 
@@ -54,7 +57,17 @@ const buildUserPermissions = (roleOrUserObj, strategyMode = 'arne_advies', rawPe
     return { ...DEFAULT_PERMISSIONS_BY_MODE.full_access };
   }
 
-  const baseMode = DEFAULT_PERMISSIONS_BY_MODE[mode] || DEFAULT_PERMISSIONS_BY_MODE.arne_advies;
+  let baseMode = DEFAULT_PERMISSIONS_BY_MODE[mode];
+  if (!baseMode) {
+    if (role === 'starter' || role === 'portfolio_only') {
+      baseMode = DEFAULT_PERMISSIONS_BY_MODE.portfolio_only;
+    } else if (role === 'pro' || role === 'arne_advies') {
+      baseMode = DEFAULT_PERMISSIONS_BY_MODE.arne_advies;
+    } else {
+      baseMode = DEFAULT_PERMISSIONS_BY_MODE.portfolio_only;
+    }
+  }
+
   let custom = {};
   if (rawPerms) {
     if (typeof rawPerms === 'string') {
@@ -68,10 +81,16 @@ const buildUserPermissions = (roleOrUserObj, strategyMode = 'arne_advies', rawPe
     }
   }
 
-  return {
+  const merged = {
     ...baseMode,
     ...custom,
   };
+
+  if (merged.canViewStrategyBuilder === undefined) {
+    merged.canViewStrategyBuilder = Boolean(merged.canUseStockStrategy || merged.canUseEtfStrategy || merged.canViewScreener);
+  }
+
+  return merged;
 };
 
 const isAdminUser = (reqOrUser) => {
@@ -82,24 +101,15 @@ const isAdminUser = (reqOrUser) => {
 
 /**
  * Geeft de veilige user_id terug voor database-queries:
- * - Voor gewone gebruikers: ALTIJD hun eigen req.user.userID uit het geverifieerde JWT-token.
- * - Voor demo-accounts: userID 1 (alleen-lezen).
- * - Voor Admin / User 1: standaard 1, maar mag via query/body een specifieke userId inspecteren.
+ * - ALTIJD de geverifieerde userID uit het JWT-token (of 1 voor demo-account).
+ * - Query/body parameters zoals ?userId=... worden NOOIT gebruikt om een ander portfolio op te halen.
+ *   Hierdoor kan niemand (zelfs niet door een karakter of ID in de URL aan te passen) in het portfolio van een andere gebruiker terechtkomen.
  */
 const getEffectiveUserId = (req) => {
   if (!req || !req.user) return 1;
   const tokenUserId = Number(req.user.userID || req.user.id);
   if (req.user.role === 'demo') return 1;
-
-  if (isAdminUser(req)) {
-    const requestedId = Number(req.query?.userId || req.body?.userId || req.body?.user_id);
-    if (requestedId && !isNaN(requestedId) && requestedId > 0) {
-      return requestedId;
-    }
-    return tokenUserId || 1;
-  }
-
-  return tokenUserId;
+  return tokenUserId || 1;
 };
 
 const verifyToken = (req, res, next) => {

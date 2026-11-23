@@ -13,6 +13,205 @@ const {
 // In-memory store voor OTP's
 const otpStore = new Map();
 
+// Standaard systeemrollen die automatisch in PF_Roles worden gezet
+const SYSTEM_DEFAULT_ROLES = [
+    {
+        role_key: 'starter',
+        role_name: '📊 Nieuwe Belegger (Enkel Portfolio)',
+        description: 'Nieuwe gebruikers kunnen in het begin alleen hun eigen portfolio, transacties, dividenden en belastingen bijhouden (zonder Strategie Builder, Analyse of Dashboard).',
+        is_system: 1,
+        permissions: {
+            canViewPortfolio: true,
+            canViewDashboard: false,
+            canUseStockStrategy: false,
+            canUseEtfStrategy: false,
+            canViewStrategyBuilder: false,
+            canViewAnalysis: false,
+            canViewScreener: false,
+            canViewFormulas: false,
+            canEditSystemData: false,
+            canReceiveStrategyAlerts: false,
+        }
+    },
+    {
+        role_key: 'pro',
+        role_name: '⚡ Portfolio + Strategie Advies (Black-Box)',
+        description: 'Gebruiker houdt eigen portfolio bij én krijgt koop/verkoop-advies, meldingen en inzage in Aandelen Analyse & Strategie Builder, zonder dat jouw geheime DCF-formules of screener zichtbaar zijn.',
+        is_system: 1,
+        permissions: {
+            canViewPortfolio: true,
+            canViewDashboard: true,
+            canUseStockStrategy: true,
+            canUseEtfStrategy: true,
+            canViewStrategyBuilder: true,
+            canViewAnalysis: true,
+            canViewScreener: false,
+            canViewFormulas: false,
+            canEditSystemData: false,
+            canReceiveStrategyAlerts: true,
+        }
+    },
+    {
+        role_key: 'admin',
+        role_name: '👑 Beheerder (Volledige Toegang)',
+        description: 'Volledige inzage in alle pagina\'s, strategieën, screener, backtest, DCF-formules en het beheerderspaneel.',
+        is_system: 1,
+        permissions: {
+            canViewPortfolio: true,
+            canViewDashboard: true,
+            canUseStockStrategy: true,
+            canUseEtfStrategy: true,
+            canViewStrategyBuilder: true,
+            canViewAnalysis: true,
+            canViewScreener: true,
+            canViewFormulas: true,
+            canEditSystemData: true,
+            canReceiveStrategyAlerts: true,
+        }
+    },
+    {
+        role_key: 'demo',
+        role_name: '👁️ Demo Account (Alleen-lezen)',
+        description: 'Alleen-lezen weergave voor demonstratiedoeleinden.',
+        is_system: 1,
+        permissions: {
+            canViewPortfolio: true,
+            canViewDashboard: true,
+            canUseStockStrategy: true,
+            canUseEtfStrategy: true,
+            canViewStrategyBuilder: false,
+            canViewAnalysis: true,
+            canViewScreener: false,
+            canViewFormulas: false,
+            canEditSystemData: false,
+            canReceiveStrategyAlerts: false,
+        }
+    }
+];
+
+let rolesTableInitialized = false;
+const ensureRolesTableAndColumns = async () => {
+    if (rolesTableInitialized) return;
+    try {
+        const req = new sql.Request();
+        await req.query(`
+            IF OBJECT_ID('PF_Roles', 'U') IS NULL
+            BEGIN
+                CREATE TABLE PF_Roles (
+                    role_id INT IDENTITY(1,1) PRIMARY KEY,
+                    role_key NVARCHAR(50) NOT NULL UNIQUE,
+                    role_name NVARCHAR(100) NOT NULL,
+                    description NVARCHAR(500) NULL,
+                    permissions_json NVARCHAR(MAX) NOT NULL,
+                    is_system BIT NOT NULL DEFAULT 0,
+                    created_at DATETIME NOT NULL DEFAULT GETDATE(),
+                    updated_at DATETIME NOT NULL DEFAULT GETDATE()
+                );
+            END;
+
+            IF COL_LENGTH('PF_Users', 'must_change_password') IS NULL
+            BEGIN
+                ALTER TABLE PF_Users ADD must_change_password BIT NOT NULL DEFAULT 0;
+            END;
+        `);
+
+        for (const def of SYSTEM_DEFAULT_ROLES) {
+            const seedReq = new sql.Request();
+            seedReq.input('key', sql.NVarChar, def.role_key);
+            seedReq.input('name', sql.NVarChar, def.role_name);
+            seedReq.input('desc', sql.NVarChar, def.description);
+            seedReq.input('perms', sql.NVarChar(sql.MAX), JSON.stringify(def.permissions));
+            seedReq.input('sys', sql.Bit, def.is_system ? 1 : 0);
+            await seedReq.query(`
+                IF NOT EXISTS (SELECT 1 FROM PF_Roles WHERE role_key = @key)
+                INSERT INTO PF_Roles (role_key, role_name, description, permissions_json, is_system)
+                VALUES (@key, @name, @desc, @perms, @sys);
+            `);
+        }
+
+        // Migreer bestaande reguliere gebruikers die 'user' hadden en 'portfolio_only' of 'arne_advies' naar de juiste rol
+        await new sql.Request().query(`
+            UPDATE PF_Users
+            SET role = CASE WHEN strategy_mode = 'portfolio_only' THEN 'starter' ELSE 'pro' END
+            WHERE id != 1 AND role = 'user';
+        `);
+
+        rolesTableInitialized = true;
+    } catch (err) {
+        console.warn('Waarschuwing bij initialiseren PF_Roles:', err.message);
+    }
+};
+
+const fetchRolesMapFromDb = async () => {
+    await ensureRolesTableAndColumns();
+    const res = await new sql.Request().query('SELECT * FROM PF_Roles ORDER BY is_system DESC, role_id ASC');
+    const roles = (res.recordset || []).map(r => {
+        let perms = {};
+        try {
+            perms = r.permissions_json ? JSON.parse(r.permissions_json) : {};
+        } catch (e) {}
+        return {
+            role_id: r.role_id,
+            role_key: r.role_key,
+            role_name: r.role_name,
+            description: r.description || '',
+            permissions: perms,
+            is_system: Boolean(r.is_system)
+        };
+    });
+    const byKey = new Map();
+    roles.forEach(r => byKey.set(r.role_key, r));
+    return { roles, byKey };
+};
+
+const resolvePermissionsForUserRow = async (userRow, rolesByKey = null) => {
+    const uid = Number(userRow.id || userRow.userID);
+    if (uid === 1 || userRow.role === 'admin') {
+        return {
+            role: 'admin',
+            role_name: '👑 Beheerder (Volledige Toegang)',
+            strategy_mode: 'full_access',
+            permissions: {
+                canViewPortfolio: true,
+                canViewDashboard: true,
+                canUseStockStrategy: true,
+                canUseEtfStrategy: true,
+                canViewStrategyBuilder: true,
+                canViewAnalysis: true,
+                canViewScreener: true,
+                canViewFormulas: true,
+                canEditSystemData: true,
+                canReceiveStrategyAlerts: true,
+            }
+        };
+    }
+
+    let map = rolesByKey;
+    if (!map) {
+        const fetched = await fetchRolesMapFromDb();
+        map = fetched.byKey;
+    }
+
+    let rawRole = userRow.role || 'starter';
+    if (rawRole === 'user') {
+        rawRole = userRow.strategy_mode === 'arne_advies' ? 'pro' : 'starter';
+    }
+
+    const roleObj = map.get(rawRole) || map.get('starter') || SYSTEM_DEFAULT_ROLES[0];
+    const perms = {
+        ...SYSTEM_DEFAULT_ROLES[0].permissions,
+        ...(roleObj.permissions || {})
+    };
+    const derivedMode = (perms.canUseStockStrategy || perms.canUseEtfStrategy || perms.canViewDashboard) ? 'arne_advies' : 'portfolio_only';
+
+    return {
+        role: roleObj.role_key,
+        role_name: roleObj.role_name,
+        strategy_mode: derivedMode,
+        permissions: perms
+    };
+};
+
 // Configureer de nodemailer transporter
 const transporter = nodemailer.createTransport({
     host: "smtp-mail.outlook.com",
@@ -122,9 +321,11 @@ const loginStep2 = async (req, res) => {
         }
 
         const user = storedOtpData.user;
+        const resolved = await resolvePermissionsForUserRow(user);
         let userID = user.id;
-        let role = Number(user.id) === 1 ? 'admin' : (user.role || user.Roles || 'user');
-        let strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
+        let role = resolved.role;
+        let strategyMode = resolved.strategy_mode;
+        const permissions = resolved.permissions;
 
         // Forceer demo gebruiker naar de data van ArneVR (alleen-lezen)
         if (role === 'demo' || username.toLowerCase() === 'demo') {
@@ -132,7 +333,6 @@ const loginStep2 = async (req, res) => {
             userID = 1;
         }
 
-        const permissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
         const expiresIn = rememberMe ? '30d' : '1h';
 
         const token = jwt.sign(
@@ -152,8 +352,10 @@ const loginStep2 = async (req, res) => {
             username,
             userID,
             role,
+            role_name: resolved.role_name,
             strategy_mode: strategyMode,
             permissions,
+            must_change_password: Boolean(user.must_change_password),
             default_currency: user.default_currency || 'EUR',
             expiresIn
         });
@@ -166,6 +368,7 @@ const loginStep2 = async (req, res) => {
 // Haal actuele sessie, rol en toegangsrechten op voor de ingelogde gebruiker
 const getMe = async (req, res) => {
     try {
+        await ensureRolesTableAndColumns();
         const lookupId = Number(req.user?.actualUserId || req.user?.userID || 1);
         const request = new sql.Request();
         request.input('id', sql.Int, lookupId);
@@ -180,9 +383,10 @@ const getMe = async (req, res) => {
             return res.status(403).json({ message: 'Dit account is gedeactiveerd.' });
         }
 
-        const role = Number(user.id) === 1 ? 'admin' : (user.role || 'user');
-        const strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
-        const permissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
+        const resolved = await resolvePermissionsForUserRow(user);
+        const role = resolved.role;
+        const strategyMode = resolved.strategy_mode;
+        const permissions = resolved.permissions;
         const effectiveUserId = role === 'demo' ? 1 : user.id;
 
         res.json({
@@ -191,8 +395,10 @@ const getMe = async (req, res) => {
             username: user.username,
             email: user.email,
             role,
+            role_name: resolved.role_name,
             strategy_mode: strategyMode,
             permissions,
+            must_change_password: Boolean(user.must_change_password),
             default_currency: user.default_currency || 'EUR'
         });
     } catch (error) {
@@ -201,15 +407,13 @@ const getMe = async (req, res) => {
     }
 };
 
-// Alleen toegankelijk voor Admin (User 1): nodig een gebruiker uit / maak een account aan
+// Alleen toegankelijk voor Admin (User 1): nodig een gebruiker uit / maak een account aan op basis van een gekozen Rol
 const register = async (req, res) => {
   const {
     username,
     email,
     password,
-    role = 'user',
-    strategy_mode = 'arne_advies',
-    permissions = null,
+    role = 'starter',
     sendInviteEmail = true
   } = req.body;
 
@@ -223,6 +427,9 @@ const register = async (req, res) => {
     : `Welkom-${crypto.randomInt(1000, 9999)}!`;
 
   try {
+    await ensureRolesTableAndColumns();
+    const { byKey } = await fetchRolesMapFromDb();
+
     const request = new sql.Request();
     request.input('username', sql.NVarChar, username.trim());
     request.input('email', sql.NVarChar, email.trim());
@@ -235,11 +442,12 @@ const register = async (req, res) => {
     const saltRounds = 10;
     const hashedPassword = await bcrypt.hash(plainPassword, saltRounds);
 
-    const safeRole = ['user', 'admin', 'demo'].includes(role) ? role : 'user';
-    const safeMode = ['portfolio_only', 'arne_advies', 'full_access'].includes(strategy_mode)
-      ? strategy_mode
-      : (safeRole === 'admin' ? 'full_access' : 'arne_advies');
-    const resolvedPermissions = buildUserPermissions(safeRole, safeMode, permissions, null);
+    const chosenRoleObj = byKey.get(role) || byKey.get('starter') || SYSTEM_DEFAULT_ROLES[0];
+    const safeRole = chosenRoleObj.role_key;
+    const resolvedPermissions = chosenRoleObj.permissions;
+    const safeMode = safeRole === 'admin'
+      ? 'full_access'
+      : ((resolvedPermissions.canUseStockStrategy || resolvedPermissions.canUseEtfStrategy || resolvedPermissions.canViewDashboard) ? 'arne_advies' : 'portfolio_only');
 
     const insertRequest = new sql.Request();
     insertRequest.input('username', sql.NVarChar, username.trim());
@@ -250,9 +458,9 @@ const register = async (req, res) => {
     insertRequest.input('permissions', sql.NVarChar(sql.MAX), JSON.stringify(resolvedPermissions));
 
     const insertRes = await insertRequest.query(`
-      INSERT INTO PF_Users (username, email, password, role, strategy_mode, permissions, is_active, default_currency, created_at)
+      INSERT INTO PF_Users (username, email, password, role, strategy_mode, permissions, is_active, must_change_password, default_currency, created_at)
       OUTPUT INSERTED.id
-      VALUES (@username, @email, @password, @role, @strategy_mode, @permissions, 1, 'EUR', GETDATE())
+      VALUES (@username, @email, @password, @role, @strategy_mode, @permissions, 1, 1, 'EUR', GETDATE())
     `);
 
     const newUserId = insertRes.recordset[0]?.id;
@@ -311,6 +519,8 @@ const register = async (req, res) => {
         username: username.trim(),
         email: email.trim(),
         temporaryPassword: plainPassword,
+        role: safeRole,
+        role_name: chosenRoleObj.role_name,
         strategy_mode: safeMode,
         emailSent
       }
@@ -327,12 +537,14 @@ const getProfile = async (req, res) => {
     const id = isAdminUser(req) ? (requestedId || callerId) : callerId;
 
     try {
+        await ensureRolesTableAndColumns();
         const request = new sql.Request();
         request.input('id', sql.Int, id);
         const result = await request.query(`
             SELECT id, username, email, role,
-                   ISNULL(strategy_mode, 'arne_advies') as strategy_mode,
+                   ISNULL(strategy_mode, 'portfolio_only') as strategy_mode,
                    permissions,
+                   ISNULL(must_change_password, 0) as must_change_password,
                    ISNULL(default_currency, 'EUR') as default_currency,
                    ISNULL(manual_exchange_rate, 1.0) as manual_exchange_rate,
                    ISNULL(preferred_login_method, 'password') as preferred_login_method,
@@ -347,9 +559,7 @@ const getProfile = async (req, res) => {
         if (result.recordset.length === 0) return res.status(404).json({ message: 'Gebruiker niet gevonden.' });
         
         const user = result.recordset[0];
-        const role = Number(user.id) === 1 ? 'admin' : (user.role || 'user');
-        const strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
-        const parsedPermissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
+        const resolved = await resolvePermissionsForUserRow(user);
         
         const identRequest = new sql.Request();
         identRequest.input('userId', sql.Int, id);
@@ -359,9 +569,11 @@ const getProfile = async (req, res) => {
         
         res.json({
             ...user,
-            role,
-            strategy_mode: strategyMode,
-            permissions: parsedPermissions,
+            role: resolved.role,
+            role_name: resolved.role_name,
+            strategy_mode: resolved.strategy_mode,
+            permissions: resolved.permissions,
+            must_change_password: Boolean(user.must_change_password),
             linkedProviders
         });
     } catch (error) {
@@ -434,7 +646,12 @@ const updatePassword = async (req, res) => {
     const id = isAdminUser(req) ? requestedId : callerId;
     const { currentPassword, newPassword } = req.body;
 
+    if (!newPassword || String(newPassword).trim().length < 6) {
+        return res.status(400).json({ message: 'Nieuw wachtwoord moet minimaal 6 tekens bevatten.' });
+    }
+
     try {
+        await ensureRolesTableAndColumns();
         const request = new sql.Request();
         request.input('id', sql.Int, id);
         const userRes = await request.query('SELECT password FROM PF_Users WHERE id = @id');
@@ -443,13 +660,13 @@ const updatePassword = async (req, res) => {
         const match = await bcrypt.compare(currentPassword, userRes.recordset[0].password);
         if (!match) return res.status(401).json({ message: 'Huidig wachtwoord is onjuist.' });
 
-        const hashed = await bcrypt.hash(newPassword, 10);
+        const hashed = await bcrypt.hash(String(newPassword).trim(), 10);
         const updateReq = new sql.Request();
         updateReq.input('id', sql.Int, id);
         updateReq.input('password', sql.NVarChar, hashed);
-        await updateReq.query('UPDATE PF_Users SET password = @password WHERE id = @id');
+        await updateReq.query('UPDATE PF_Users SET password = @password, must_change_password = 0 WHERE id = @id');
         
-        res.json({ message: 'Wachtwoord succesvol gewijzigd.' });
+        res.json({ message: 'Wachtwoord succesvol gewijzigd.', must_change_password: false });
     } catch (error) {
         console.error('Fout bij updaten wachtwoord:', error);
         res.status(500).json({ message: 'Fout bij het updaten van het wachtwoord.' });
@@ -458,6 +675,8 @@ const updatePassword = async (req, res) => {
 
 const getAllUsers = async (req, res) => {
     try {
+        await ensureRolesTableAndColumns();
+        const { byKey } = await fetchRolesMapFromDb();
         const request = new sql.Request();
         const result = await request.query(`
             SELECT u.*,
@@ -466,25 +685,26 @@ const getAllUsers = async (req, res) => {
             ORDER BY u.id ASC
         `);
         
-        const mappedUsers = result.recordset.map(u => {
+        const mappedUsers = [];
+        for (const u of result.recordset) {
             const uid = u.id || u.Id || u.ID;
-            const role = Number(uid) === 1 ? 'admin' : (u.role || u.Role || u.Roles || 'user');
-            const strategyMode = Number(uid) === 1 ? 'full_access' : (u.strategy_mode || 'arne_advies');
-            const permissions = buildUserPermissions(role, strategyMode, u.permissions, uid);
+            const resolved = await resolvePermissionsForUserRow(u, byKey);
 
-            return {
+            mappedUsers.push({
                 id: uid,
                 username: u.username || u.Username || u.USERNAME,
                 email: u.email || u.Email || u.EMAIL,
-                role,
-                strategy_mode: strategyMode,
-                permissions,
+                role: resolved.role,
+                role_name: resolved.role_name,
+                strategy_mode: resolved.strategy_mode,
+                permissions: resolved.permissions,
+                must_change_password: Boolean(u.must_change_password),
                 is_active: Number(uid) === 1 ? true : (u.is_active !== false && u.is_active !== 0),
                 tx_count: u.tx_count || 0,
                 last_login: u.last_login || u.Last_Login || null,
                 created_at: u.created_at || null
-            };
-        });
+            });
+        }
         
         res.json(mappedUsers);
     } catch (error) {
@@ -502,28 +722,41 @@ const updateUserRole = async (req, res) => {
     }
 
     try {
+        await ensureRolesTableAndColumns();
+        const { byKey } = await fetchRolesMapFromDb();
+        const chosenRole = byKey.get(role) || byKey.get('starter') || SYSTEM_DEFAULT_ROLES[0];
+        const perms = chosenRole.permissions;
+        const derivedMode = chosenRole.role_key === 'admin'
+            ? 'full_access'
+            : ((perms.canUseStockStrategy || perms.canUseEtfStrategy || perms.canViewDashboard) ? 'arne_advies' : 'portfolio_only');
+
         const request = new sql.Request();
         request.input('id', sql.Int, id);
-        request.input('role', sql.NVarChar, role);
-        await request.query('UPDATE PF_Users SET role = @role WHERE id = @id');
+        request.input('role', sql.NVarChar, chosenRole.role_key);
+        request.input('mode', sql.NVarChar, derivedMode);
+        request.input('perms', sql.NVarChar(sql.MAX), JSON.stringify(perms));
+        await request.query('UPDATE PF_Users SET role = @role, strategy_mode = @mode, permissions = @perms WHERE id = @id');
         
-        res.json({ message: 'Gebruikersrol succesvol bijgewerkt.' });
+        res.json({ message: `Gebruikersrol bijgewerkt naar "${chosenRole.role_name}".` });
     } catch (error) {
         console.error('Fout bij updaten rol:', error);
         res.status(500).json({ message: 'Serverfout bij updaten rol.' });
     }
 };
 
-// Uitgebreid toegangsbeheer voor User 1 (Admin): pas rol, strategy_mode, individuele permissions, actief-status of wachtwoord aan
+// Toegangsbeheer voor User 1 (Admin): pas rol, actief-status, e-mail of wachtwoord van een gebruiker aan (rechten komen algemeen uit de rol!)
 const updateUserAccess = async (req, res) => {
     const id = Number(req.params.id);
-    const { role, strategy_mode, permissions, is_active, newPassword, email } = req.body;
+    const { role, is_active, newPassword, email } = req.body;
 
     if (id === 1) {
         return res.status(400).json({ message: 'Gebruiker 1 (ArneVR) heeft als ontwikkelaar altijd volledige toegang.' });
     }
 
     try {
+        await ensureRolesTableAndColumns();
+        const { byKey } = await fetchRolesMapFromDb();
+
         const curReq = new sql.Request();
         curReq.input('id', sql.Int, id);
         const curRes = await curReq.query('SELECT * FROM PF_Users WHERE id = @id');
@@ -532,20 +765,17 @@ const updateUserAccess = async (req, res) => {
         }
         const current = curRes.recordset[0];
 
-        const nextRole = role || current.role || 'user';
-        const nextMode = strategy_mode || current.strategy_mode || 'arne_advies';
+        const nextRoleKey = role || current.role || 'starter';
+        const chosenRole = byKey.get(nextRoleKey) || byKey.get('starter') || SYSTEM_DEFAULT_ROLES[0];
+        const resolvedPermissions = chosenRole.permissions;
+        const nextMode = chosenRole.role_key === 'admin'
+            ? 'full_access'
+            : ((resolvedPermissions.canUseStockStrategy || resolvedPermissions.canUseEtfStrategy || resolvedPermissions.canViewDashboard) ? 'arne_advies' : 'portfolio_only');
         const nextActive = typeof is_active === 'boolean' ? is_active : (current.is_active !== false);
-
-        // Als strategy_mode gewijzigd wordt zonder specifieke permissions-override, gebruik de preset van die mode
-        let basePermissions = permissions;
-        if (!basePermissions && strategy_mode && DEFAULT_PERMISSIONS_BY_MODE[strategy_mode]) {
-            basePermissions = DEFAULT_PERMISSIONS_BY_MODE[strategy_mode];
-        }
-        const resolvedPermissions = buildUserPermissions(nextRole, nextMode, basePermissions || current.permissions, id);
 
         const updateReq = new sql.Request();
         updateReq.input('id', sql.Int, id);
-        updateReq.input('role', sql.NVarChar, nextRole);
+        updateReq.input('role', sql.NVarChar, chosenRole.role_key);
         updateReq.input('strategy_mode', sql.NVarChar, nextMode);
         updateReq.input('permissions', sql.NVarChar(sql.MAX), JSON.stringify(resolvedPermissions));
         updateReq.input('is_active', sql.Bit, nextActive ? 1 : 0);
@@ -563,17 +793,18 @@ const updateUserAccess = async (req, res) => {
         if (newPassword && String(newPassword).trim().length >= 6) {
             const hashed = await bcrypt.hash(String(newPassword).trim(), 10);
             updateReq.input('password', sql.NVarChar, hashed);
-            query += `, password = @password`;
+            query += `, password = @password, must_change_password = 1`;
         }
 
         query += ` WHERE id = @id`;
         await updateReq.query(query);
 
         res.json({
-            message: 'Toegangsrechten en instellingen succesvol opgeslagen.',
+            message: 'Gebruikersrol en instellingen succesvol opgeslagen.',
             user: {
                 id,
-                role: nextRole,
+                role: chosenRole.role_key,
+                role_name: chosenRole.role_name,
                 strategy_mode: nextMode,
                 permissions: resolvedPermissions,
                 is_active: nextActive
@@ -582,6 +813,182 @@ const updateUserAccess = async (req, res) => {
     } catch (error) {
         console.error('Fout bij bijwerken toegangsrechten:', error);
         res.status(500).json({ message: 'Serverfout bij bijwerken toegangsrechten.' });
+    }
+};
+
+// --- ROLLEN BEHEER ENDPOINTS (algemene rechten per rol) ---
+const getRoles = async (req, res) => {
+    try {
+        const { roles } = await fetchRolesMapFromDb();
+        // Tel ook hoeveel gebruikers elke rol hebben
+        const countRes = await new sql.Request().query(`
+            SELECT role, COUNT(*) as user_count FROM PF_Users GROUP BY role
+        `);
+        const countMap = {};
+        (countRes.recordset || []).forEach(r => {
+            countMap[r.role] = Number(r.user_count || 0);
+        });
+        const enriched = roles.map(r => ({
+            ...r,
+            user_count: countMap[r.role_key] || 0
+        }));
+        res.json(enriched);
+    } catch (error) {
+        console.error('Fout bij ophalen rollen:', error);
+        res.status(500).json({ message: 'Serverfout bij ophalen rollen.' });
+    }
+};
+
+const createRole = async (req, res) => {
+    const { role_name, description = '', permissions = {} } = req.body;
+    if (!role_name || !String(role_name).trim()) {
+        return res.status(400).json({ message: 'Geef een naam op voor de nieuwe rol.' });
+    }
+
+    const cleanName = String(role_name).trim();
+    const rawKey = req.body.role_key
+        ? String(req.body.role_key).trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_')
+        : cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    const roleKey = rawKey || `rol_${Date.now()}`;
+
+    try {
+        await ensureRolesTableAndColumns();
+        const checkReq = new sql.Request();
+        checkReq.input('key', sql.NVarChar, roleKey);
+        const existing = await checkReq.query('SELECT role_id FROM PF_Roles WHERE role_key = @key');
+        if (existing.recordset.length > 0) {
+            return res.status(409).json({ message: 'Er bestaat al een rol met deze sleutel/naam.' });
+        }
+
+        const safePerms = {
+            ...SYSTEM_DEFAULT_ROLES[0].permissions,
+            ...(permissions || {})
+        };
+
+        const insReq = new sql.Request();
+        insReq.input('key', sql.NVarChar, roleKey);
+        insReq.input('name', sql.NVarChar, cleanName);
+        insReq.input('desc', sql.NVarChar, String(description || '').trim());
+        insReq.input('perms', sql.NVarChar(sql.MAX), JSON.stringify(safePerms));
+
+        await insReq.query(`
+            INSERT INTO PF_Roles (role_key, role_name, description, permissions_json, is_system)
+            VALUES (@key, @name, @desc, @perms, 0)
+        `);
+
+        const { roles } = await fetchRolesMapFromDb();
+        res.status(201).json({
+            message: `Nieuwe rol "${cleanName}" succesvol aangemaakt!`,
+            roles
+        });
+    } catch (error) {
+        console.error('Fout bij aanmaken rol:', error);
+        res.status(500).json({ message: 'Serverfout bij aanmaken rol.' });
+    }
+};
+
+const updateRole = async (req, res) => {
+    const { roleKey } = req.params;
+    const { role_name, description, permissions } = req.body;
+
+    if (roleKey === 'admin') {
+        return res.status(400).json({ message: 'De Beheerder (admin) rol heeft altijd volledige toegang en kan niet worden beperkt.' });
+    }
+
+    try {
+        await ensureRolesTableAndColumns();
+        const checkReq = new sql.Request();
+        checkReq.input('key', sql.NVarChar, roleKey);
+        const curRes = await checkReq.query('SELECT * FROM PF_Roles WHERE role_key = @key');
+        if (curRes.recordset.length === 0) {
+            return res.status(404).json({ message: 'Rol niet gevonden.' });
+        }
+        const cur = curRes.recordset[0];
+        let curPerms = {};
+        try { curPerms = JSON.parse(cur.permissions_json); } catch (e) {}
+
+        const nextPerms = {
+            ...SYSTEM_DEFAULT_ROLES[0].permissions,
+            ...curPerms,
+            ...(permissions || {})
+        };
+        const nextName = role_name ? String(role_name).trim() : cur.role_name;
+        const nextDesc = description !== undefined ? String(description).trim() : cur.description;
+
+        const updReq = new sql.Request();
+        updReq.input('key', sql.NVarChar, roleKey);
+        updReq.input('name', sql.NVarChar, nextName);
+        updReq.input('desc', sql.NVarChar, nextDesc);
+        updReq.input('perms', sql.NVarChar(sql.MAX), JSON.stringify(nextPerms));
+
+        await updReq.query(`
+            UPDATE PF_Roles
+            SET role_name = @name,
+                description = @desc,
+                permissions_json = @perms,
+                updated_at = GETDATE()
+            WHERE role_key = @key
+        `);
+
+        // Werk direct alle gebruikers met deze rol bij zodat iedereen met deze rol exact dezelfde rechten heeft
+        const derivedMode = (nextPerms.canUseStockStrategy || nextPerms.canUseEtfStrategy || nextPerms.canViewDashboard) ? 'arne_advies' : 'portfolio_only';
+        const syncUsersReq = new sql.Request();
+        syncUsersReq.input('role', sql.NVarChar, roleKey);
+        syncUsersReq.input('mode', sql.NVarChar, derivedMode);
+        syncUsersReq.input('perms', sql.NVarChar(sql.MAX), JSON.stringify(nextPerms));
+        await syncUsersReq.query(`
+            UPDATE PF_Users
+            SET strategy_mode = @mode,
+                permissions = @perms
+            WHERE role = @role AND id != 1
+        `);
+
+        const { roles } = await fetchRolesMapFromDb();
+        res.json({
+            message: `Rechten voor rol "${nextName}" opgeslagen en toegepast op alle gekoppelde gebruikers!`,
+            roles
+        });
+    } catch (error) {
+        console.error('Fout bij bijwerken rol:', error);
+        res.status(500).json({ message: 'Serverfout bij bijwerken rol.' });
+    }
+};
+
+const deleteRole = async (req, res) => {
+    const { roleKey } = req.params;
+    if (['admin', 'starter', 'pro', 'demo'].includes(roleKey)) {
+        return res.status(400).json({ message: 'Standaard systeemrollen kunnen niet worden verwijderd (je kunt wel hun rechten aanpassen).' });
+    }
+
+    try {
+        await ensureRolesTableAndColumns();
+        // Zet eventuele gebruikers met deze rol veilig terug naar 'starter'
+        const { byKey } = await fetchRolesMapFromDb();
+        const starterRole = byKey.get('starter') || SYSTEM_DEFAULT_ROLES[0];
+
+        const reassignReq = new sql.Request();
+        reassignReq.input('oldRole', sql.NVarChar, roleKey);
+        reassignReq.input('perms', sql.NVarChar(sql.MAX), JSON.stringify(starterRole.permissions));
+        await reassignReq.query(`
+            UPDATE PF_Users
+            SET role = 'starter',
+                strategy_mode = 'portfolio_only',
+                permissions = @perms
+            WHERE role = @oldRole AND id != 1
+        `);
+
+        const delReq = new sql.Request();
+        delReq.input('key', sql.NVarChar, roleKey);
+        await delReq.query('DELETE FROM PF_Roles WHERE role_key = @key AND is_system = 0');
+
+        const { roles } = await fetchRolesMapFromDb();
+        res.json({
+            message: 'Rol verwijderd (gekoppelde gebruikers zijn overgezet naar Nieuwe Belegger).',
+            roles
+        });
+    } catch (error) {
+        console.error('Fout bij verwijderen rol:', error);
+        res.status(500).json({ message: 'Serverfout bij verwijderen rol.' });
     }
 };
 
@@ -735,9 +1142,10 @@ const loginProvider = async (req, res) => {
             return res.status(403).json({ message: 'Dit account is gedeactiveerd door de beheerder.' });
         }
 
-        const role = Number(user.id) === 1 ? 'admin' : (user.role || 'user');
-        const strategyMode = Number(user.id) === 1 ? 'full_access' : (user.strategy_mode || 'arne_advies');
-        const permissions = buildUserPermissions(role, strategyMode, user.permissions, user.id);
+        const resolved = await resolvePermissionsForUserRow(user);
+        const role = resolved.role;
+        const strategyMode = resolved.strategy_mode;
+        const permissions = resolved.permissions;
         const effectiveUserId = role === 'demo' ? 1 : user.id;
         
         const updateReq = new sql.Request();
@@ -756,8 +1164,10 @@ const loginProvider = async (req, res) => {
             username: user.username,
             userID: effectiveUserId,
             role,
+            role_name: resolved.role_name,
             strategy_mode: strategyMode,
             permissions,
+            must_change_password: Boolean(user.must_change_password),
             default_currency: user.default_currency || 'EUR',
             expiresIn
         });
@@ -987,6 +1397,10 @@ module.exports = {
     updateUserRole, 
     updateUserAccess,
     deleteUser,
+    getRoles,
+    createRole,
+    updateRole,
+    deleteRole,
     logout,
     loginProvider,
     linkGoogle,

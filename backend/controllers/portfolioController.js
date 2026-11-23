@@ -2050,16 +2050,20 @@ const fetchAndStorePricesForStock = async (aandeel_id) => {
     const apiFetchStartDateFormatted = tenYearsAgo.toISOString().split("T")[0];
 
     let apiData = [];
-    if (stock.asset_type === 'ETF') {
+    if (stock.asset_type === 'ETF' || stock.asset_type === 'CRYPTO') {
       let yahooTicker = stock.ticker_symbol;
-      if (!yahooTicker.includes('.')) {
+      if (stock.asset_type === 'CRYPTO') {
+        if (!yahooTicker.includes('-')) {
+          yahooTicker = `${yahooTicker}-EUR`;
+        }
+      } else if (!yahooTicker.includes('.')) {
         yahooTicker = `${yahooTicker}.DE`;
       }
       const period1 = Math.floor(tenYearsAgo.getTime() / 1000);
       const period2 = Math.floor(today.getTime() / 1000) + 86400;
       const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${yahooTicker}?interval=1d&period1=${period1}&period2=${period2}`;
 
-      console.log(`[Background Sync] Ophalen van ETF data voor ${stock.ticker_symbol} via Yahoo Finance: ${apiUrl}`);
+      console.log(`[Background Sync] Ophalen van ${stock.asset_type} data voor ${stock.ticker_symbol} via Yahoo Finance: ${apiUrl}`);
       const response = await fetch(apiUrl, {
         headers: {
           'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -2082,12 +2086,49 @@ const fetchAndStorePricesForStock = async (aandeel_id) => {
       }
     } else if (stock.asset_type === 'STOCK') {
       const apiKey = process.env.PROFIT_COM_API_KEY;
-      const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${todayFormatted}&token=${apiKey}`;
+      if (apiKey && !stock.ticker_symbol.includes('.')) {
+        const apiUrl = `https://api.profit.com/data-api/market-data/historical/daily/${stock.ticker_symbol}?start_date=${apiFetchStartDateFormatted}&end_date=${todayFormatted}&token=${apiKey}`;
+        console.log(`[Background Sync] Ophalen van STOCK data voor ${stock.ticker_symbol} via Profit.com: ${apiUrl}`);
+        try {
+          const response = await fetch(apiUrl);
+          if (response.ok) {
+            apiData = await response.json();
+          }
+        } catch (pErr) {
+          console.warn(`[Background Sync] Profit.com fout voor ${stock.ticker_symbol}:`, pErr.message);
+        }
+      }
 
-      console.log(`[Background Sync] Ophalen van STOCK data voor ${stock.ticker_symbol} via Profit.com: ${apiUrl}`);
-      const response = await fetch(apiUrl);
-      if (response.ok) {
-        apiData = await response.json();
+      // Automatische Yahoo Finance fallback voor internationale aandelen (.BR, .AS, .PA, .DE) of als Profit.com niets vindt
+      if (!apiData || apiData.length === 0) {
+        const period1 = Math.floor(tenYearsAgo.getTime() / 1000);
+        const period2 = Math.floor(today.getTime() / 1000) + 86400;
+        const apiUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${stock.ticker_symbol}?interval=1d&period1=${period1}&period2=${period2}`;
+        console.log(`[Background Sync] Ophalen van STOCK data voor ${stock.ticker_symbol} via Yahoo Finance: ${apiUrl}`);
+        try {
+          const response = await fetch(apiUrl, {
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+          });
+          if (response.ok) {
+            const json = await response.json();
+            const result = json.chart?.result?.[0];
+            if (result) {
+              const timestamps = result.timestamp || [];
+              const closes = result.indicators?.quote?.[0]?.close || [];
+              apiData = timestamps.map((ts, idx) => {
+                if (closes[idx] === null || closes[idx] === undefined) return null;
+                return {
+                  t: ts,
+                  c: closes[idx]
+                };
+              }).filter(Boolean);
+            }
+          }
+        } catch (yErr) {
+          console.warn(`[Background Sync] Yahoo Finance fout voor ${stock.ticker_symbol}:`, yErr.message);
+        }
       }
     }
 
@@ -2317,13 +2358,19 @@ const addMultipleTransactions = async (req, res) => {
                                       .query(`UPDATE Stocks SET isin = @isin WHERE aandeel_id = @aid`);
                               }
                           } else {
-                              // Voeg nieuw aandeel toe aan Stocks tabel!
+                          // Voeg nieuw aandeel toe aan Stocks tabel met automatische beurs-herkenning!
+                              const { resolveOrCreateStockExchangeId } = require('./secController');
+                              const autoExchangeId = await resolveOrCreateStockExchangeId(
+                                  firstQuote.exchDisp || firstQuote.exchange || '',
+                                  resolvedSymbol,
+                                  firstQuote.quoteType || ''
+                              );
                               const insertStock = await pool.request()
                                   .input('ticker', sql.NVarChar, resolvedSymbol)
                                   .input('name', sql.NVarChar, resolvedName)
                                   .input('isin', sql.VarChar, cleanIsin || null)
                                   .input('asset_type_id', sql.Int, isEtf ? 2 : 1)
-                                  .input('stock_exchange_id', sql.Int, 1)
+                                  .input('stock_exchange_id', sql.Int, autoExchangeId || 1)
                                   .query(`
                                       INSERT INTO Stocks (ticker_symbol, name, isin, asset_type_id, stock_exchange_id, inWatchlist, inIdealePortfolio)
                                       OUTPUT INSERTED.aandeel_id
@@ -6831,5 +6878,6 @@ module.exports = {
   getDataStatus,
   clearAdvisorCache,
   clearPortfolioCache,
+  fetchAndStorePricesForStock,
   getBaselinePrices2025
 };

@@ -41,22 +41,49 @@ const ModalLoadingFallback = () => (
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 const PortfolioManager = () => {
-  const userRole = localStorage.getItem('role') || 'user';
+  const userRole = localStorage.getItem('role') || 'starter';
   const isDemo = userRole === 'demo';
   const uid = localStorage.getItem('userID') || 1;
-  const isAdmin = Number(uid) === 1 || userRole === 'admin';
-  const userPermissions = useMemo(() => {
-    if (isAdmin) {
+  const isRealAdmin = Number(uid) === 1 || userRole === 'admin';
+  const [previewRole, setPreviewRole] = useState(() => localStorage.getItem('admin_preview_role') || '');
+  const isPreviewMode = isRealAdmin && Boolean(previewRole);
+  const isAdmin = isRealAdmin && !isPreviewMode;
+
+  const readEffectivePerms = () => {
+    if (isRealAdmin && localStorage.getItem('admin_preview_role')) {
+      try {
+        const p = localStorage.getItem('admin_preview_permissions');
+        if (p) return JSON.parse(p);
+      } catch {}
+      return { canUseStockStrategy: false, canUseEtfStrategy: false, canViewFormulas: false };
+    }
+    if (isRealAdmin) {
       return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: true };
     }
     try {
       const saved = localStorage.getItem('user_permissions');
-      return saved ? JSON.parse(saved) : { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
+      return saved ? JSON.parse(saved) : { canUseStockStrategy: false, canUseEtfStrategy: false, canViewFormulas: false };
     } catch {
-      return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
+      return { canUseStockStrategy: false, canUseEtfStrategy: false, canViewFormulas: false };
     }
-  }, [isAdmin]);
-  const canUseAdvisor = isAdmin || userPermissions.canUseStockStrategy || userPermissions.canUseEtfStrategy;
+  };
+
+  const [userPermissions, setUserPermissions] = useState(readEffectivePerms);
+
+  useEffect(() => {
+    const syncPerms = () => {
+      setPreviewRole(localStorage.getItem('admin_preview_role') || '');
+      setUserPermissions(readEffectivePerms());
+    };
+    window.addEventListener('permissionsUpdated', syncPerms);
+    window.addEventListener('adminPreviewChanged', syncPerms);
+    return () => {
+      window.removeEventListener('permissionsUpdated', syncPerms);
+      window.removeEventListener('adminPreviewChanged', syncPerms);
+    };
+  }, [isRealAdmin]);
+
+  const canUseAdvisor = isAdmin || Boolean(userPermissions.canUseStockStrategy || userPermissions.canUseEtfStrategy);
 
   const [rawHoldings, setRawHoldings] = useState([]);
   const [rawTransactions, setRawTransactions] = useState([]);

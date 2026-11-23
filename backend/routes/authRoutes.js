@@ -13,6 +13,10 @@ const {
     updateUserRole, 
     updateUserAccess,
     deleteUser,
+    getRoles,
+    createRole,
+    updateRole,
+    deleteRole,
     logout,
     loginProvider,
     linkGoogle,
@@ -40,10 +44,16 @@ router.post('/microsoft/link', verifyToken, blockDemoWrites, linkMicrosoft);
 router.delete('/provider/:provider', verifyToken, blockDemoWrites, unlinkProvider);
 router.put('/preference', verifyToken, blockDemoWrites, updatePreference);
 
-// Profiel endpoints (beveiligd met verifyToken; controller dwingt eigen userID af tenzij Admin)
+// Profiel endpoints (beveiligd met verifyToken; controller dwingt eigen userID af)
 router.get('/profile/:id', verifyToken, getProfile);
 router.put('/profile/:id', verifyToken, blockDemoWrites, updateProfile);
 router.put('/password/:id', verifyToken, blockDemoWrites, updatePassword);
+
+// Rollen-beheer endpoints (Admin-only voor wijzigingen, leesbaar voor sessie/admin)
+router.get('/roles', verifyToken, getRoles);
+router.post('/roles', verifyToken, requireAdmin, createRole);
+router.put('/roles/:roleKey', verifyToken, requireAdmin, updateRole);
+router.delete('/roles/:roleKey', verifyToken, requireAdmin, deleteRole);
 
 // Admin-only endpoints (enkel User 1 / Arne mag accounts aanmaken, bekijken, wijzigen of verwijderen)
 router.post('/register', verifyToken, requireAdmin, register);
