@@ -1014,4 +1014,626 @@ exports.deleteCalculation = async (req, res) => {
     }
 };
 
+// ============================================================================
+// BELGISCHE TOB & ETF KOSTEN PROFIELEN (Curvo Beurstaks ETF Checker Regels)
+// ============================================================================
+const CURVO_BELGIAN_ETF_REFERENCE = {
+    'VGWL': {
+        isin: 'IE00B3RBWM25',
+        name: 'Vanguard FTSE All-World UCITS ETF (Dist)',
+        provider: 'Vanguard',
+        domicile: 'Ierland (EER)',
+        indexName: 'FTSE All-World',
+        dividendPolicy: 'DISTRIBUTING',
+        dividendYieldPct: 1.85,
+        terPct: 0.22,
+        registeredInEea: true,
+        registeredInBelgiumFsma: true,
+        subfundRegisteredInBelgium: true,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% bij alle brokers (uitkerend/distribuerend compartiment in EER). Let op: op de uitbetaalde dividenden betaal je in België wel 30% roerende voorheffing.'
+    },
+    'VUSA': {
+        isin: 'IE00B3XXRP09',
+        name: 'Vanguard S&P 500 UCITS ETF (Dist)',
+        provider: 'Vanguard',
+        domicile: 'Ierland (EER)',
+        indexName: 'S&P 500',
+        dividendPolicy: 'DISTRIBUTING',
+        dividendYieldPct: 1.25,
+        terPct: 0.07,
+        registeredInEea: true,
+        registeredInBelgiumFsma: true,
+        subfundRegisteredInBelgium: true,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% bij alle brokers (uitkerend/distribuerend compartiment in EER). Op dividenden geldt 30% Belgische roerende voorheffing.'
+    },
+    'VGWD': {
+        isin: 'IE00B8GKDB10',
+        name: 'Vanguard FTSE All-World High Dividend Yield UCITS ETF (Dist)',
+        provider: 'Vanguard',
+        domicile: 'Ierland (EER)',
+        indexName: 'FTSE All-World High Dividend',
+        dividendPolicy: 'DISTRIBUTING',
+        dividendYieldPct: 3.10,
+        terPct: 0.29,
+        registeredInEea: true,
+        registeredInBelgiumFsma: true,
+        subfundRegisteredInBelgium: true,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB (distribuerende EER-ETF). Door het hogere dividendrendement (~3,1%) weegt de 30% Belgische roerende voorheffing op lange termijn zwaarder door.'
+    },
+    'SPYM': {
+        isin: 'IE00B469F816',
+        name: 'SPDR MSCI Emerging Markets UCITS ETF (Acc)',
+        provider: 'SPDR (State Street)',
+        domicile: 'Ierland (EER)',
+        indexName: 'MSCI Emerging Markets',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.18,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting! Accumulerende EER-ETF die NIET in België bij de FSMA geregistreerd is (fiscaal meest optimale categorie in België).'
+    },
+    'VWCE': {
+        isin: 'IE00BK5BQT80',
+        name: 'Vanguard FTSE All-World UCITS ETF (USD) Accumulating',
+        provider: 'Vanguard',
+        domicile: 'Ierland (EER)',
+        indexName: 'FTSE All-World',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.22,
+        registeredInEea: true,
+        registeredInBelgiumFsma: true,
+        subfundRegisteredInBelgium: true,
+        tobRatePct: 1.32,
+        tobMaxCapEur: 4000,
+        tobBrokerNote: '1,32% TOB! Omdat andere compartimenten van Vanguard Funds plc in België bij de FSMA geregistreerd zijn, valt dit kapitalisatie-compartiment onder het hoge Belgische TOB-tarief van 1,32%.'
+    },
+    'IWDA': {
+        isin: 'IE00B4L5Y983',
+        name: 'iShares Core MSCI World UCITS ETF USD (Acc)',
+        provider: 'iShares (BlackRock)',
+        domicile: 'Ierland (EER)',
+        indexName: 'MSCI World (Ontwikkelde landen)',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.20,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting! Dit compartiment van iShares III plc is niet in België bij de FSMA geregistreerd en combineert daardoor het laagste TOB-tarief (0,12%) met belastingvrije herbelegging van dividenden.'
+    },
+    'EMIM': {
+        isin: 'IE00BKM4GZ66',
+        name: 'iShares Core MSCI EM IMI UCITS ETF USD (Acc)',
+        provider: 'iShares (BlackRock)',
+        domicile: 'Ierland (EER)',
+        indexName: 'MSCI Emerging Markets IMI',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.18,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting (accumulerend EER-fonds, niet bij FSMA geregistreerd).'
+    },
+    'SWRD': {
+        isin: 'IE00BFY0GT14',
+        name: 'SPDR MSCI World UCITS ETF (Acc)',
+        provider: 'SPDR (State Street)',
+        domicile: 'Ierland (EER)',
+        indexName: 'MSCI World',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.12,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting + lage TER (0,12%/jaar). Zeer populair alternatief voor IWDA/VWCE in België.'
+    },
+    'CSPX': {
+        isin: 'IE00B5BMRT95',
+        name: 'iShares Core S&P 500 UCITS ETF USD (Acc)',
+        provider: 'iShares (BlackRock)',
+        domicile: 'Ierland (EER)',
+        indexName: 'S&P 500',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.07,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting (accumulerende S&P 500 tracker, niet bij FSMA geregistreerd in België).'
+    },
+    'VUAA': {
+        isin: 'IE00BFMXXD54',
+        name: 'Vanguard S&P 500 UCITS ETF (USD) Accumulating',
+        provider: 'Vanguard',
+        domicile: 'Ierland (EER)',
+        indexName: 'S&P 500',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.07,
+        registeredInEea: true,
+        registeredInBelgiumFsma: true,
+        subfundRegisteredInBelgium: true,
+        tobRatePct: 1.32,
+        tobMaxCapEur: 4000,
+        tobBrokerNote: '1,32% TOB! Omdat Vanguard Funds plc andere compartimenten in België bij de FSMA heeft geregistreerd, rekenen Belgische brokers 1,32% TOB op dit kapitalisatie-compartiment.'
+    },
+    'IMIE': {
+        isin: 'IE00B3YLTY66',
+        name: 'SPDR MSCI ACWI IMI UCITS ETF (Acc)',
+        provider: 'SPDR (State Street)',
+        domicile: 'Ierland (EER)',
+        indexName: 'MSCI ACWI IMI (All-World incl. Small Caps)',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.17,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting! Dekt wereldwijd grote, middelgrote én kleine bedrijven in één fonds zonder FSMA-registratie.'
+    },
+    'QDVE': {
+        isin: 'IE00B3WJKG14',
+        name: 'iShares S&P 500 Information Technology Sector UCITS ETF (Acc)',
+        provider: 'iShares (BlackRock)',
+        domicile: 'Ierland (EER)',
+        indexName: 'S&P 500 Info Tech',
+        dividendPolicy: 'ACCUMULATING',
+        dividendYieldPct: 0,
+        terPct: 0.15,
+        registeredInEea: true,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.12,
+        tobMaxCapEur: 1300,
+        tobBrokerNote: '0,12% TOB + 0% dividendbelasting (iShares V plc compartiment niet in België geregistreerd).'
+    }
+};
+
+function buildBelgianTaxProfile(stock) {
+    const rawTicker = String(stock.ticker || '').toUpperCase();
+    const cleanTicker = rawTicker.replace(/\.(DE|AS|BR|PA|L|MI)$/i, '');
+    const assetType = String(stock.asset_type_name || 'STOCK').toUpperCase();
+    const isin = String(stock.isin || '').toUpperCase();
+
+    if (assetType === 'CRYPTO' || rawTicker.endsWith('-EUR') || rawTicker.endsWith('-USD')) {
+        return {
+            assetCategory: 'CRYPTO',
+            tobRatePct: 0,
+            tobMaxCapEur: 0,
+            tobBadge: '0,00% TOB (Vrijgesteld)',
+            dividendPolicy: 'NONE',
+            dividendYieldPct: 0,
+            terPct: 0,
+            withholdingTaxPct: 0,
+            domicile: 'Gedecentraliseerd / Crypto',
+            registeredInEea: false,
+            registeredInBelgiumFsma: false,
+            tobReason: 'Cryptomunten zijn in België vrijgesteld van beurstaks (0% TOB).'
+        };
+    }
+
+    if (assetType === 'ETF' || CURVO_BELGIAN_ETF_REFERENCE[cleanTicker]) {
+        const ref = CURVO_BELGIAN_ETF_REFERENCE[cleanTicker];
+        if (ref) {
+            return {
+                assetCategory: 'ETF',
+                isin: isin || ref.isin,
+                provider: ref.provider,
+                indexName: ref.indexName,
+                domicile: ref.domicile,
+                registeredInEea: ref.registeredInEea,
+                registeredInBelgiumFsma: ref.registeredInBelgiumFsma,
+                subfundRegisteredInBelgium: ref.subfundRegisteredInBelgium,
+                tobRatePct: ref.tobRatePct,
+                tobMaxCapEur: ref.tobMaxCapEur,
+                tobBadge: `${ref.tobRatePct.toFixed(2).replace('.', ',')}% TOB (max. €${ref.tobMaxCapEur})`,
+                dividendPolicy: ref.dividendPolicy,
+                dividendYieldPct: ref.dividendYieldPct,
+                terPct: ref.terPct,
+                withholdingTaxPct: ref.dividendPolicy === 'DISTRIBUTING' ? 30 : 0,
+                tobReason: ref.tobBrokerNote
+            };
+        }
+
+        const isEeaIsin = isin.startsWith('IE') || isin.startsWith('LU') || isin.startsWith('FR') || isin.startsWith('DE') || isin.startsWith('NL');
+        const isDist = /DIST|DIV|INC/i.test(stock.name || '');
+        const tobRatePct = isEeaIsin ? 0.12 : 0.35;
+        const tobMaxCapEur = isEeaIsin ? 1300 : 1600;
+        return {
+            assetCategory: 'ETF',
+            isin: isin || '-',
+            provider: 'ETF Provider',
+            indexName: stock.name,
+            domicile: isEeaIsin ? 'EER (UCITS)' : 'Buiten EER',
+            registeredInEea: isEeaIsin,
+            registeredInBelgiumFsma: false,
+            subfundRegisteredInBelgium: false,
+            tobRatePct,
+            tobMaxCapEur,
+            tobBadge: `${tobRatePct.toFixed(2).replace('.', ',')}% TOB (max. €${tobMaxCapEur})`,
+            dividendPolicy: isDist ? 'DISTRIBUTING' : 'ACCUMULATING',
+            dividendYieldPct: isDist ? 1.8 : 0,
+            terPct: 0.20,
+            withholdingTaxPct: isDist ? 30 : 0,
+            tobReason: isEeaIsin
+                ? '0,12% TOB voor EER-geregistreerde ETF zonder FSMA-registratie in België (max. €1.300).'
+                : '0,35% TOB voor ETF geregistreerd buiten de EER (max. €1.600).'
+        };
+    }
+
+    // Individueel Aandeel (0,35% TOB in België, max €1.600)
+    const isUsStock = !rawTicker.includes('.') && (!isin || isin.startsWith('US'));
+    return {
+        assetCategory: 'STOCK',
+        isin: isin || (isUsStock ? 'VS Beursnotering' : 'EU Beursnotering'),
+        provider: stock.exchange_name || 'Beurs',
+        indexName: 'Individueel Aandeel',
+        domicile: isUsStock ? 'Verenigde Staten (NYSE/NASDAQ)' : 'Europa',
+        registeredInEea: !isUsStock,
+        registeredInBelgiumFsma: false,
+        subfundRegisteredInBelgium: false,
+        tobRatePct: 0.35,
+        tobMaxCapEur: 1600,
+        tobBadge: '0,35% TOB (max. €1.600)',
+        dividendPolicy: 'STOCK_OPTIONAL_DIV',
+        dividendYieldPct: 0.8,
+        terPct: 0,
+        withholdingTaxPct: 30,
+        tobReason: 'Individuele aandelen vallen in België altijd onder het standaard TOB-tarief van 0,35% bij zowel aankoop als verkoop (geplafonneerd op €1.600 per order).'
+    };
+}
+
+function formatTimeSinceDateLabel(dateStr) {
+    if (!dateStr) return '-';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return '-';
+    const now = new Date();
+    const diffDays = Math.max(0, Math.floor((now.getTime() - d.getTime()) / (1000 * 60 * 60 * 24)));
+    if (diffDays <= 3) return 'Op hoogste punt (deze week)';
+    if (diffDays < 31) return `${diffDays} dagen geleden`;
+    const months = Math.floor(diffDays / 30.4375);
+    if (months < 12) {
+        const remDays = Math.floor(diffDays % 30.4375);
+        return remDays >= 7 ? `${months} mnd, ${remDays}d geleden` : `${months} maand${months === 1 ? '' : 'en'} geleden`;
+    }
+    const years = Math.floor(months / 12);
+    const remMonths = months % 12;
+    return remMonths > 0
+        ? `${years} jaar, ${remMonths} mnd geleden`
+        : `${years} jaar geleden`;
+}
+
+let marketExplorerCache = { timestamp: 0, data: null };
+const MARKET_EXPLORER_TTL_MS = 2 * 60 * 1000;
+
+exports.getMarketExplorerData = async (req, res) => {
+    try {
+        if (marketExplorerCache.data && (Date.now() - marketExplorerCache.timestamp < MARKET_EXPLORER_TTL_MS) && req.query.force !== 'true') {
+            return res.status(200).json(marketExplorerCache.data);
+        }
+
+        const pool = await sql.connect(dbConfig);
+
+        const [stocksRes, pricesRes, fundsRes] = await Promise.all([
+            pool.request().query(`
+                SELECT
+                    s.aandeel_id AS stock_id,
+                    s.ticker_symbol AS ticker,
+                    s.name,
+                    s.isin,
+                    s.asset_type_id,
+                    ISNULL(at.type_name, 'STOCK') AS asset_type_name,
+                    ISNULL(se.name, 'NASDAQ') AS exchange_name
+                FROM Stocks s
+                LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+                LEFT JOIN StockExchange se ON s.stock_exchange_id = se.stock_exchange_id
+                ORDER BY s.ticker_symbol ASC
+            `),
+            pool.request().query(`
+                SELECT aandeel_id, CAST(date AS DATE) AS date, closing_price
+                FROM DailyClosingPrices
+                WHERE closing_price > 0
+                ORDER BY aandeel_id ASC, date ASC
+            `),
+            pool.request().query(`
+                WITH RecentQuarters AS (
+                    SELECT
+                        stock_id,
+                        period_end_date,
+                        DENSE_RANK() OVER (PARTITION BY stock_id ORDER BY period_end_date DESC) AS q_rank
+                    FROM fundamental_data
+                )
+                SELECT fd.stock_id, fd.period_end_date, fd.data_type, fd.value, fd.fp_id
+                FROM fundamental_data fd
+                INNER JOIN (
+                    SELECT DISTINCT stock_id, period_end_date
+                    FROM RecentQuarters
+                    WHERE q_rank <= 6
+                ) rq ON fd.stock_id = rq.stock_id AND fd.period_end_date = rq.period_end_date
+                WHERE fd.data_type IN (
+                    'LiabilitiesCurrent', 'Liabilities', 'StockholdersEquity',
+                    'NetIncomeLoss', 'NetCashProvidedByUsedInOperatingActivities',
+                    'PurchasesOfPropertyAndEquipment', 'WeightedAverageNumberOfDilutedSharesOutstanding'
+                )
+                ORDER BY fd.stock_id ASC, fd.period_end_date ASC
+            `)
+        ]);
+
+        const pricesByStock = new Map();
+        for (const p of (pricesRes.recordset || [])) {
+            if (!pricesByStock.has(p.aandeel_id)) pricesByStock.set(p.aandeel_id, []);
+            pricesByStock.get(p.aandeel_id).push({
+                dateStr: p.date instanceof Date ? p.date.toISOString().split('T')[0] : String(p.date).split('T')[0],
+                price: Number(p.closing_price)
+            });
+        }
+
+        // Bereken basis fundamentele kerncijfers (algemene Yahoo Finance / SEC data zonder strategie-formules)
+        const fundamentalsByStock = new Map();
+        const rawFundsByStock = new Map();
+        for (const r of (fundsRes.recordset || [])) {
+            if (!rawFundsByStock.has(r.stock_id)) rawFundsByStock.set(r.stock_id, {});
+            const byDate = rawFundsByStock.get(r.stock_id);
+            const dStr = r.period_end_date instanceof Date ? r.period_end_date.toISOString().split('T')[0] : String(r.period_end_date).split('T')[0];
+            if (!byDate[dStr]) byDate[dStr] = { date: dStr, fp_id: r.fp_id };
+            if (r.data_type === 'NetCashProvidedByUsedInOperatingActivities' && r.fp_id) byDate[dStr].fp_id = r.fp_id;
+            byDate[dStr][r.data_type] = Number(r.value);
+        }
+
+        for (const [sid, byDate] of rawFundsByStock.entries()) {
+            const quarters = Object.values(byDate).sort((a, b) => new Date(a.date) - new Date(b.date));
+            if (quarters.length === 0) continue;
+
+            quarters.forEach((row, i) => {
+                const prevRow = i > 0 ? quarters[i - 1] : null;
+                const cumFCF = (row.NetCashProvidedByUsedInOperatingActivities || 0) - (row.PurchasesOfPropertyAndEquipment || 0);
+                row.fcf_q = (prevRow && row.fp_id !== 1 && row.fp_id !== 5)
+                    ? cumFCF - ((prevRow.NetCashProvidedByUsedInOperatingActivities || 0) - (prevRow.PurchasesOfPropertyAndEquipment || 0))
+                    : cumFCF;
+                const cumNI = row.NetIncomeLoss || 0;
+                row.ni_q = (prevRow && row.fp_id !== 1 && row.fp_id !== 5)
+                    ? cumNI - (prevRow.NetIncomeLoss || 0)
+                    : cumNI;
+            });
+
+            const last4 = quarters.slice(-4);
+            const latestQ = quarters[quarters.length - 1];
+            const fcfTtm = last4.reduce((s, q) => s + (q.fcf_q || 0), 0);
+            const netIncomeTtm = last4.reduce((s, q) => s + (q.ni_q || 0), 0);
+            const equity = latestQ.StockholdersEquity || null;
+            const totalLiabilities = latestQ.Liabilities || null;
+            const currentLiabilities = latestQ.LiabilitiesCurrent || 0;
+            const longTermDebt = totalLiabilities !== null ? Math.max(0, totalLiabilities - currentLiabilities) : null;
+            const shares = latestQ.WeightedAverageNumberOfDilutedSharesOutstanding || null;
+            const roePct = (equity && equity > 0) ? +((netIncomeTtm / equity) * 100).toFixed(2) : null;
+            const debtToEquity = (equity && equity > 0 && longTermDebt !== null) ? +(longTermDebt / equity).toFixed(2) : null;
+            const epsTtm = (shares && shares > 0) ? +(netIncomeTtm / shares).toFixed(2) : null;
+
+            fundamentalsByStock.set(sid, {
+                latestQuarterDate: latestQ.date,
+                fcfTtm,
+                netIncomeTtm,
+                equity,
+                longTermDebt,
+                sharesOutstanding: shares,
+                roePct,
+                debtToEquity,
+                epsTtm
+            });
+        }
+
+        const now = new Date();
+        const oneYearAgoStr = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate()).toISOString().split('T')[0];
+
+        const items = (stocksRes.recordset || []).map(stock => {
+            const pList = pricesByStock.get(stock.stock_id) || [];
+            const n = pList.length;
+            const currentPrice = n > 0 ? pList[n - 1].price : null;
+            const lastPriceDate = n > 0 ? pList[n - 1].dateStr : null;
+
+            let athPrice = null;
+            let athDate = null;
+            let high52w = null;
+            let high52wDate = null;
+            let low52w = null;
+            let low52wDate = null;
+
+            for (let i = 0; i < n; i++) {
+                const pt = pList[i];
+                if (athPrice === null || pt.price >= athPrice) {
+                    athPrice = pt.price;
+                    athDate = pt.dateStr;
+                }
+                if (pt.dateStr >= oneYearAgoStr) {
+                    if (high52w === null || pt.price >= high52w) {
+                        high52w = pt.price;
+                        high52wDate = pt.dateStr;
+                    }
+                    if (low52w === null || pt.price <= low52w) {
+                        low52w = pt.price;
+                        low52wDate = pt.dateStr;
+                    }
+                }
+            }
+
+            if (high52w === null && athPrice !== null) {
+                high52w = athPrice;
+                high52wDate = athDate;
+                low52w = currentPrice;
+                low52wDate = lastPriceDate;
+            }
+
+            const drawdownFromAthPct = (currentPrice && athPrice && athPrice > 0)
+                ? +(((currentPrice - athPrice) / athPrice) * 100).toFixed(2)
+                : null;
+            const daysSinceAth = athDate
+                ? Math.max(0, Math.floor((now.getTime() - new Date(athDate).getTime()) / (1000 * 60 * 60 * 24)))
+                : null;
+            const timeSinceAthLabel = formatTimeSinceDateLabel(athDate);
+
+            const drawdownFrom52wHighPct = (currentPrice && high52w && high52w > 0)
+                ? +(((currentPrice - high52w) / high52w) * 100).toFixed(2)
+                : null;
+            const range52wPositionPct = (currentPrice && high52w && low52w && high52w > low52w)
+                ? Math.max(0, Math.min(100, Math.round(((currentPrice - low52w) / (high52w - low52w)) * 100)))
+                : 50;
+
+            const getReturnOverTradingDays = (daysBack) => {
+                if (!currentPrice || n <= daysBack) return null;
+                const refPrice = pList[Math.max(0, n - 1 - daysBack)].price;
+                return refPrice > 0 ? +(((currentPrice - refPrice) / refPrice) * 100).toFixed(2) : null;
+            };
+
+            const return1mPct = getReturnOverTradingDays(21);
+            const return3mPct = getReturnOverTradingDays(63);
+            const return1yPct = getReturnOverTradingDays(252);
+            const return3yPct = getReturnOverTradingDays(756);
+            const return5yPct = getReturnOverTradingDays(1260);
+
+            const calcSma = (window) => {
+                if (n < window) return null;
+                const slice = pList.slice(-window);
+                return +(slice.reduce((s, p) => s + p.price, 0) / slice.length).toFixed(2);
+            };
+            const sma50 = calcSma(50);
+            const sma200 = calcSma(200);
+
+            const fund = fundamentalsByStock.get(stock.stock_id) || null;
+            const peRatio = (currentPrice && fund?.epsTtm && fund.epsTtm > 0)
+                ? +(currentPrice / fund.epsTtm).toFixed(1)
+                : null;
+            const marketCap = (currentPrice && fund?.sharesOutstanding && fund.sharesOutstanding > 0)
+                ? +(currentPrice * fund.sharesOutstanding)
+                : null;
+            const fcfYieldPct = (marketCap && marketCap > 0 && fund?.fcfTtm)
+                ? +((fund.fcfTtm / marketCap) * 100).toFixed(2)
+                : null;
+
+            const taxProfile = buildBelgianTaxProfile(stock);
+            const isEurPrice = String(stock.ticker || '').endsWith('.DE') ||
+                String(stock.ticker || '').endsWith('.AS') ||
+                String(stock.ticker || '').endsWith('.BR') ||
+                String(stock.ticker || '').endsWith('-EUR') ||
+                taxProfile.assetCategory === 'ETF';
+
+            return {
+                stock_id: stock.stock_id,
+                ticker: stock.ticker,
+                name: stock.name,
+                isin: stock.isin || taxProfile.isin || null,
+                exchange_name: stock.exchange_name,
+                asset_type_name: taxProfile.assetCategory,
+                currency: isEurPrice ? 'EUR' : 'USD',
+                currentPrice,
+                lastPriceDate,
+                athPrice,
+                athDate,
+                drawdownFromAthPct,
+                daysSinceAth,
+                timeSinceAthLabel,
+                high52w,
+                high52wDate,
+                low52w,
+                low52wDate,
+                drawdownFrom52wHighPct,
+                range52wPositionPct,
+                return1mPct,
+                return3mPct,
+                return1yPct,
+                return3yPct,
+                return5yPct,
+                sma50,
+                sma200,
+                fundamentals: fund ? {
+                    ...fund,
+                    peRatio,
+                    marketCap,
+                    fcfYieldPct
+                } : null,
+                taxProfile
+            };
+        });
+
+        // Voeg populaire Belgische referentie-ETF's (Curvo Beurstaks Checker catalogus) toe voor de TOB & ETF vergelijker
+        const existingCleanTickers = new Set(items.map(i => String(i.ticker || '').toUpperCase().replace(/\.(DE|AS|BR|PA|L|MI)$/i, '')));
+        const curvoCatalog = [];
+
+        items.filter(i => i.asset_type_name === 'ETF').forEach(etfItem => {
+            curvoCatalog.push({
+                ...etfItem.taxProfile,
+                ticker: etfItem.ticker,
+                cleanTicker: String(etfItem.ticker || '').replace(/\.(DE|AS|BR|PA|L|MI)$/i, ''),
+                name: etfItem.name,
+                stock_id: etfItem.stock_id,
+                inDatabase: true,
+                currentPrice: etfItem.currentPrice,
+                drawdownFromAthPct: etfItem.drawdownFromAthPct,
+                timeSinceAthLabel: etfItem.timeSinceAthLabel,
+                return1yPct: etfItem.return1yPct
+            });
+        });
+
+        Object.entries(CURVO_BELGIAN_ETF_REFERENCE).forEach(([cleanTick, ref]) => {
+            if (!existingCleanTickers.has(cleanTick)) {
+                curvoCatalog.push({
+                    assetCategory: 'ETF',
+                    ticker: `${cleanTick}.DE`,
+                    cleanTicker: cleanTick,
+                    name: ref.name,
+                    isin: ref.isin,
+                    provider: ref.provider,
+                    domicile: ref.domicile,
+                    indexName: ref.indexName,
+                    dividendPolicy: ref.dividendPolicy,
+                    dividendYieldPct: ref.dividendYieldPct,
+                    terPct: ref.terPct,
+                    withholdingTaxPct: ref.dividendPolicy === 'DISTRIBUTING' ? 30 : 0,
+                    registeredInEea: ref.registeredInEea,
+                    registeredInBelgiumFsma: ref.registeredInBelgiumFsma,
+                    subfundRegisteredInBelgium: ref.subfundRegisteredInBelgium,
+                    tobRatePct: ref.tobRatePct,
+                    tobMaxCapEur: ref.tobMaxCapEur,
+                    tobBadge: `${ref.tobRatePct.toFixed(2).replace('.', ',')}% TOB (max. €${ref.tobMaxCapEur})`,
+                    tobReason: ref.tobBrokerNote,
+                    inDatabase: false,
+                    currentPrice: null
+                });
+            }
+        });
+
+        const payload = {
+            items,
+            curvoEtfCatalog: curvoCatalog
+        };
+        marketExplorerCache = { timestamp: Date.now(), data: payload };
+        return res.status(200).json(payload);
+    } catch (error) {
+        console.error('Error in getMarketExplorerData:', error);
+        return res.status(500).json({ message: 'Fout bij ophalen van algemene markt- en TOB-data.' });
+    }
+};
+
 exports.performCalculations = performCalculations;

@@ -2,9 +2,12 @@ const { sql, config } = require('../config/database');
 const { getEffectiveUserId, isAdminUser } = require('../middleware/authMiddleware');
 
 const formatFundingLabel = (mode, budget) => {
-  if (mode === 'monthly_amount') return `Vast bedrag (€${Number(budget || 450).toFixed(0)}/mnd)`;
+  const val = Number(budget || 0);
+  if (mode === 'monthly_amount') return `Vast bedrag (€${val > 0 ? val.toFixed(0) : 450}/mnd)`;
+  if (mode === 'pct_total_portfolio') return `${val > 0 ? val.toFixed(0) : 50}% van Totale Portefeuillewaarde (Belegd + Cash)`;
+  if (mode === 'pct_available_cash') return `${val > 0 ? val.toFixed(0) : 100}% van Beschikbare Vrije Cash`;
   if (mode === 'cash_plus_rotation') return 'Beschikbaar geld + Actieve rotatie';
-  return 'Enkel beschikbaar vrij geld';
+  return '100% van Beschikbaar vrij geld';
 };
 
 const formatSellingLabel = (mode) => {
@@ -115,7 +118,7 @@ const getAllStrategies = async (req, res) => {
 
     const strategies = result.recordset.map(row => {
       const isOwner = row.user_id === userId;
-      const canViewDetails = isOwner || isAdmin;
+      const canViewDetails = isAdmin;
       const sType = (row.strategy_type || 'STOCKS').toUpperCase();
       const activeEntry = activeMap.get(row.strategy_id) || null;
 
@@ -321,9 +324,12 @@ const getStrategyById = async (req, res) => {
   }
 };
 
-// 4. Nieuwe strategie opslaan (Strategie Builder)
+// 4. Nieuwe strategie opslaan (Strategie Builder - ENKEL BEHEERDER)
 const createStrategy = async (req, res) => {
   try {
+    if (!isAdminUser(req)) {
+      return res.status(403).json({ message: 'Alleen de beheerder kan nieuwe strategieën aanmaken in de Strategie Builder.' });
+    }
     const userId = getEffectiveUserId(req);
     const { name, description, is_public = true, strategy_type, parameters, performance_summary } = req.body;
 
@@ -365,9 +371,12 @@ const createStrategy = async (req, res) => {
   }
 };
 
-// 5. Bestaande strategie bijwerken
+// 5. Bestaande strategie bijwerken (ENKEL BEHEERDER)
 const updateStrategy = async (req, res) => {
   try {
+    if (!isAdminUser(req)) {
+      return res.status(403).json({ message: 'Alleen de beheerder kan strategieën bewerken in de Strategie Builder.' });
+    }
     const { id } = req.params;
     const userId = getEffectiveUserId(req);
     const isAdmin = isAdminUser(req);
@@ -429,9 +438,12 @@ const updateStrategy = async (req, res) => {
   }
 };
 
-// 6. Strategie verwijderen uit de Bibliotheek
+// 6. Strategie verwijderen uit de Bibliotheek (ENKEL BEHEERDER)
 const deleteStrategy = async (req, res) => {
   try {
+    if (!isAdminUser(req)) {
+      return res.status(403).json({ message: 'Alleen de beheerder kan strategieën uit de bibliotheek verwijderen.' });
+    }
     const { id } = req.params;
     const userId = getEffectiveUserId(req);
     const isAdmin = isAdminUser(req);
@@ -503,11 +515,22 @@ const addOrUpdateActiveStrategy = async (req, res) => {
       if (strat.parameters_json) stratParams = JSON.parse(strat.parameters_json);
     } catch (e) {}
 
-    const sType = (strat.strategy_type || stratParams.strategyType || 'STOCKS').toUpperCase() === 'ETF' ? 'ETF' : 'STOCKS';
+    const sType = (strat.strategy_type || stratParams.strategyType || 'STOCKS').toUpperCase();
+    const normalizedType = sType === 'ETF' ? 'ETF' : sType === 'CRYPTO' ? 'CRYPTO' : 'STOCKS';
 
-    const effFundingMode = funding_mode || stratParams.fundingMode || (sType === 'ETF' ? 'monthly_amount' : 'available_cash');
-    const effMonthlyBudget = monthly_budget !== undefined ? Number(monthly_budget) : Number(stratParams.monthlyBudget || (sType === 'ETF' ? 450 : 500));
-    const effAllowSelling = allow_selling || stratParams.allowSelling || (sType === 'ETF' ? 'buy_only' : 'full_strategy');
+    const effFundingMode = funding_mode || stratParams.fundingMode || (normalizedType === 'ETF' ? 'monthly_amount' : 'available_cash');
+    let effMonthlyBudget = monthly_budget !== undefined
+      ? Number(monthly_budget)
+      : Number(stratParams.monthlyBudget || (effFundingMode === 'pct_total_portfolio' ? 50 : effFundingMode === 'pct_available_cash' ? 100 : normalizedType === 'ETF' ? 450 : 500));
+
+    if (effFundingMode === 'pct_total_portfolio' || effFundingMode === 'pct_available_cash') {
+      if (isNaN(effMonthlyBudget) || effMonthlyBudget <= 0) effMonthlyBudget = 50;
+      if (effMonthlyBudget > 100) {
+        return res.status(400).json({ message: 'Een percentage kan niet hoger zijn dan 100%.' });
+      }
+    }
+
+    const effAllowSelling = allow_selling || stratParams.allowSelling || (normalizedType === 'ETF' ? 'buy_only' : 'full_strategy');
 
     const entryIdToEdit = active_entry_id || replace_entry_id || null;
     let oldStratId = null;
@@ -537,6 +560,25 @@ const addOrUpdateActiveStrategy = async (req, res) => {
           WHERE ua.strategy_id = @stratId AND ua.user_id = @userId
         `);
       existingEntry = sameStratRes.recordset[0] || null;
+    }
+
+    // Validatie: Zorg dat gecombineerde percentages over meerdere strategieën NOOIT boven 100% van de totale portefeuille uitkomen!
+    if (effFundingMode === 'pct_total_portfolio') {
+      const otherPctRes = await pool.request()
+        .input('userId', sql.Int, userId)
+        .input('excludeId', sql.Int, existingEntry ? existingEntry.id : -1)
+        .query(`
+          SELECT ISNULL(SUM(monthly_budget), 0) AS used_pct
+          FROM PF_UserActiveStrategies
+          WHERE user_id = @userId AND id != @excludeId AND funding_mode = 'pct_total_portfolio'
+        `);
+      const usedPct = Number(otherPctRes.recordset[0]?.used_pct || 0);
+      if (usedPct + effMonthlyBudget > 100.01) {
+        const remainingPct = Math.max(0, 100 - usedPct);
+        return res.status(400).json({
+          message: `Je andere actieve strategieën gebruiken al ${usedPct.toFixed(0)}% van je totale portefeuillewaarde. Er is nog maximaal ${remainingPct.toFixed(0)}% beschikbaar (totaal mag niet boven 100% uitkomen).`
+        });
+      }
     }
 
     let effPriority = priority_order ? Number(priority_order) : null;

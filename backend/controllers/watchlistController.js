@@ -840,7 +840,14 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
 
               if (!isNaN(macdLine) && !isNaN(signalLine) && !isNaN(previousMacdLine) && !isNaN(previousSignalLine)) {
                   if (macdLine > signalLine && previousMacdLine <= previousSignalLine) {
-                      if (signalLine < 0) alertType = 'Koopsignaal';
+                      // Sla elke bullish MACD crossover op met signal_line_value:
+                      // - Bij koers <= 1.00x intrinsieke waarde (korting, incl. <= 0.75x) telt elk MACD koopsignaal (ook boven de 0-lijn)
+                      // - Bij koers 1.00x - 1.30x intrinsieke waarde telt enkel een MACD koopsignaal onder de 0-lijn (signalLine < 0)
+                      if (stock.asset_type === 'CRYPTO') {
+                          if (signalLine < 0) alertType = 'Koopsignaal';
+                      } else {
+                          alertType = 'Koopsignaal';
+                      }
                   } else if (stock.asset_type === 'CRYPTO' && macdLine < signalLine && previousMacdLine >= previousSignalLine) {
                       if (signalLine > 0) alertType = 'Verkoopsignaal';
                   }
@@ -880,12 +887,18 @@ const updateAndProcessStocks = async (req = null, res = null, isStartup = false)
       }
     }
 
-    // Wis caches na prijs/MACD updates
+    // Wis caches na prijs/MACD updates en werk automatisch de DailyPortfolioValue (Growth tab) bij voor actieve gebruikers
     try {
       const calculationController = require('./calculationController');
       if (calculationController.clearSummaryCache) calculationController.clearSummaryCache();
       const portfolioController = require('./portfolioController');
       if (portfolioController.clearAdvisorCache) portfolioController.clearAdvisorCache();
+      if (portfolioController.recalculateAllUsersPortfolioHistoryQuiet) {
+        if (res) {
+          res.write(JSON.stringify({ type: 'progress', message: "Dagelijkse portefeuillehistorie (Growth grafieken) automatisch bijwerken..." }) + '\n');
+        }
+        await portfolioController.recalculateAllUsersPortfolioHistoryQuiet();
+      }
     } catch (cacheErr) {
       // ignore
     }

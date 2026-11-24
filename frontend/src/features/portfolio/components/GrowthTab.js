@@ -65,9 +65,17 @@ const GrowthTab = ({
   setSelectedBrokerFilter,
   selectedTypes = [],
   setSelectedTypes,
-  brokerTotals = []
+  brokerTotals = [],
+  onRecalculateHistory,
+  onCheckAndRepairPrices,
+  onUpdateExchangeRates,
+  isRecalculating = false,
+  recalcProgress = 0,
+  isRepairing = false,
+  repairProgress = 0
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [recalcMenuOpen, setRecalcMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyType, setHistoryType] = useState('portfolio'); // 'portfolio' | 'assets'
   const [groupBy, setGroupBy] = useState('none'); // 'none' | 'class' | 'sector'
@@ -1579,41 +1587,180 @@ const GrowthTab = ({
         )}
       </div>
 
-      {/* Benchmark Selector Bar */}
-      <div className="bg-white px-4 sm:px-6 py-3.5 sm:py-4 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Benchmarks:</span>
-          <div className="relative">
-            <button
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              className="bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
-            >
-              {benchmarkName} ({selectedBenchmark})
-              <span className="text-[10px] opacity-75">▼</span>
-            </button>
-            {dropdownOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)}></div>
-                <div className="absolute left-0 mt-2 w-48 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden py-1">
-                  {BENCHMARKS.map((b) => (
-                    <button
-                      key={b.ticker}
-                      onClick={() => {
-                        setSelectedBenchmark(b.ticker);
-                        setDropdownOpen(false);
-                      }}
-                      className="w-full text-left px-4 py-2.5 text-xs text-gray-700 hover:bg-blue-50 font-semibold flex justify-between items-center"
-                    >
-                      <span>{b.name}</span>
-                      <span className="text-[10px] text-gray-400 uppercase">{b.ticker}</span>
-                    </button>
-                  ))}
-                </div>
-              </>
-            )}
+      {/* Benchmark Selector & Historie Herberekenen Noodknop Balk */}
+      <div className="bg-white px-4 sm:px-6 py-3.5 sm:py-4 rounded-2xl border border-gray-200 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">Benchmarks:</span>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setDropdownOpen(!dropdownOpen)}
+                className="bg-gray-100 hover:bg-gray-200 text-gray-800 text-xs font-bold px-3 py-1.5 rounded-lg flex items-center gap-1.5 transition-colors"
+              >
+                {benchmarkName} ({selectedBenchmark})
+                <span className="text-[10px] opacity-75">▼</span>
+              </button>
+              {dropdownOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)}></div>
+                  <div className="absolute left-0 mt-2 w-48 rounded-xl shadow-lg bg-white ring-1 ring-black ring-opacity-5 z-50 overflow-hidden py-1">
+                    {BENCHMARKS.map((b) => (
+                      <button
+                        key={b.ticker}
+                        type="button"
+                        onClick={() => {
+                          setSelectedBenchmark(b.ticker);
+                          setDropdownOpen(false);
+                        }}
+                        className="w-full text-left px-4 py-2.5 text-xs text-gray-700 hover:bg-blue-50 font-semibold flex justify-between items-center"
+                      >
+                        <span>{b.name}</span>
+                        <span className="text-[10px] text-gray-400 uppercase">{b.ticker}</span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
           </div>
+
+          {history && history.length > 0 && (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-50 text-emerald-800 border border-emerald-200 text-[11px] font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>
+              <span>
+                Auto-sync actief • Laatste punt:{' '}
+                {new Date(history[history.length - 1].date).toLocaleDateString('nl-BE', { day: '2-digit', month: 'short', year: 'numeric' })}
+              </span>
+            </span>
+          )}
         </div>
-        <a href="#tutorial" className="text-xs font-bold text-blue-600 hover:text-blue-700">See tutorial</a>
+
+        {/* Rechts: Noodknop Laatste 30 dagen herberekenen + Uitgebreid Herstelmenu */}
+        <div className="flex flex-wrap items-center gap-2 self-stretch md:self-auto justify-end">
+          {onRecalculateHistory && (
+            <button
+              type="button"
+              disabled={isRecalculating || isRepairing}
+              onClick={() => {
+                const d = new Date();
+                d.setDate(d.getDate() - 30);
+                onRecalculateHistory(false, d.toISOString().split('T')[0]);
+              }}
+              className="px-3 py-1.5 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-800 border border-blue-200 text-xs font-extrabold transition-all flex items-center gap-1.5 disabled:opacity-50"
+              title="Herbereken de laatste 30 dagen van de portefeuillegrafieken"
+            >
+              <i className={`ph-bold ph-arrows-clockwise text-sm ${isRecalculating ? 'animate-spin' : ''}`}></i>
+              <span>
+                {isRecalculating ? `Herberekenen (${recalcProgress}%)...` : '⚡ Herbereken laatste 30d'}
+              </span>
+            </button>
+          )}
+
+          {onRecalculateHistory && (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setRecalcMenuOpen(!recalcMenuOpen)}
+                disabled={isRecalculating || isRepairing}
+                className="px-2.5 py-1.5 rounded-xl bg-gray-100 hover:bg-gray-200 text-gray-700 border border-gray-200 text-xs font-extrabold transition-all flex items-center gap-1 disabled:opacity-50"
+                title="Meer herbereken- en koersdata-herstelopties"
+              >
+                <span>🛠️ Historie Opties</span>
+                <span className="text-[10px] opacity-70">▼</span>
+              </button>
+
+              {recalcMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setRecalcMenuOpen(false)}></div>
+                  <div className="absolute right-0 mt-2 w-72 rounded-2xl shadow-xl bg-white border border-gray-200 z-50 overflow-hidden py-1.5 text-xs">
+                    <div className="px-3.5 py-1.5 text-[10px] font-black uppercase tracking-wider text-gray-400 border-b border-gray-100">
+                      Grafiekhistorie &amp; Prijsdata Herstel
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecalcMenuOpen(false);
+                        const d = new Date();
+                        d.setDate(d.getDate() - 30);
+                        onRecalculateHistory(false, d.toISOString().split('T')[0]);
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-gray-800 font-bold flex items-center gap-2"
+                    >
+                      <span>⚡</span>
+                      <div>
+                        <div className="font-extrabold text-gray-900">Laatste 30 dagen herberekenen</div>
+                        <div className="text-[10px] text-gray-500">Snel bijwerken van de afgelopen maand</div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecalcMenuOpen(false);
+                        const d = new Date();
+                        d.setDate(d.getDate() - 90);
+                        onRecalculateHistory(false, d.toISOString().split('T')[0]);
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-gray-800 font-bold flex items-center gap-2"
+                    >
+                      <span>📅</span>
+                      <div>
+                        <div className="font-extrabold text-gray-900">Laatste 90 dagen herberekenen</div>
+                        <div className="text-[10px] text-gray-500">Herbereken het afgelopen kwartaal</div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRecalcMenuOpen(false);
+                        onRecalculateHistory(false, '1970-01-01');
+                      }}
+                      className="w-full text-left px-3.5 py-2.5 hover:bg-blue-50 text-gray-800 font-bold flex items-center gap-2 border-t border-gray-100"
+                    >
+                      <span>🔄</span>
+                      <div>
+                        <div className="font-extrabold text-gray-900">Volledige historie herberekenen</div>
+                        <div className="text-[10px] text-gray-500">Herbereken alles vanaf je eerste transactie</div>
+                      </div>
+                    </button>
+                    {onCheckAndRepairPrices && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRecalcMenuOpen(false);
+                          onCheckAndRepairPrices();
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 hover:bg-amber-50 text-gray-800 font-bold flex items-center gap-2 border-t border-gray-100"
+                      >
+                        <span>🩺</span>
+                        <div>
+                          <div className="font-extrabold text-amber-900">Ontbrekende koersdata repareren</div>
+                          <div className="text-[10px] text-gray-500">Controleer &amp; vul gaten in slotkoersen aan</div>
+                        </div>
+                      </button>
+                    )}
+                    {onUpdateExchangeRates && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRecalcMenuOpen(false);
+                          onUpdateExchangeRates();
+                        }}
+                        className="w-full text-left px-3.5 py-2.5 hover:bg-indigo-50 text-gray-800 font-bold flex items-center gap-2 border-t border-gray-100"
+                      >
+                        <span>💱</span>
+                        <div>
+                          <div className="font-extrabold text-indigo-900">EUR/USD wisselkoersen bijwerken</div>
+                          <div className="text-[10px] text-gray-500">Synchroniseer historische FX koersen</div>
+                        </div>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Card 1: Portfolio Value Compare */}

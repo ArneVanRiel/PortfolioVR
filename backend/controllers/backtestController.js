@@ -758,12 +758,16 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
       const macdSeries = calculateFullMACDSeries(pList);
       const priceMap = new Map();
       const sma200Map = new Map();
+      const signalLineMap = new Map();
       const buySignals = new Set(alertsByStock.get(s.aandeel_id) || []);
 
-      // Bereken 200 SMA
+      // Bereken 200 SMA & MACD crossovers
       for (let i = 0; i < pricesOnly.length; i++) {
         const dStr = pList[i].date instanceof Date ? pList[i].date.toISOString().split('T')[0] : pList[i].date;
         priceMap.set(dStr, pricesOnly[i]);
+        if (macdSeries[i] && !isNaN(macdSeries[i].signalLine)) {
+          signalLineMap.set(dStr, macdSeries[i].signalLine);
+        }
         if (i >= 199) {
           const sum = pricesOnly.slice(i - 199, i + 1).reduce((a, b) => a + b, 0);
           sma200Map.set(dStr, sum / 200);
@@ -786,6 +790,7 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
         ...s,
         priceMap,
         sma200Map,
+        signalLineMap,
         buySignals,
         cList,
         latestPrice,
@@ -1134,10 +1139,21 @@ const runDynamicScore5PortfolioBacktest = async (req, res) => {
             if (sma && price < sma) continue;
           }
 
-          // Waarderingsfilter: Koop enkel als koers niet zwaar boven intrinsieke waarde noteert
+          // Waarderingsfilter + Hybride MACD 0-lijn regel (Statistisch hoogste consistente lange-termijn rendement):
+          // - Onder 1.00x intrinsieke waarde (korting, incl. <= 0.75x): ELKE bullish MACD crossover telt (ook boven de 0-lijn)
+          // - Tussen 1.00x en maxPriceToIntrinsicRatio (bv. 1.30x, lichte premie): ENKEL bullish MACD crossover ONDER de 0-lijn (signalLine < 0)
           const intrinsicVal = curr ? curr.intrinsieke_waarde : 0;
-          if (maxPriceToIntrinsicRatio > 0 && intrinsicVal > 0 && price > intrinsicVal * Number(maxPriceToIntrinsicRatio)) {
-            continue;
+          if (maxPriceToIntrinsicRatio > 0 && intrinsicVal > 0) {
+            const pRatio = price / intrinsicVal;
+            if (pRatio > Number(maxPriceToIntrinsicRatio)) {
+              continue;
+            }
+            if (pRatio > 1.0) {
+              const sigAtDate = sInfo.signalLineMap ? sInfo.signalLineMap.get(dStr) : -1;
+              if (sigAtDate !== undefined && sigAtDate >= 0) {
+                continue;
+              }
+            }
           }
 
           // Solvabiliteitsfilter: Maximaal toegestane schuld/equity ratio

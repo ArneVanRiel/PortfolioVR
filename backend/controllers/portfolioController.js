@@ -868,6 +868,354 @@ const clearPortfolioCache = (userId) => {
   }
 };
 
+// Stille achtergrond-herberekening van DailyPortfolioValue voor één gebruiker (voor dagelijkse sync & auto-update op Growth tab)
+const recalculateUserPortfolioHistoryQuiet = async (userId = 1, fromDate = null) => {
+  try {
+    const pool = await sql.connect(config);
+
+    const groupCashflowsByDate = (cashflows) => {
+      const map = {};
+      for (const cf of cashflows) {
+        const dateStr = (cf.date instanceof Date ? cf.date : new Date(cf.date)).toISOString().split('T')[0];
+        if (!map[dateStr]) map[dateStr] = 0;
+        map[dateStr] += cf.amount;
+      }
+      return Object.keys(map).map(dateStr => {
+        const d = new Date(dateStr);
+        return { amount: map[dateStr], date: d, when: d };
+      }).filter(cf => Math.abs(cf.amount) > 0.00001);
+    };
+
+    const tryCalculateXIRR = (cashflows) => {
+      const guesses = [0.1, -0.1, 0, 0.25, -0.25, 0.5, -0.5, 1.0, -0.9, -0.99];
+      for (const guess of guesses) {
+        try {
+          const result = xirr(cashflows, { guess });
+          if (isFinite(result)) return result;
+        } catch (e) {}
+      }
+      return 0;
+    };
+
+    const cashflowResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .query(`
+        SELECT aandeel_id, purchase_time, transaction_type, quantity, price, fees, taxes, currency
+        FROM PF_transactions
+        WHERE user_id = @userId
+        ORDER BY purchase_time ASC
+      `);
+    const allCashflows = cashflowResult.recordset || [];
+    if (allCashflows.length === 0) return 0;
+
+    const firstDateResult = await pool.request()
+      .input('userId', sql.Int, userId)
+      .input('fromDate', sql.Date, fromDate ? new Date(fromDate) : null)
+      .query(`
+        DECLARE @actualFirstTx DATE;
+        SELECT @actualFirstTx = MIN(CAST(purchase_time AS DATE)) FROM PF_transactions WHERE user_id = @userId;
+
+        IF @actualFirstTx IS NOT NULL
+          DELETE FROM DailyPortfolioValue WHERE user_id = @userId AND date < @actualFirstTx;
+
+        DECLARE @firstTransactionDate DATE;
+        IF @fromDate IS NOT NULL
+          SET @firstTransactionDate = CAST(@fromDate AS DATE);
+        ELSE BEGIN
+          SELECT @firstTransactionDate = DATEADD(day, -2, MAX(date)) FROM DailyPortfolioValue WHERE user_id = @userId;
+          IF @firstTransactionDate IS NULL
+            SET @firstTransactionDate = @actualFirstTx;
+        END
+
+        IF @actualFirstTx IS NOT NULL AND (@firstTransactionDate < @actualFirstTx OR @firstTransactionDate IS NULL)
+          SET @firstTransactionDate = @actualFirstTx;
+
+        IF @firstTransactionDate IS NULL SET @firstTransactionDate = GETDATE();
+        SELECT @firstTransactionDate AS first_date;
+      `);
+    const firstDateStr = new Date(firstDateResult.recordset[0].first_date).toISOString().split('T')[0];
+
+    const userStockIds = [...new Set(allCashflows.map(t => t.aandeel_id).filter(id => id != null))];
+    let dailyPrices = [];
+    const isStockEurMap = {};
+    if (userStockIds.length > 0) {
+      const [pricesResult, stocksResult] = await Promise.all([
+        pool.request().query(`
+          SELECT aandeel_id, CAST(date AS DATE) as date, closing_price
+          FROM DailyClosingPrices
+          WHERE aandeel_id IN (${userStockIds.join(',')})
+        `),
+        pool.request().query(`
+          SELECT s.aandeel_id, s.ticker_symbol, at.type_name as asset_type
+          FROM Stocks s
+          LEFT JOIN AssetTypes at ON s.asset_type_id = at.asset_type_id
+          WHERE s.aandeel_id IN (${userStockIds.join(',')})
+        `)
+      ]);
+      dailyPrices = pricesResult.recordset || [];
+      (stocksResult.recordset || []).forEach(s => {
+        const ticker = s.ticker_symbol || '';
+        const isEur = ticker.endsWith('.DE') || ticker.endsWith('.AS') || ticker.endsWith('.BR') || ticker.endsWith('-EUR') || s.asset_type === 'ETF';
+        isStockEurMap[s.aandeel_id] = isEur;
+      });
+    }
+
+    const fxResult = await pool.request().query(`
+      SELECT CAST(date AS DATE) as date, rate
+      FROM DailyExchangeRates
+      WHERE currency_pair = 'EURUSD'
+    `);
+    const fxMap = {};
+    (fxResult.recordset || []).forEach(row => {
+      const dateStr = new Date(row.date).toISOString().split('T')[0];
+      fxMap[dateStr] = row.rate;
+    });
+    const sortedFxDates = Object.keys(fxMap).sort();
+    const getExchangeRateForDate = (dateStr) => {
+      if (fxMap[dateStr]) return Number(fxMap[dateStr]);
+      for (let i = sortedFxDates.length - 1; i >= 0; i--) {
+        if (sortedFxDates[i] <= dateStr) return Number(fxMap[sortedFxDates[i]]);
+      }
+      return 1.0;
+    };
+
+    const priceTimeline = {};
+    userStockIds.forEach(id => { priceTimeline[id] = []; });
+    dailyPrices.forEach(dp => {
+      const dateStr = new Date(dp.date).toISOString().split('T')[0];
+      priceTimeline[dp.aandeel_id].push({ dateStr, timestamp: new Date(dateStr).getTime(), price: dp.closing_price });
+    });
+    allCashflows.forEach(tx => {
+      if (tx.aandeel_id && ['BUY', 'SELL'].includes(tx.transaction_type)) {
+        const dateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+        priceTimeline[tx.aandeel_id].push({ dateStr, timestamp: new Date(dateStr).getTime(), price: tx.price });
+      }
+    });
+    for (const id of userStockIds) {
+      const byDate = {};
+      for (const pt of priceTimeline[id]) {
+        byDate[pt.dateStr] = { timestamp: pt.timestamp, price: pt.price };
+      }
+      priceTimeline[id] = Object.values(byDate).sort((a, b) => a.timestamp - b.timestamp);
+    }
+
+    const getInterpolatedPrice = (aandeel_id, timestamp) => {
+      const timeline = priceTimeline[aandeel_id];
+      if (!timeline || timeline.length === 0) return 0;
+      let before = null;
+      let after = null;
+      for (let i = 0; i < timeline.length; i++) {
+        if (timeline[i].timestamp === timestamp) return timeline[i].price;
+        if (timeline[i].timestamp < timestamp) before = timeline[i];
+        if (timeline[i].timestamp > timestamp) {
+          after = timeline[i];
+          break;
+        }
+      }
+      if (before && after) {
+        const range = after.timestamp - before.timestamp;
+        const progress = timestamp - before.timestamp;
+        return before.price + (after.price - before.price) * (progress / range);
+      } else if (before) return before.price;
+      else if (after) return after.price;
+      return 0;
+    };
+
+    const dailyValues = [];
+    let currentProcessDate = new Date(`${firstDateStr}T00:00:00.000Z`);
+    const todayIsoStr = new Date().toISOString().split('T')[0];
+    const endDateObj = new Date(`${todayIsoStr}T00:00:00.000Z`);
+    const holdings = {};
+    let txIndex = 0;
+
+    while (txIndex < allCashflows.length) {
+      const tx = allCashflows[txIndex];
+      const txDateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+      if (txDateStr < firstDateStr) {
+        if (tx.aandeel_id) {
+          if (!holdings[tx.aandeel_id]) holdings[tx.aandeel_id] = 0;
+          if (tx.transaction_type === 'BUY') holdings[tx.aandeel_id] += tx.quantity;
+          if (tx.transaction_type === 'SELL') holdings[tx.aandeel_id] -= tx.quantity;
+        }
+        txIndex++;
+      } else break;
+    }
+
+    while (currentProcessDate <= endDateObj) {
+      const currentStr = currentProcessDate.toISOString().split('T')[0];
+      const currentTimestamp = currentProcessDate.getTime();
+      while (txIndex < allCashflows.length) {
+        const tx = allCashflows[txIndex];
+        const txDateStr = new Date(tx.purchase_time).toISOString().split('T')[0];
+        if (txDateStr === currentStr) {
+          if (tx.aandeel_id) {
+            if (!holdings[tx.aandeel_id]) holdings[tx.aandeel_id] = 0;
+            if (tx.transaction_type === 'BUY') holdings[tx.aandeel_id] += tx.quantity;
+            if (tx.transaction_type === 'SELL') holdings[tx.aandeel_id] -= tx.quantity;
+          }
+          txIndex++;
+        } else break;
+      }
+
+      let total_value = 0;
+      let total_value_eur = 0;
+      const rate = getExchangeRateForDate(currentStr);
+      for (const [aandeel_id, qty] of Object.entries(holdings)) {
+        if (qty > 0.00001) {
+          const price = getInterpolatedPrice(aandeel_id, currentTimestamp);
+          const price_usd = isStockEurMap[aandeel_id] ? price * rate : price;
+          const price_eur = !isStockEurMap[aandeel_id] ? price / rate : price;
+          total_value += qty * price_usd;
+          total_value_eur += qty * price_eur;
+        }
+      }
+      dailyValues.push({ date: currentStr, total_value, total_value_eur });
+      currentProcessDate.setUTCDate(currentProcessDate.getUTCDate() + 1);
+    }
+
+    for (const record of dailyValues) {
+      const currentDate = new Date(`${record.date}T23:59:59.999Z`);
+      const transactionsUntilDate = allCashflows.filter(t => new Date(t.purchase_time).toISOString().split('T')[0] <= record.date);
+
+      const cash_balance = transactionsUntilDate.reduce((balance, t) => {
+        const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+        const rate = getExchangeRateForDate(tDateStr);
+        let amount = 0;
+        if (t.transaction_type === 'DEPOSIT') {
+          amount = t.quantity;
+          if (t.currency === 'EUR') amount *= rate;
+          return balance + amount;
+        } else if (t.transaction_type === 'WITHDRAWAL') {
+          amount = t.quantity;
+          if (t.currency === 'EUR') amount *= rate;
+          return balance - amount;
+        } else if (t.transaction_type === 'BUY') {
+          amount = (t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0);
+          if (t.currency === 'EUR') amount *= rate;
+          return balance - amount;
+        } else if (t.transaction_type === 'SELL') {
+          amount = (t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0);
+          if (t.currency === 'EUR') amount *= rate;
+          return balance + amount;
+        } else if (t.transaction_type === 'DIVIDEND') {
+          amount = (t.quantity * t.price) - (t.taxes || 0);
+          if (t.currency === 'EUR') amount *= rate;
+          return balance + amount;
+        }
+        return balance;
+      }, 0);
+      const account_total_value = record.total_value + cash_balance;
+
+      let net_invested_assets = 0;
+      let net_invested_assets_eur = 0;
+      let cumulative_dividends = 0;
+      let cumulative_dividends_eur = 0;
+
+      transactionsUntilDate.forEach(t => {
+        const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+        const rate = getExchangeRateForDate(tDateStr);
+        const val = (t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0);
+        const val_usd = t.currency === 'EUR' ? val * rate : val;
+        const val_eur = t.currency === 'EUR' ? val : val / rate;
+
+        if (t.transaction_type === 'BUY') {
+          net_invested_assets += val_usd;
+          net_invested_assets_eur += val_eur;
+        } else if (t.transaction_type === 'SELL') {
+          const sellVal = (t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0);
+          net_invested_assets -= (t.currency === 'EUR' ? sellVal * rate : sellVal);
+          net_invested_assets_eur -= (t.currency === 'EUR' ? sellVal : sellVal / rate);
+        } else if (t.transaction_type === 'DIVIDEND') {
+          const divVal = (t.quantity * t.price) - (t.taxes || 0);
+          cumulative_dividends += (t.currency === 'EUR' ? divVal * rate : divVal);
+          cumulative_dividends_eur += (t.currency === 'EUR' ? divVal : divVal / rate);
+        }
+      });
+
+      let asset_xirr = 0;
+      try {
+        const rawAssetCashflows = transactionsUntilDate
+          .filter(t => ['BUY', 'SELL', 'DIVIDEND'].includes(t.transaction_type))
+          .map(t => {
+            const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+            const rate = getExchangeRateForDate(tDateStr);
+            let amount = 0;
+            if (t.transaction_type === 'BUY') amount = -((t.quantity * t.price) + (t.fees || 0) + (t.taxes || 0));
+            else if (t.transaction_type === 'SELL') amount = (t.quantity * t.price) - (t.fees || 0) - (t.taxes || 0);
+            else if (t.transaction_type === 'DIVIDEND') amount = (t.quantity * t.price) - (t.taxes || 0);
+            if (t.currency === 'EUR') amount *= rate;
+            return { amount, date: new Date(t.purchase_time) };
+          });
+        if (rawAssetCashflows.length > 0 || record.total_value > 0) {
+          rawAssetCashflows.push({ amount: record.total_value, date: currentDate });
+          const grouped = groupCashflowsByDate(rawAssetCashflows);
+          if (grouped.length > 1 && grouped.some(t => t.amount > 0) && grouped.some(t => t.amount < 0)) {
+            asset_xirr = tryCalculateXIRR(grouped);
+          }
+        }
+      } catch (e) {}
+
+      let account_xirr = 0;
+      try {
+        const rawAccountCashflows = transactionsUntilDate
+          .filter(t => ['DEPOSIT', 'WITHDRAWAL'].includes(t.transaction_type))
+          .map(t => {
+            const tDateStr = new Date(t.purchase_time).toISOString().split('T')[0];
+            const rate = getExchangeRateForDate(tDateStr);
+            let amount = t.transaction_type === 'DEPOSIT' ? -t.quantity : t.quantity;
+            if (t.currency === 'EUR') amount *= rate;
+            return { amount, date: new Date(t.purchase_time) };
+          });
+        if (rawAccountCashflows.length > 0) {
+          rawAccountCashflows.push({ amount: account_total_value, date: currentDate });
+          const grouped = groupCashflowsByDate(rawAccountCashflows);
+          if (grouped.length > 1 && grouped.some(t => t.amount > 0) && grouped.some(t => t.amount < 0)) {
+            account_xirr = tryCalculateXIRR(grouped);
+          }
+        }
+      } catch (e) {}
+
+      await pool.request()
+        .input('user_id', sql.Int, userId)
+        .input('date', sql.Date, record.date)
+        .input('total_value', sql.Decimal(18, 2), record.total_value)
+        .input('total_value_eur', sql.Decimal(18, 2), record.total_value_eur)
+        .input('asset_xirr', sql.Decimal(18, 8), isFinite(asset_xirr) ? asset_xirr : 0)
+        .input('account_xirr', sql.Decimal(18, 8), isFinite(account_xirr) ? account_xirr : 0)
+        .input('net_invested', sql.Decimal(18, 2), net_invested_assets)
+        .input('net_invested_eur', sql.Decimal(18, 2), net_invested_assets_eur)
+        .input('cumulative_dividends', sql.Decimal(18, 2), cumulative_dividends)
+        .input('cumulative_dividends_eur', sql.Decimal(18, 2), cumulative_dividends_eur)
+        .query(`
+          MERGE INTO DailyPortfolioValue AS target
+          USING (SELECT @user_id AS user_id, @date AS date, @total_value AS total_value, @total_value_eur AS total_value_eur, @asset_xirr AS asset_xirr, @account_xirr AS account_xirr, @net_invested AS net_invested, @net_invested_eur AS net_invested_eur, @cumulative_dividends AS cumulative_dividends, @cumulative_dividends_eur AS cumulative_dividends_eur) AS source
+          ON target.date = source.date AND target.user_id = source.user_id
+          WHEN MATCHED THEN UPDATE SET total_value = source.total_value, total_value_eur = source.total_value_eur, asset_xirr = source.asset_xirr, account_xirr = source.account_xirr, net_invested = source.net_invested, net_invested_eur = source.net_invested_eur, cumulative_dividends = source.cumulative_dividends, cumulative_dividends_eur = source.cumulative_dividends_eur
+          WHEN NOT MATCHED THEN INSERT (user_id, date, total_value, total_value_eur, asset_xirr, account_xirr, net_invested, net_invested_eur, cumulative_dividends, cumulative_dividends_eur) VALUES (source.user_id, source.date, source.total_value, source.total_value_eur, source.asset_xirr, source.account_xirr, source.net_invested, source.net_invested_eur, source.cumulative_dividends, source.cumulative_dividends_eur);
+        `);
+    }
+
+    clearPortfolioCache(userId);
+    return dailyValues.length;
+  } catch (err) {
+    console.warn(`[AutoRecalc] Kon DailyPortfolioValue niet automatisch bijwerken voor user ${userId}:`, err.message);
+    return 0;
+  }
+};
+
+// Werk na dagelijkse prijssync automatisch DailyPortfolioValue bij voor alle actieve gebruikers met transacties
+const recalculateAllUsersPortfolioHistoryQuiet = async () => {
+  try {
+    const pool = await sql.connect(config);
+    const usersRes = await pool.request().query(`SELECT DISTINCT user_id FROM PF_transactions WHERE user_id IS NOT NULL`);
+    for (const row of (usersRes.recordset || [])) {
+      await recalculateUserPortfolioHistoryQuiet(row.user_id);
+    }
+  } catch (err) {
+    console.warn('[AutoRecalcAll] Fout bij automatische sync van DailyPortfolioValue:', err.message);
+  }
+};
+
 const getPortfolioValues = async (req, res) => {
   const userId = getEffectiveUserId(req);
   const { period, assetTypes, customStartDate, customEndDate, currency } = req.query;
@@ -894,7 +1242,30 @@ const getPortfolioValues = async (req, res) => {
     const endDateStr = endDate.toISOString().split('T')[0];
 
     // If no assetTypes filter is active, return the pre-calculated aggregate history directly (super fast!)
+    // Controleer eerst of DailyPortfolioValue achterloopt op vandaag of op de laatste slotkoersen; zo ja, werk ontbrekende dagen automatisch bij!
     if (!assetTypes || assetTypes === 'All' || assetTypes.length === 0) {
+      try {
+        const freshnessCheck = await pool.request()
+          .input('userId', sql.Int, userId || 1)
+          .query(`
+            SELECT 
+              (SELECT MAX(date) FROM DailyPortfolioValue WHERE user_id = @userId) AS max_dpv_date,
+              (SELECT MAX(dcp.date) FROM DailyClosingPrices dcp WHERE dcp.aandeel_id IN (SELECT DISTINCT aandeel_id FROM PF_transactions WHERE user_id = @userId AND aandeel_id IS NOT NULL)) AS max_price_date,
+              (SELECT COUNT(1) FROM PF_transactions WHERE user_id = @userId) AS tx_count
+          `);
+        const fc = freshnessCheck.recordset?.[0];
+        if (fc && fc.tx_count > 0) {
+          const todayIso = new Date().toISOString().split('T')[0];
+          const dpvStr = fc.max_dpv_date ? new Date(fc.max_dpv_date).toISOString().split('T')[0] : null;
+          const priceStr = fc.max_price_date ? new Date(fc.max_price_date).toISOString().split('T')[0] : null;
+          if (!dpvStr || dpvStr < todayIso || (priceStr && dpvStr < priceStr)) {
+            await recalculateUserPortfolioHistoryQuiet(userId || 1);
+          }
+        }
+      } catch (autoErr) {
+        console.warn('[getPortfolioValues] Auto-refresh check overgeslagen:', autoErr.message);
+      }
+
       const query = `
         SELECT dpv.date, 
                CASE WHEN @isEur = 1 THEN dpv.total_value_eur ELSE dpv.total_value END AS total_value, 
@@ -3618,6 +3989,24 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 detail = 'Nog boven signaallijn, maar momentum neemt af';
             }
 
+            // Bouw de laatste 60 handelsdagen van MACD, Signaallijn, Histogram en Koers voor de Koopkans-Radar Geschiedenis Grafiek
+            const historySeries = [];
+            const seriesStart = Math.max(validStart + 9, n - 59);
+            for (let k = seriesStart; k <= n; k++) {
+                const mVal = macdLines[k];
+                const sVal = signalLines[k];
+                if (isNaN(mVal) || isNaN(sVal)) continue;
+                const rawDate = history[k]?.date;
+                const dStr = rawDate instanceof Date ? rawDate.toISOString().split('T')[0] : String(rawDate || '').split('T')[0];
+                historySeries.push({
+                    date: dStr,
+                    close: parseFloat((pricesOnly[k] || 0).toFixed(2)),
+                    macd: parseFloat(mVal.toFixed(3)),
+                    signal: parseFloat(sVal.toFixed(3)),
+                    hist: parseFloat((mVal - sVal).toFixed(3))
+                });
+            }
+
             return {
                 statusKey,
                 isRed,
@@ -3632,7 +4021,8 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                 recoveryPct,
                 daysInRed,
                 badge,
-                detail
+                detail,
+                historySeries
             };
         };
 
@@ -3684,7 +4074,14 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
         // Resterende actieve ETF pot = aangegroeid min werkelijk gekocht
         const etfReservedCash = Math.max(0, +(theoreticalEtfPotAccrued - actualEtfSpentSinceStart).toFixed(2));
-        const stocksAvailableCash = Math.max(0, +(totalBrokerCash - Math.min(totalBrokerCash, etfReservedCash)).toFixed(2));
+        const rawFreeCashAfterEtf = Math.max(0, +(totalBrokerCash - Math.min(totalBrokerCash, etfReservedCash)).toFixed(2));
+        let stocksAvailableCash = rawFreeCashAfterEtf;
+        if (stocksFundingMode === 'pct_available_cash') {
+            const pct = Math.max(1, Math.min(100, stocksMonthlyBudget || 100)) / 100;
+            stocksAvailableCash = +(rawFreeCashAfterEtf * pct).toFixed(2);
+        } else if (stocksFundingMode === 'monthly_amount') {
+            stocksAvailableCash = +Math.min(rawFreeCashAfterEtf, Math.max(0, stocksMonthlyBudget || 500)).toFixed(2);
+        }
 
         const cashAllocation = {
             totalBrokerCash: +totalBrokerCash.toFixed(2),
@@ -3955,11 +4352,19 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
 
         const topIdealStocks = idealUniverse;
         const totalIdealWaardeverdeling = topIdealStocks.reduce((sum, s) => sum + (parseFloat(s.waardeVerdeling) > 0 ? parseFloat(s.waardeVerdeling) : 1), 0);
-        // BELANGRIJK (100% gelijk aan Backtest): Totale aandelenvermogen = Belegde aandelenwaarde + Vrije Aandelen-Cash!
-        // Zo wordt je vrije cash volledig meegenomen in de ideale doelbedragen en blijft er geen cash ongebruikt staan.
-        const totalDeployableStocksCapital = (totalPortfolioValue + stocksAvailableCash) > 0
+        // BELANGRIJK: Bereken het doelkapitaal van deze strategie volgens de gekozen kapitaalverdeling (funding_mode):
+        // - 'pct_total_portfolio': X% van (Belegde waarde + Vrije Cash)
+        // - 'pct_available_cash' / 'monthly_amount' / 'available_cash' / 'cash_plus_rotation': Belegde waarde + toegewezen vrije cash
+        let totalDeployableStocksCapital = (totalPortfolioValue + stocksAvailableCash) > 0
             ? (totalPortfolioValue + stocksAvailableCash)
             : 1000;
+        if (stocksFundingMode === 'pct_total_portfolio') {
+            const pct = Math.max(1, Math.min(100, stocksMonthlyBudget || 50)) / 100;
+            const totalCombinedWealth = totalPortfolioValue + rawFreeCashAfterEtf;
+            totalDeployableStocksCapital = Math.max(100, totalCombinedWealth * pct);
+            stocksAvailableCash = +Math.min(rawFreeCashAfterEtf, Math.max(0, totalDeployableStocksCapital - totalPortfolioValue)).toFixed(2);
+            cashAllocation.stocksAvailableCash = stocksAvailableCash;
+        }
         
         const idealPortfolio = topIdealStocks.map(s => {
             const stockWv = (parseFloat(s.waardeVerdeling) > 0 ? parseFloat(s.waardeVerdeling) : 1);
@@ -3986,23 +4391,32 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
             const macdStatus = calculateStockMacdStatus(s.stockId);
 
             // Pijler 2: Onderwaardering ("Is het genoeg ondergewaardeerd?")
+            // Statistisch optimale hybride regel:
+            // - <= 1.00x intrinsiek (korting, incl. <= 0.75x): ELK MACD signaal telt (ook boven de 0-lijn)
+            // - 1.00x - 1.30x intrinsiek (lichte premie): ENKEL MACD signaal ONDER de 0-lijn (signalLine < 0) telt
             const ratio = s.priceToIntrinsicRatio;
             const isUndervaluedEnough = ratio !== null && ratio !== undefined && ratio <= maxPriceToIntrinsic;
             const isDeeplyUndervalued = ratio !== null && ratio !== undefined && ratio <= 1.0;
+            const requiresMacdUnderZero = ratio !== null && ratio !== undefined && ratio > 1.0 && ratio <= maxPriceToIntrinsic;
+            const isMacdUnderZeroNow = (macdStatus.signalLine ?? 0) < 0;
+            const isMacdZeroRuleOk = !requiresMacdUnderZero || isMacdUnderZeroNow;
+
             const valuationStatus = {
                 isUndervaluedEnough,
                 isDeeplyUndervalued,
+                requiresMacdUnderZero,
+                isMacdZeroRuleOk,
                 ratio: ratio ? parseFloat(ratio.toFixed(2)) : null,
                 maxAllowedRatio: maxPriceToIntrinsic,
                 badge: isDeeplyUndervalued
-                    ? `🟢 Sterk Ondergewaardeerd (${ratio.toFixed(2)}x)`
+                    ? `🟢 Korting (${ratio.toFixed(2)}x ≤ 1.0x • Elk MACD telt)`
                     : isUndervaluedEnough
-                    ? `🟢 Koopwaardig (${ratio.toFixed(2)}x ≤ ${maxPriceToIntrinsic}x)`
+                    ? `🟡 Premie (${ratio.toFixed(2)}x ≤ ${maxPriceToIntrinsic}x • Enkel MACD < 0)`
                     : `🔴 Te Duur (${ratio ? ratio.toFixed(2) : '-'}x > ${maxPriceToIntrinsic}x)`,
-                detail: isUndervaluedEnough
-                    ? (s.discountPct >= 0
-                        ? `${s.discountPct.toFixed(1)}% onder intrinsieke waarde`
-                        : `Binnen strategielimiet van ${maxPriceToIntrinsic}x intrinsiek`)
+                detail: isDeeplyUndervalued
+                    ? `${s.discountPct.toFixed(1)}% onder intrinsieke waarde (elk MACD signaal telt)`
+                    : isUndervaluedEnough
+                    ? `Tussen 1.0x en ${maxPriceToIntrinsic}x intrinsiek: koopsignaal telt enkel als MACD onder de 0-lijn kruist`
                     : `Boven de maximale koopgrens van ${maxPriceToIntrinsic}x intrinsiek`
             };
 
@@ -4050,19 +4464,28 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     badge: '⛔ Dalende Waardeverdeling',
                     reason: `Waardeverdeling daalde recent (${wvDiff.toFixed(1)}%); strategie koopt niet bij daling`
                 };
+            } else if (requiresMacdUnderZero && !isMacdUnderZeroNow) {
+                opportunityRadar = {
+                    status: 'WAIT_FOR_DIP',
+                    priorityRank: 4,
+                    badge: '⏳ Wacht op MACD < 0 (Koers > 1.0x)',
+                    reason: `Koers noteert ${ratio?.toFixed(2)}x (tussen 1.0x en ${maxPriceToIntrinsic}x): enkel aankoop bij een MACD-kruising ONDER de 0-lijn (huidig signaal: ${macdStatus.signalLine})`
+                };
             } else if (macdStatus.isGreenCrossover) {
                 opportunityRadar = {
                     status: 'BUY_NOW',
                     priorityRank: 1,
                     badge: '🟢 NU KOOPKANS! (3/3 Groen)',
-                    reason: 'Ondergewaardeerd + Stijgende/Stabiele WV + MACD net groen gekruist!'
+                    reason: isDeeplyUndervalued
+                        ? `Korting (${ratio?.toFixed(2)}x ≤ 1.0x) + Stijgende/Stabiele WV + MACD net groen gekruist!`
+                        : `Waardering ${ratio?.toFixed(2)}x + Stijgende/Stabiele WV + MACD net ONDER de 0-lijn groen gekruist!`
                 };
             } else if (macdStatus.wasRedAndTurningGreen) {
                 opportunityRadar = {
                     status: 'WATCH_TURNING_GREEN',
                     priorityRank: 2,
                     badge: '🔥 OPLETTEN: Koopkans op Komst!',
-                    reason: `Ondergewaardeerd (${ratio?.toFixed(2)}x) + Stijgende WV + MACD was rood en draait nu richting groen (${macdStatus.recoveryPct}%)!`
+                    reason: `Waardering (${ratio?.toFixed(2)}x) + Stijgende WV + MACD was rood en draait nu richting groen (${macdStatus.recoveryPct}%)!`
                 };
             } else if (macdStatus.isRed) {
                 opportunityRadar = {
@@ -4480,15 +4903,18 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     ? (alertPriceConverted / intrinsicValConverted)
                     : null;
                 const isOvervalued = priceToIntrinsic !== null && priceToIntrinsic > maxPriceToIntrinsic;
+                const isAboveOneAndMacdAboveZero = priceToIntrinsic !== null && priceToIntrinsic > 1.0 && priceToIntrinsic <= maxPriceToIntrinsic && Number(alert.signal_line_value || 0) >= 0;
                 const isWvDown = stockDetails && stockDetails.prev_waarde_verdeling !== null && stockDetails.waarde_verdeling < stockDetails.prev_waarde_verdeling;
                 const stockScore = stockDetails?.selectiecriteria;
                 const isScoreLow = stockScore === null || stockScore === undefined || stockScore < 5;
-                const isCautionStock = isOvervalued || isWvDown || isScoreLow;
+                const isCautionStock = isOvervalued || isAboveOneAndMacdAboveZero || isWvDown || isScoreLow;
                 const cautionReason = isScoreLow 
                     ? `Aandeel heeft selectiecriteria Score ${stockScore ?? 'onbekend'}/5 (< 5/5). Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
-                    : (isOvervalued 
-                        ? `Koers noteert ${priceToIntrinsic?.toFixed(2)}x intrinsieke waarde (> ${maxPriceToIntrinsic}x). Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
-                        : `Waardeverdeling is recent gedaald van ${stockDetails?.prev_waarde_verdeling?.toFixed(1)}% naar ${(stockDetails?.waarde_verdeling || 0).toFixed(1)}%. Conform de backtest-strategie wordt dit aandeel NIET gekocht.`);
+                    : isOvervalued 
+                    ? `Koers noteert ${priceToIntrinsic?.toFixed(2)}x intrinsieke waarde (> ${maxPriceToIntrinsic}x). Conform de backtest-strategie wordt dit aandeel NIET gekocht.`
+                    : isAboveOneAndMacdAboveZero
+                    ? `Koers noteert ${priceToIntrinsic?.toFixed(2)}x (> 1.00x intrinsieke waarde) terwijl MACD boven de 0-lijn kruiste (Signaal: ${Number(alert.signal_line_value || 0).toFixed(2)} ≥ 0). Tussen 1.00x en ${maxPriceToIntrinsic}x koopt de strategie enkel bij een MACD-kruising ONDER de 0-lijn.`
+                    : `Waardeverdeling is recent gedaald van ${stockDetails?.prev_waarde_verdeling?.toFixed(1)}% naar ${(stockDetails?.waarde_verdeling || 0).toFixed(1)}%. Conform de backtest-strategie wordt dit aandeel NIET gekocht.`;
 
                 if (matchedTx) {
                     totalMatched++;
@@ -4961,11 +5387,12 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                     : idealItem.priceToIntrinsicRatio;
 
                 const isOvervalued = priceToIntrinsic !== null && priceToIntrinsic > maxPriceToIntrinsic;
+                const isAboveOneAndMacdAboveZero = priceToIntrinsic !== null && priceToIntrinsic > 1.0 && priceToIntrinsic <= maxPriceToIntrinsic && Number(rawAlert.signal_line_value || 0) >= 0;
                 const isWvDown = stockDetails && stockDetails.prev_waarde_verdeling !== null && stockDetails.waarde_verdeling < stockDetails.prev_waarde_verdeling;
                 const wvDiff = stockDetails?.prev_waarde_verdeling !== null ? parseFloat(((stockDetails?.waarde_verdeling || 0) - stockDetails.prev_waarde_verdeling).toFixed(2)) : 0;
                 const wvDiffPct = (stockDetails?.prev_waarde_verdeling !== null && stockDetails.prev_waarde_verdeling > 0) ? parseFloat(((((stockDetails?.waarde_verdeling || 0) - stockDetails.prev_waarde_verdeling) / stockDetails.prev_waarde_verdeling) * 100).toFixed(1)) : 0;
 
-                const isUnderSupervision = timelineStatus === 'UNDER_SUPERVISION' || isOvervalued || isWvDown;
+                const isUnderSupervision = timelineStatus === 'UNDER_SUPERVISION' || isOvervalued || isAboveOneAndMacdAboveZero || isWvDown;
                 const isActionableBuy = timelineStatus === 'OPEN_OPPORTUNITY' && !isUnderSupervision;
                 const isCautionBuy = isUnderSupervision;
 
@@ -4989,6 +5416,15 @@ const calculateStrategyAdvisorInternal = async (userId = 1, options = {}) => {
                         status: 'NO_BUY_CRITERIA',
                         badge: '🛑 Geen Koopkans (Conform Backtest)',
                         message: `Koers noteert ${priceToIntrinsic.toFixed(2)}x intrinsieke waarde (boven max ${maxPriceToIntrinsic}x). Conform de backtest-strategie wordt hier géén positie geopend.`
+                    };
+                } else if (isAboveOneAndMacdAboveZero) {
+                    alertBadge = `⚠️ Onder Toezicht (Premie ${priceToIntrinsic.toFixed(2)}x & MACD ≥ 0: Geen Aankoop)`;
+                    alertSeverity = 'warning';
+                    alertWarning = `Aandeel noteert ${priceToIntrinsic.toFixed(2)}x (> 1.00x intrinsieke waarde) terwijl de MACD-kruising boven de 0-lijn plaatsvond (Signaal: ${Number(rawAlert.signal_line_value || 0).toFixed(2)}). Tussen 1.00x en ${maxPriceToIntrinsic}x koopt de strategie enkel bij een MACD-kruising ONDER de 0-lijn.`;
+                    fundingSource = {
+                        status: 'NO_BUY_CRITERIA',
+                        badge: '🛑 Geen Koopkans (Wacht op MACD < 0 bij > 1.0x)',
+                        message: `Koers noteert ${priceToIntrinsic.toFixed(2)}x (> 1.00x intrinsiek) en MACD kruiste boven de 0-lijn. Conform de hybride 1.0x/${maxPriceToIntrinsic}x strategie wordt hier géén positie geopend.`
                     };
                 } else if (isWvDown) {
                     alertBadge = '⚠️ Onder Toezicht (Dalende Waardeverdeling: Geen Aankoop)';
@@ -5872,9 +6308,27 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
             const curHist = hist[lastIdx];
             const prevMacd = macd[lastIdx - 1];
             const prevSignal = signal[lastIdx - 1];
+            const prevHist = hist[lastIdx - 1] ?? curHist;
+            const prev2Hist = hist[lastIdx - 2] ?? prevHist;
 
             const isBuyCrossoverNow = curMacd > curSignal && prevMacd <= prevSignal;
             const isMacdBullish = curMacd > curSignal;
+            const isTurningUpInRed = !isMacdBullish && curHist > prevHist;
+
+            // Tel dagen in rood en bereken exact herstelpercentage richting crossover (geen vaste 35% meer!)
+            let daysInRed = 0;
+            for (let k = lastIdx; k >= Math.max(0, lastIdx - 90); k--) {
+                if (hist[k] < 0) daysInRed++;
+                else if (k < lastIdx) break;
+            }
+            let minHistRecent = curHist;
+            for (let k = Math.max(0, lastIdx - 35); k <= lastIdx; k++) {
+                if (!isNaN(hist[k]) && hist[k] < minHistRecent) minHistRecent = hist[k];
+            }
+            const recoveryPct = (curHist < 0 && minHistRecent < 0)
+                ? Math.max(2, Math.min(99, Math.round(((curHist - minHistRecent) / Math.abs(minHistRecent)) * 100)))
+                : (curHist >= 0 ? 100 : 0);
+            const wasRedAndTurningGreen = !isMacdBullish && curHist > prevHist && (prevHist >= prev2Hist || recoveryPct >= 25);
 
             const curSigVal = signal[lastIdx - 1];
             const curCloseVal = closes[lastIdx - 1];
@@ -5914,9 +6368,9 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
             totalSimulatedPortfolioValue += (sharesOwned * currentClose);
             totalActualPortfolioValue += actualValue;
 
-            // Sparkline van MACD (laatste 35 handelsdagen)
+            // Sparkline & Geschiedenis van MACD (laatste 60 handelsdagen)
             const sparklineData = [];
-            const sparkStart = Math.max(0, rows.length - 35);
+            const sparkStart = Math.max(0, rows.length - 60);
             for (let s = sparkStart; s < rows.length; s++) {
                 sparklineData.push({
                     date: dates[s].toISOString().split('T')[0],
@@ -5944,8 +6398,15 @@ const calculateEtfStrategyInternal = async (userId = 1, options = {}) => {
                 macd: +curMacd.toFixed(4),
                 signal: +curSignal.toFixed(4),
                 hist: +curHist.toFixed(4),
+                macdLine: +curMacd.toFixed(4),
+                signalLine: +curSignal.toFixed(4),
+                histogram: +curHist.toFixed(4),
                 isMacdBullish,
                 isBuyCrossoverNow,
+                isTurningUpInRed,
+                wasRedAndTurningGreen,
+                daysInRed,
+                recoveryPct,
                 
                 // Pot & Order Advies
                 availablePot: +availablePot.toFixed(2),
@@ -6494,6 +6955,19 @@ const calculateCryptoStrategyInternal = async (userId = 1, options = {}) => {
 
             const ownedInfo = holdingsByStockId[coin.aandeel_id] || { quantity: 0, netInvested: 0, txCount: 0 };
 
+            // Laatste 60 dagen MACD verloop voor Crypto Koopkans-Radar grafiek
+            const historySeries = [];
+            const histStart = Math.max(0, rows.length - 60);
+            for (let s = histStart; s < rows.length; s++) {
+                historySeries.push({
+                    date: dates[s].toISOString().split('T')[0],
+                    close: +closes[s].toFixed(2),
+                    macd: +macd[s].toFixed(2),
+                    signal: +signal[s].toFixed(2),
+                    hist: +hist[s].toFixed(2)
+                });
+            }
+
             coinsResults.push({
                 stockId: coin.aandeel_id,
                 ticker: coin.ticker_symbol,
@@ -6517,7 +6991,8 @@ const calculateCryptoStrategyInternal = async (userId = 1, options = {}) => {
                 liveBuyShares,
                 liveRemainingCash: liveRemCash,
                 ownedShares: ownedInfo.quantity,
-                ownedValueEur: +(ownedInfo.quantity * currentClose).toFixed(2)
+                ownedValueEur: +(ownedInfo.quantity * currentClose).toFixed(2),
+                historySeries
             });
         }
 
@@ -6853,6 +7328,8 @@ const getBaselinePrices2025 = async (req, res) => {
 
 module.exports = {
   recalculateAndStorePortfolioHistory,
+  recalculateUserPortfolioHistoryQuiet,
+  recalculateAllUsersPortfolioHistoryQuiet,
   getPortfolioValues,
   checkAndRepairPriceData,
   calculateReturns,

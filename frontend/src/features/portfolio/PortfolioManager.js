@@ -2414,6 +2414,13 @@ const PortfolioManager = () => {
           selectedBrokerFilter={selectedBrokerFilter}
           setSelectedBrokerFilter={setSelectedBrokerFilter}
           brokerTotals={brokerTotals}
+          onRecalculateHistory={handleRecalculateHistory}
+          onCheckAndRepairPrices={handleCheckAndRepairPrices}
+          onUpdateExchangeRates={handleUpdateExchangeRates}
+          isRecalculating={isRecalculating}
+          recalcProgress={recalcProgress}
+          isRepairing={isRepairing}
+          repairProgress={repairProgress}
         />
       )}
 
@@ -2523,6 +2530,81 @@ const PortfolioManager = () => {
           allExistingTransactions={rawTransactions}
         />
       </Suspense>
+
+      {/* Voortgang & Logboek Modal voor Herberekenen Historie / Prijsdata Reparatie */}
+      {showLogModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-[9999] flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-xl overflow-hidden flex flex-col max-h-[82vh]">
+            <div className="p-4 sm:p-5 border-b border-gray-100 flex items-center justify-between bg-slate-50">
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 rounded-xl bg-blue-100 text-blue-700 text-sm font-black">🔄</span>
+                <div>
+                  <h3 className="text-sm sm:text-base font-black text-gray-900">{logModalTitle || 'Voortgang Herberekening'}</h3>
+                  <p className="text-[11px] text-gray-500">
+                    {(isRecalculating || isRepairing) ? 'Bezig met verwerken...' : 'Verwerking voltooid'}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowLogModal(false)}
+                disabled={isRecalculating || isRepairing}
+                className="px-2.5 py-1 rounded-lg bg-gray-100 hover:bg-gray-200 text-gray-600 text-xs font-bold disabled:opacity-40"
+              >
+                ✕ Sluiten
+              </button>
+            </div>
+
+            {(isRecalculating || isRepairing) && (
+              <div className="px-5 pt-3.5 pb-2 bg-blue-50/40 border-b border-blue-100">
+                <div className="flex items-center justify-between text-xs font-extrabold text-blue-900 mb-1">
+                  <span>Voortgang</span>
+                  <span>{isRecalculating ? recalcProgress : repairProgress}%</span>
+                </div>
+                <div className="w-full h-2 bg-blue-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-gradient-to-r from-blue-600 to-indigo-600 rounded-full transition-all duration-200"
+                    style={{ width: `${Math.max(5, Number(isRecalculating ? recalcProgress : repairProgress) || 5)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="p-4 overflow-y-auto flex-1 space-y-1.5 font-mono text-xs bg-slate-950 text-slate-200 min-h-[200px]">
+              {logMessages.filter(m => m.type !== 'debug').map((msg, idx) => (
+                <div
+                  key={idx}
+                  className={`py-0.5 ${
+                    msg.type === 'error'
+                      ? 'text-rose-400 font-bold'
+                      : msg.type === 'warn'
+                      ? 'text-amber-300'
+                      : msg.type === 'complete'
+                      ? 'text-emerald-400 font-bold'
+                      : 'text-slate-300'
+                  }`}
+                >
+                  {msg.message}
+                </div>
+              ))}
+              {logMessages.length === 0 && (
+                <div className="text-slate-400 italic">Verbinding maken met server...</div>
+              )}
+            </div>
+
+            <div className="p-3.5 border-t border-gray-100 bg-white flex items-center justify-end">
+              <button
+                type="button"
+                onClick={() => setShowLogModal(false)}
+                disabled={isRecalculating || isRepairing}
+                className="px-4 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-black disabled:opacity-40"
+              >
+                {(isRecalculating || isRepairing) ? 'Even geduld...' : 'Klaar & Sluiten'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

@@ -4,11 +4,35 @@ import http from '../../http-common';
 import toast from 'react-hot-toast';
 import StrategyBuilderTab from '../analysis/StrategyBuilderTab';
 import StrategyBacktestTab from '../analysis/StrategyBacktestTab';
+import DataStatusIndicator from '../../components/ui/DataStatusIndicator';
 
 const StrategyStudioPage = () => {
   const location = useLocation();
-  const [activeTab, setActiveTab] = useState('builder'); // 'active' | 'builder' | 'backtest'
+  const uid = Number(localStorage.getItem('userID') || 0);
+  const userRole = localStorage.getItem('role') || 'user';
+  const isRealAdmin = uid === 1 || userRole === 'admin';
+  const [previewRole, setPreviewRole] = useState(() => localStorage.getItem('admin_preview_role') || '');
+  const isAdmin = isRealAdmin && !previewRole;
+
+  useEffect(() => {
+    const syncPreview = () => setPreviewRole(localStorage.getItem('admin_preview_role') || '');
+    window.addEventListener('adminPreviewChanged', syncPreview);
+    window.addEventListener('permissionsUpdated', syncPreview);
+    return () => {
+      window.removeEventListener('adminPreviewChanged', syncPreview);
+      window.removeEventListener('permissionsUpdated', syncPreview);
+    };
+  }, []);
+
+  const [activeTab, setActiveTab] = useState(() => (isAdmin ? 'builder' : 'active')); // 'active' | 'builder' | 'backtest'
   const [strategyToEdit, setStrategyToEdit] = useState(null);
+
+  // Voor normale gebruikers is ENKEL het tabblad 'Mijn Actieve Strategieën & Prioriteit' ('active') zichtbaar!
+  useEffect(() => {
+    if (!isAdmin && activeTab !== 'active') {
+      setActiveTab('active');
+    }
+  }, [isAdmin, activeTab]);
 
   // Mijn Actieve Strategieën & Prioriteit state (verplaatst vanuit Strategie Assistent naar Strategie Builder)
   const [myStrategyConfig, setMyStrategyConfig] = useState(null);
@@ -71,13 +95,17 @@ const StrategyStudioPage = () => {
   }, [fetchMyStrategyConfig]);
 
   useEffect(() => {
+    if (!isAdmin) {
+      setActiveTab('active');
+      return;
+    }
     if (location.state?.strategyToEdit) {
       setStrategyToEdit(location.state.strategyToEdit);
       setActiveTab('builder');
     } else if (location.state?.tab) {
       setActiveTab(location.state.tab);
     }
-  }, [location.state]);
+  }, [location.state, isAdmin]);
 
   const updateDraftField = (index, field, value) => {
     setActiveStrategiesDraft(prev => {
@@ -96,10 +124,18 @@ const StrategyStudioPage = () => {
   };
 
   const formatFundingLabel = (mode, budget) => {
-    if (mode === 'monthly_amount') return `Vast bedrag (€${Number(budget || 0)}/mnd)`;
+    const val = Number(budget || 0);
+    if (mode === 'monthly_amount') return `Vast bedrag (€${val > 0 ? val : 450}/mnd)`;
+    if (mode === 'pct_total_portfolio') return `${val > 0 ? val : 50}% van Totale Portefeuillewaarde`;
+    if (mode === 'pct_available_cash') return `${val > 0 ? val : 100}% van Beschikbare Vrije Cash`;
     if (mode === 'cash_plus_rotation') return 'Beschikbaar vrij geld + Rotatie';
-    return 'Enkel beschikbaar vrij geld';
+    return '100% van Beschikbaar vrij geld';
   };
+
+  // Bereken het totale gebruikte % voor pct_total_portfolio zodat dit altijd klopt (max 100%)
+  const totalAllocatedPortfolioPct = activeStrategiesDraft
+    .filter(s => s.funding_mode === 'pct_total_portfolio')
+    .reduce((sum, s) => sum + Number(s.monthly_budget || 0), 0);
 
   const formatSellingLabel = (rule) => {
     if (rule === 'buy_only') return 'Nooit verkopen (100% Buy & Hold)';
@@ -249,81 +285,127 @@ const StrategyStudioPage = () => {
     });
   };
 
+  const STUDIO_TABS = [
+    {
+      id: 'active',
+      label: 'Actieve Strategieën',
+      icon: 'ph-target',
+      badge: activeStrategiesDraft.length
+    },
+    ...(isAdmin
+      ? [
+          {
+            id: 'builder',
+            label: 'Strategie Ontwerpen',
+            icon: 'ph-sliders-horizontal',
+            badge: null
+          },
+          {
+            id: 'backtest',
+            label: '10-Jarige Backtest',
+            icon: 'ph-chart-line-up',
+            badge: null
+          }
+        ]
+      : [])
+  ];
+
   return (
-    <div className="space-y-6 font-sans text-gray-900 bg-gray-50/50 min-h-screen pb-12">
-      {/* 1. Compacte Header & Tabs (Common-tab stijl) */}
-      <div className="bg-white rounded-2xl shadow-2xs border border-gray-200/90 overflow-hidden">
-        <div className="p-4 sm:p-6 pb-0">
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-blue-100 text-blue-900 border border-blue-200">
-                  Strategie Builder
-                </span>
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider bg-purple-100 text-purple-900 border border-purple-200">
-                  {activeStrategiesDraft.length} Actieve Strategie{activeStrategiesDraft.length === 1 ? '' : 'ën'}
-                </span>
-              </div>
-              <h1 className="text-xl sm:text-2xl font-black text-gray-900 tracking-tight">
-                Strategie Builder &amp; Mijn Actieve Strategieën
-              </h1>
-              <p className="text-xs text-gray-500 mt-0.5 max-w-2xl">
-                Beheer welke strategieën je volgt, stel je prioriteitsvolgorde in, of ontwerp en backtest je eigen strategieën.
-              </p>
+    <div className="font-sans text-gray-900 w-full">
+      {/* Twee-koloms indeling op Desktop (Links zijkolom zoals bij Portfolio, Rechts inhoud) */}
+      <div className="flex flex-col md:flex-row items-start gap-4 lg:gap-5 w-full -mt-1">
+        {/* Linkse deel: Deeltabs Navigatie (Desktop) - Exact dezelfde stijl als Portfolio */}
+        <aside className="hidden md:flex flex-col w-52 lg:w-56 shrink-0 sticky top-14 h-[calc(100vh-4.8rem)] max-h-[calc(100vh-4.8rem)] justify-between -ml-1 lg:-ml-2 pb-1">
+          <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar space-y-0.5 pr-1">
+            <div className="px-3 py-1 text-[11px] font-black uppercase tracking-wider text-gray-400">
+              {isAdmin ? 'Strategie Builder' : 'Mijn Strategieën'}
+            </div>
+            {STUDIO_TABS.map(tab => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`w-full flex items-center justify-between gap-2 px-3 py-2 rounded-xl text-sm transition-all text-left ${
+                    isActive
+                      ? 'font-black text-blue-600 bg-blue-50/90 shadow-2xs'
+                      : 'font-medium text-gray-600 hover:text-gray-900 hover:bg-gray-100/70'
+                  }`}
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <i className={`ph-fill ${tab.icon} text-lg shrink-0 ${isActive ? 'text-blue-600' : 'text-gray-400'}`}></i>
+                    <span className="truncate">{tab.label}</span>
+                  </div>
+                  {tab.badge !== null && (
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                      isActive ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'
+                    }`}>
+                      {tab.badge}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Onderste vaste sectie in de linker zijkolom */}
+          <div className="shrink-0 mt-auto pt-2 border-t border-gray-200/80 space-y-1.5 pb-1">
+            <div className="flex items-center justify-between px-1">
+              <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider">Status</span>
+              <DataStatusIndicator />
             </div>
 
             <Link
+              to="/analysis?tab=strategies"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-xs font-black transition-all shadow-xs"
+            >
+              <i className="ph-bold ph-compass text-sm"></i>
+              <span>Zoek Strategieën</span>
+            </Link>
+
+            <Link
               to="/portfolio"
-              className="px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl text-xs font-extrabold transition-all flex items-center gap-1.5 shrink-0"
+              className="w-full flex items-center justify-center gap-1.5 py-1 text-[11px] text-gray-500 hover:text-indigo-600 font-semibold transition-colors"
             >
               <i className="ph-bold ph-arrow-left"></i>
               <span>Terug naar Portfolio</span>
             </Link>
           </div>
+        </aside>
 
-          {/* Tab Navigatie */}
-          <nav className="flex space-x-4 sm:space-x-6 overflow-x-auto no-scrollbar border-t border-gray-100" aria-label="Tabs">
-            <button
-              onClick={() => setActiveTab('builder')}
-              className={`whitespace-nowrap py-3.5 px-1 border-b-2 font-extrabold text-xs sm:text-sm transition-colors flex items-center gap-2 ${
-                activeTab === 'builder'
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <i className="ph-fill ph-sliders-horizontal text-base"></i>
-              <span>Strategie Ontwerpen &amp; Inzien</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('active')}
-              className={`whitespace-nowrap py-3.5 px-1 border-b-2 font-extrabold text-xs sm:text-sm transition-colors flex items-center gap-2 ${
-                activeTab === 'active'
-                  ? 'border-purple-600 text-purple-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <i className="ph-fill ph-target text-base"></i>
-              <span>Mijn Actieve Strategieën &amp; Prioriteit ({activeStrategiesDraft.length})</span>
-            </button>
-
-            <button
-              onClick={() => setActiveTab('backtest')}
-              className={`whitespace-nowrap py-3.5 px-1 border-b-2 font-extrabold text-xs sm:text-sm transition-colors flex items-center gap-2 ${
-                activeTab === 'backtest'
-                  ? 'border-indigo-600 text-indigo-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <i className="ph-fill ph-chart-line-up text-base"></i>
-              <span>10-Jarige Backtest &amp; Simulator</span>
-            </button>
-          </nav>
+        {/* Mobiele Horizontale Navigatiebalk */}
+        <div className="md:hidden w-full bg-white p-2.5 rounded-2xl border border-gray-200 shadow-2xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-1.5">
+            {STUDIO_TABS.map(tab => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 shrink-0 ${
+                    isActive
+                      ? 'bg-blue-600 text-white font-black shadow-2xs'
+                      : 'bg-gray-100 text-gray-700'
+                  }`}
+                >
+                  <i className={`ph-fill ${tab.icon}`}></i>
+                  <span>{tab.label}</span>
+                </button>
+              );
+            })}
+          </div>
+          <Link
+            to="/analysis?tab=strategies"
+            className="px-2.5 py-1.5 rounded-xl bg-indigo-50 text-indigo-700 text-xs font-extrabold shrink-0"
+          >
+            🔍 Zoek
+          </Link>
         </div>
-      </div>
 
-      {/* 2. Tab Content */}
-      <div>
+        {/* Rechtse deel: Inhoud van de pagina */}
+        <div className="flex-1 min-w-0 w-full space-y-5">
         {activeTab === 'active' ? (
           <div className="bg-white rounded-2xl p-4 sm:p-6 border border-gray-200 shadow-2xs space-y-6 animate-fade-in">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-gray-100 pb-4">
@@ -411,27 +493,46 @@ const StrategyStudioPage = () => {
                   </div>
 
                   <div>
-                    <label className="block font-bold text-gray-700 mb-1">Inlegmethode:</label>
+                    <label className="block font-bold text-gray-700 mb-1">Inlegmethode (Kapitaal):</label>
                     <select
                       value={newStratFundingMode}
-                      onChange={(e) => setNewStratFundingMode(e.target.value)}
+                      onChange={(e) => {
+                        const mode = e.target.value;
+                        setNewStratFundingMode(mode);
+                        if (mode === 'pct_total_portfolio') {
+                          setNewStratMonthlyBudget(Math.max(10, Math.min(100, 100 - totalAllocatedPortfolioPct)));
+                        } else if (mode === 'pct_available_cash') {
+                          setNewStratMonthlyBudget(100);
+                        } else if (mode === 'monthly_amount') {
+                          setNewStratMonthlyBudget(450);
+                        }
+                      }}
                       className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-semibold text-gray-800 outline-none"
                     >
-                      <option value="available_cash">💰 Beschikbaar vrij geld</option>
-                      <option value="monthly_amount">📅 Vast bedrag (€/mnd)</option>
-                      <option value="cash_plus_rotation">🔄 Vrij geld + Rotatie</option>
+                      <option value="monthly_amount">📅 Vast bedrag (€ / maand)</option>
+                      <option value="pct_total_portfolio">📊 % van Totale Portefeuillewaarde (Alles samen)</option>
+                      <option value="pct_available_cash">💰 % van Beschikbare Vrije Cash</option>
+                      <option value="available_cash">💵 100% van Beschikbaar vrij geld</option>
+                      <option value="cash_plus_rotation">🔄 Vrij geld + Actieve Rotatie</option>
                     </select>
                   </div>
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs items-end">
-                  {newStratFundingMode === 'monthly_amount' && (
+                  {['monthly_amount', 'pct_total_portfolio', 'pct_available_cash'].includes(newStratFundingMode) && (
                     <div>
-                      <label className="block font-bold text-gray-700 mb-1">Maandbedrag (€/mnd):</label>
+                      <label className="block font-bold text-gray-700 mb-1">
+                        {newStratFundingMode === 'monthly_amount'
+                          ? 'Maandbedrag (€/mnd):'
+                          : newStratFundingMode === 'pct_total_portfolio'
+                          ? `Percentage van Totale Waarde (nog ${Math.max(0, 100 - totalAllocatedPortfolioPct)}% vrij):`
+                          : 'Percentage van Vrije Cash (%):'}
+                      </label>
                       <input
                         type="number"
-                        min="25"
-                        step="25"
+                        min={newStratFundingMode === 'monthly_amount' ? '25' : '5'}
+                        max={newStratFundingMode === 'monthly_amount' ? '100000' : '100'}
+                        step={newStratFundingMode === 'monthly_amount' ? '25' : '5'}
                         value={newStratMonthlyBudget}
                         onChange={(e) => setNewStratMonthlyBudget(e.target.value)}
                         className="w-full px-3 py-2 bg-white border border-purple-300 rounded-xl font-bold text-gray-900 outline-none"
@@ -439,7 +540,7 @@ const StrategyStudioPage = () => {
                     </div>
                   )}
 
-                  <div className={newStratFundingMode === 'monthly_amount' ? '' : 'sm:col-span-2'}>
+                  <div className={['monthly_amount', 'pct_total_portfolio', 'pct_available_cash'].includes(newStratFundingMode) ? '' : 'sm:col-span-2'}>
                     <label className="block font-bold text-gray-700 mb-1">Verkoopregels:</label>
                     <select
                       value={newStratAllowSelling}
@@ -463,6 +564,28 @@ const StrategyStudioPage = () => {
                 </div>
               </div>
             )}
+
+            {/* Uitleg & Garantie-balk voor Waterval Kapitaalverdeling bij meerdere strategieën */}
+            <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5">
+                <div className="font-black text-gray-900 flex items-center gap-1.5">
+                  <span>🛡️ Automatische Waterval &amp; 100%-Garantie bij gecombineerde strategieën</span>
+                </div>
+                <p className="text-gray-600">
+                  <strong>1. Prioriteit #1</strong> reserveert altijd eerst haar geld (bv. een vast maandbedrag voor ETF DCA).{' '}
+                  <strong>2. Prioriteit #2 &amp; #3</strong> werken uitsluitend met het resterende kapitaal of hun toegewezen % van de totale portefeuillewaarde (max. 100% samen). Zo geven twee strategieën nooit tegelijk hetzelfde geld uit.
+                </p>
+              </div>
+              {totalAllocatedPortfolioPct > 0 && (
+                <div className={`px-3 py-1.5 rounded-xl font-black shrink-0 border ${
+                  totalAllocatedPortfolioPct > 100
+                    ? 'bg-rose-50 text-rose-800 border-rose-300'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                }`}>
+                  Toegewezen % Totale Waarde: {totalAllocatedPortfolioPct}% / 100%
+                </div>
+              )}
+            </div>
 
             {activeStrategiesDraft.length === 0 ? (
               <div className="p-6 rounded-2xl bg-amber-50 border border-amber-200 text-center space-y-2">
@@ -520,19 +643,21 @@ const StrategyStudioPage = () => {
                               </button>
                             </>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const found = allStrategiesList.find(s => Number(s.strategy_id) === Number(item.strategy_id));
-                              if (found) {
-                                setStrategyToEdit(found);
-                                setActiveTab('builder');
-                              }
-                            }}
-                            className="px-2 py-1 rounded-lg bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 text-[11px] font-extrabold"
-                          >
-                            Bekijk parameters
-                          </button>
+                          {isAdmin && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const found = allStrategiesList.find(s => Number(s.strategy_id) === Number(item.strategy_id));
+                                if (found) {
+                                  setStrategyToEdit(found);
+                                  setActiveTab('builder');
+                                }
+                              }}
+                              className="px-2 py-1 rounded-lg bg-white hover:bg-blue-50 text-blue-700 border border-blue-200 text-[11px] font-extrabold"
+                            >
+                              Bekijk parameters
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => requestRemoveActiveStrategy(item)}
@@ -560,25 +685,42 @@ const StrategyStudioPage = () => {
                         </div>
 
                         <div>
-                          <label className="block font-bold text-gray-600 mb-1 text-[11px]">Inlegmethode:</label>
+                          <label className="block font-bold text-gray-600 mb-1 text-[11px]">Inlegmethode (Kapitaal):</label>
                           <select
                             value={item.funding_mode}
-                            onChange={(e) => updateDraftField(idx, 'funding_mode', e.target.value)}
+                            onChange={(e) => {
+                              const nextMode = e.target.value;
+                              updateDraftField(idx, 'funding_mode', nextMode);
+                              if (nextMode === 'pct_total_portfolio' && Number(item.monthly_budget) > 100) {
+                                updateDraftField(idx, 'monthly_budget', 50);
+                              } else if (nextMode === 'pct_available_cash' && Number(item.monthly_budget) > 100) {
+                                updateDraftField(idx, 'monthly_budget', 100);
+                              }
+                            }}
                             className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-xl font-semibold text-gray-800 outline-none"
                           >
-                            <option value="available_cash">💰 Beschikbaar vrij geld</option>
-                            <option value="monthly_amount">📅 Vast bedrag (€/mnd)</option>
-                            <option value="cash_plus_rotation">🔄 Vrij geld + Rotatie</option>
+                            <option value="monthly_amount">📅 Vast bedrag (€ / maand)</option>
+                            <option value="pct_total_portfolio">📊 % van Totale Portefeuillewaarde</option>
+                            <option value="pct_available_cash">💰 % van Beschikbare Vrije Cash</option>
+                            <option value="available_cash">💵 100% van Beschikbaar vrij geld</option>
+                            <option value="cash_plus_rotation">🔄 Vrij geld + Actieve Rotatie</option>
                           </select>
                         </div>
 
-                        {item.funding_mode === 'monthly_amount' && (
+                        {['monthly_amount', 'pct_total_portfolio', 'pct_available_cash'].includes(item.funding_mode) && (
                           <div>
-                            <label className="block font-bold text-gray-600 mb-1 text-[11px]">Maandbedrag (€/mnd):</label>
+                            <label className="block font-bold text-gray-600 mb-1 text-[11px]">
+                              {item.funding_mode === 'monthly_amount'
+                                ? 'Maandbedrag (€/mnd):'
+                                : item.funding_mode === 'pct_total_portfolio'
+                                ? '% van Totale Waarde (max 100% samen):'
+                                : '% van Beschikbare Vrije Cash:'}
+                            </label>
                             <input
                               type="number"
-                              min="25"
-                              step="25"
+                              min={item.funding_mode === 'monthly_amount' ? '25' : '5'}
+                              max={item.funding_mode === 'monthly_amount' ? '100000' : '100'}
+                              step={item.funding_mode === 'monthly_amount' ? '25' : '5'}
                               value={item.monthly_budget}
                               onChange={(e) => updateDraftField(idx, 'monthly_budget', e.target.value)}
                               className="w-full px-2.5 py-1.5 bg-white border border-gray-300 rounded-xl font-bold text-gray-900 outline-none"
@@ -586,7 +728,7 @@ const StrategyStudioPage = () => {
                           </div>
                         )}
 
-                        <div className={item.funding_mode === 'monthly_amount' ? '' : 'sm:col-span-2'}>
+                        <div className={['monthly_amount', 'pct_total_portfolio', 'pct_available_cash'].includes(item.funding_mode) ? '' : 'sm:col-span-2'}>
                           <label className="block font-bold text-gray-600 mb-1 text-[11px]">Verkoopregels:</label>
                           <select
                             value={item.allow_selling}
@@ -658,6 +800,7 @@ const StrategyStudioPage = () => {
         ) : (
           <StrategyBacktestTab />
         )}
+        </div>
       </div>
 
       {/* Bevestigingsmodal */}

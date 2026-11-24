@@ -6,12 +6,28 @@ import { useIncognito } from '../../hooks/useIncognito';
 import {
   Chart as ChartJS,
   ArcElement,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Filler,
   Tooltip,
   Legend
 } from 'chart.js';
-import { Doughnut } from 'react-chartjs-2';
+import { Doughnut, Line } from 'react-chartjs-2';
 
-ChartJS.register(ArcElement, Tooltip, Legend);
+ChartJS.register(
+  ArcElement,
+  CategoryScale,
+  LinearScale,
+  PointElement,
+  LineElement,
+  BarElement,
+  Filler,
+  Tooltip,
+  Legend
+);
 
 const PALETTE = [
   '#3B82F6', '#10B981', '#F59E0B', '#8B5CF6', '#EC4899',
@@ -92,14 +108,401 @@ const WvSparkline = ({ history = [], currentWv, prevWv, wvDiff, isDropping, comp
   );
 };
 
+// Compacte MACD & Signaallijn Mini-Sparkline (Laatste 30 Handelsdagen) voor in de Koopkans-Radar tabel
+const MacdMiniSparkline = ({ series = [] }) => {
+  if (!Array.isArray(series) || series.length < 5) return null;
+  const slice = series.slice(-30);
+  const allVals = [];
+  slice.forEach(pt => {
+    allVals.push(Number(pt.macd || 0), Number(pt.signal || 0), Number(pt.hist || 0), 0);
+  });
+  const minVal = Math.min(...allVals);
+  const maxVal = Math.max(...allVals);
+  const range = (maxVal - minVal) || 1;
+
+  const width = 150;
+  const height = 34;
+  const pad = 3;
+
+  const toY = (v) => height - pad - ((v - minVal) / range) * (height - 2 * pad);
+  const toX = (i) => pad + (i / Math.max(1, slice.length - 1)) * (width - 2 * pad);
+  const zeroY = toY(0);
+
+  const macdPath = slice.reduce((acc, pt, i) => {
+    const x = toX(i).toFixed(1);
+    const y = toY(Number(pt.macd || 0)).toFixed(1);
+    return i === 0 ? `M ${x} ${y}` : `${acc} L ${x} ${y}`;
+  }, '');
+
+  const sigPath = slice.reduce((acc, pt, i) => {
+    const x = toX(i).toFixed(1);
+    const y = toY(Number(pt.signal || 0)).toFixed(1);
+    return i === 0 ? `M ${x} ${y}` : `${acc} L ${x} ${y}`;
+  }, '');
+
+  return (
+    <div className="pt-0.5" title="Laatste 30 handelsdagen: Blauw = MACD, Oranje = Signaallijn, Balkjes = Histogram (Groen/Rood), Stippellijn = 0-lijn">
+      <svg width={width} height={height} className="overflow-visible block">
+        {/* 0-lijn */}
+        <line
+          x1={0}
+          y1={zeroY.toFixed(1)}
+          x2={width}
+          y2={zeroY.toFixed(1)}
+          stroke="#94a3b8"
+          strokeWidth="1"
+          strokeDasharray="2 2"
+        />
+        {/* Histogram balkjes */}
+        {slice.map((pt, i) => {
+          const hVal = Number(pt.hist || 0);
+          const x = toX(i) - 1.2;
+          const yVal = toY(hVal);
+          const barTop = Math.min(zeroY, yVal);
+          const barHeight = Math.max(1, Math.abs(yVal - zeroY));
+          const isUp = i > 0 && hVal > Number(slice[i - 1].hist || 0);
+          const fill = hVal >= 0
+            ? (isUp ? '#10b981' : '#6ee7b7')
+            : (isUp ? '#f59e0b' : '#fda4af');
+          return (
+            <rect
+              key={i}
+              x={x.toFixed(1)}
+              y={barTop.toFixed(1)}
+              width="2.2"
+              height={barHeight.toFixed(1)}
+              fill={fill}
+              opacity="0.75"
+              rx="0.5"
+            />
+          );
+        })}
+        {/* Signaallijn (Oranje) */}
+        <path d={sigPath} fill="none" stroke="#f97316" strokeWidth="1.4" strokeLinecap="round" />
+        {/* MACD-lijn (Blauw) */}
+        <path d={macdPath} fill="none" stroke="#2563eb" strokeWidth="1.7" strokeLinecap="round" />
+      </svg>
+    </div>
+  );
+};
+
+// Volledige Interactieve MACD & Koop/Verkoopmoment Geschiedenis Grafiek (Laatste 60 Handelsdagen)
+const MacdProgressionChart = ({ item, formatCurrency }) => {
+  const [viewMode, setViewMode] = useState('macd'); // 'macd' | 'price'
+  const series = item?.macdStatus?.historySeries || item?.historySeries || item?.sparkline || [];
+
+  const metrics = useMemo(() => {
+    if (!Array.isArray(series) || series.length < 3) return null;
+    const last = series[series.length - 1];
+    const prev = series[series.length - 2];
+    const prev5 = series[Math.max(0, series.length - 6)];
+
+    const gapNow = Number(last.macd || 0) - Number(last.signal || 0);
+    const gapPrev = Number(prev.macd || 0) - Number(prev.signal || 0);
+    const gap5dAgo = Number(prev5.macd || 0) - Number(prev5.signal || 0);
+    const dailyClosingSpeed = gapNow - gapPrev;
+    const fiveDayTrend = gapNow - gap5dAgo;
+
+    const isBelowZero = Number(last.signal || 0) < 0;
+    const isBullish = gapNow >= 0;
+    const isConvergingToBuy = !isBullish && dailyClosingSpeed > 0;
+    const isConvergingToSell = isBullish && dailyClosingSpeed < 0;
+
+    // Schat aantal handelsdagen tot kruising als lijnen naar elkaar toe bewegen
+    let estDaysToCross = null;
+    if (isConvergingToBuy && dailyClosingSpeed > 0.001) {
+      estDaysToCross = Math.max(1, Math.min(30, Math.ceil(Math.abs(gapNow) / dailyClosingSpeed)));
+    } else if (isConvergingToSell && Math.abs(dailyClosingSpeed) > 0.001) {
+      estDaysToCross = Math.max(1, Math.min(30, Math.ceil(Math.abs(gapNow) / Math.abs(dailyClosingSpeed))));
+    }
+
+    // Vind eventuele kruisingen in de afgelopen 60 dagen
+    const crossovers = [];
+    for (let i = 1; i < series.length; i++) {
+      const hCur = Number(series[i].hist || 0);
+      const hPrv = Number(series[i - 1].hist || 0);
+      if (hPrv <= 0 && hCur > 0) {
+        crossovers.push({ idx: i, date: series[i].date, type: 'BUY', price: series[i].close, underZero: Number(series[i].signal || 0) < 0 });
+      } else if (hPrv >= 0 && hCur < 0) {
+        crossovers.push({ idx: i, date: series[i].date, type: 'SELL', price: series[i].close, aboveZero: Number(series[i].signal || 0) > 0 });
+      }
+    }
+
+    return {
+      last,
+      gapNow,
+      dailyClosingSpeed,
+      fiveDayTrend,
+      isBelowZero,
+      isBullish,
+      isConvergingToBuy,
+      isConvergingToSell,
+      estDaysToCross,
+      crossovers
+    };
+  }, [series]);
+
+  const chartData = useMemo(() => {
+    if (!Array.isArray(series) || series.length === 0) return null;
+    const labels = series.map(pt => {
+      const d = new Date(pt.date);
+      return isNaN(d.getTime()) ? pt.date : d.toLocaleDateString('nl-BE', { day: '2-digit', month: 'short' });
+    });
+
+    if (viewMode === 'price') {
+      return {
+        labels,
+        datasets: [
+          {
+            label: `${item?.ticker || ''} Slotkoers`,
+            data: series.map(pt => Number(pt.close || 0)),
+            borderColor: '#0f172a',
+            backgroundColor: 'rgba(37, 99, 235, 0.08)',
+            borderWidth: 2.2,
+            pointRadius: series.map((_, i) => (i === series.length - 1 ? 4 : 0)),
+            pointHoverRadius: 5,
+            fill: true,
+            tension: 0.25
+          }
+        ]
+      };
+    }
+
+    return {
+      labels,
+      datasets: [
+        {
+          label: 'MACD Lijn (30,90)',
+          data: series.map(pt => Number(pt.macd || 0)),
+          borderColor: '#2563eb',
+          backgroundColor: 'transparent',
+          borderWidth: 2.3,
+          pointRadius: series.map((_, i) => (i === series.length - 1 ? 4 : 0)),
+          pointBackgroundColor: '#2563eb',
+          pointHoverRadius: 5,
+          tension: 0.25
+        },
+        {
+          label: 'Signaallijn (9)',
+          data: series.map(pt => Number(pt.signal || 0)),
+          borderColor: '#f97316',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: series.map((_, i) => (i === series.length - 1 ? 3.5 : 0)),
+          pointBackgroundColor: '#f97316',
+          pointHoverRadius: 5,
+          tension: 0.25
+        },
+        {
+          label: 'Histogram (Afstand tot Kruising)',
+          data: series.map(pt => Number(pt.hist || 0)),
+          borderColor: series.map((pt, i) => {
+            const h = Number(pt.hist || 0);
+            const prevH = i > 0 ? Number(series[i - 1].hist || 0) : h;
+            if (h >= 0) return '#10b981';
+            return h > prevH ? '#f59e0b' : '#f43f5e';
+          }),
+          backgroundColor: series.map((pt, i) => {
+            const h = Number(pt.hist || 0);
+            const prevH = i > 0 ? Number(series[i - 1].hist || 0) : h;
+            if (h >= 0) return 'rgba(16, 185, 129, 0.16)';
+            return h > prevH ? 'rgba(245, 158, 11, 0.22)' : 'rgba(244, 63, 94, 0.14)';
+          }),
+          borderWidth: 1.5,
+          pointRadius: 0,
+          fill: 'origin',
+          tension: 0.2
+        },
+        {
+          label: '0-Lijn (Grens Onder/Boven 0)',
+          data: series.map(() => 0),
+          borderColor: '#64748b',
+          borderWidth: 1.2,
+          borderDash: [4, 4],
+          pointRadius: 0,
+          fill: false
+        }
+      ]
+    };
+  }, [series, viewMode, item]);
+
+  const chartOptions = useMemo(() => ({
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index', intersect: false },
+    plugins: {
+      legend: {
+        display: true,
+        position: 'top',
+        labels: {
+          boxWidth: 10,
+          font: { size: 11, weight: '700' },
+          color: '#334155',
+          padding: 10
+        }
+      },
+      tooltip: {
+        callbacks: {
+          afterBody: (items) => {
+            if (!items || !items.length) return '';
+            const idx = items[0].dataIndex;
+            const pt = series[idx];
+            if (!pt) return '';
+            return `Slotkoers: ${formatCurrency ? formatCurrency(pt.close) : pt.close} • Verschil (Hist): ${Number(pt.hist || 0).toFixed(3)}`;
+          }
+        }
+      }
+    },
+    scales: {
+      x: {
+        grid: { display: false },
+        ticks: { maxTicksLimit: 10, font: { size: 10, weight: '600' }, color: '#64748b' }
+      },
+      y: {
+        grid: { color: '#f1f5f9' },
+        ticks: { font: { size: 10, weight: '600' }, color: '#64748b' }
+      }
+    }
+  }), [series, formatCurrency]);
+
+  if (!Array.isArray(series) || series.length < 5) {
+    return (
+      <div className="p-4 rounded-xl bg-gray-50 border border-gray-200 text-xs text-gray-500 text-center">
+        Onvoldoende historische MACD-datapunten beschikbaar voor deze grafiek.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Header & Mode Switch */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-xs font-black text-gray-900">
+            📈 {item?.ticker} — Koop/Verkoopmoment Geschiedenis ({series.length} handelsdagen)
+          </span>
+          {metrics && (
+            <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black border ${
+              metrics.isBelowZero
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                : 'bg-amber-50 text-amber-800 border-amber-200'
+            }`}>
+              {metrics.isBelowZero ? '🟢 Onder de 0-lijn (Diepe Dip-Zone)' : '🟠 Boven de 0-lijn'}
+            </span>
+          )}
+        </div>
+
+        <div className="inline-flex bg-gray-100 p-0.5 rounded-xl text-[11px] font-bold">
+          <button
+            type="button"
+            onClick={() => setViewMode('macd')}
+            className={`px-2.5 py-1 rounded-lg transition-all ${
+              viewMode === 'macd' ? 'bg-white text-blue-700 shadow-2xs font-black' : 'text-gray-600'
+            }`}
+          >
+            📊 MACD &amp; Signaallijn
+          </button>
+          <button
+            type="button"
+            onClick={() => setViewMode('price')}
+            className={`px-2.5 py-1 rounded-lg transition-all ${
+              viewMode === 'price' ? 'bg-white text-slate-900 shadow-2xs font-black' : 'text-gray-600'
+            }`}
+          >
+            💶 Koersverloop
+          </button>
+        </div>
+      </div>
+
+      {/* Kerncijfers van het Koop/Verkoopmoment */}
+      {metrics && (
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+          <div className="p-2.5 rounded-xl bg-slate-50 border border-gray-200/80">
+            <span className="text-[10px] font-bold text-gray-400 uppercase block">MACD vs. Signaal</span>
+            <span className="font-black text-gray-900">
+              {Number(metrics.last.macd).toFixed(2)} / {Number(metrics.last.signal).toFixed(2)}
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-slate-50 border border-gray-200/80">
+            <span className="text-[10px] font-bold text-gray-400 uppercase block">Afstand tot Kruising</span>
+            <span className={`font-black ${metrics.gapNow >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              {metrics.gapNow >= 0 ? '+' : ''}{metrics.gapNow.toFixed(3)} ({item?.macdStatus?.recoveryPct ?? 0}% herstel)
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-slate-50 border border-gray-200/80">
+            <span className="text-[10px] font-bold text-gray-400 uppercase block">5-Daags Momentum</span>
+            <span className={`font-black ${metrics.fiveDayTrend > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+              {metrics.fiveDayTrend > 0 ? '↗ Lijnen naderen koop' : '↘ Afzwakkend / Dalend'} ({metrics.fiveDayTrend > 0 ? '+' : ''}{metrics.fiveDayTrend.toFixed(3)})
+            </span>
+          </div>
+          <div className="p-2.5 rounded-xl bg-slate-50 border border-gray-200/80">
+            <span className="text-[10px] font-bold text-gray-400 uppercase block">Verwachte Kruising</span>
+            <span className="font-black text-indigo-800">
+              {metrics.isBullish
+                ? (metrics.isConvergingToSell ? `~${metrics.estDaysToCross || '?'}d tot verkoopkruising` : '🟢 Reeds in Groene Fase')
+                : metrics.isConvergingToBuy
+                ? `🔥 ~${metrics.estDaysToCross || '?'} handelsdag(en) bij huidig tempo`
+                : '⏳ Wacht op ommekeer omhoog'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* De Chart.js Grafiek */}
+      <div className="h-56 sm:h-64 w-full bg-white p-2.5 rounded-xl border border-gray-200">
+        {chartData && <Line data={chartData} options={chartOptions} />}
+      </div>
+
+      {/* Recente Kruisingen in de afgelopen 60 handelsdagen */}
+      {metrics?.crossovers?.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="font-bold text-gray-500">Kruisingen in laatste 60d:</span>
+          {metrics.crossovers.map((c, idx) => (
+            <span
+              key={idx}
+              className={`px-2 py-0.5 rounded-lg font-extrabold border ${
+                c.type === 'BUY'
+                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                  : 'bg-rose-50 text-rose-800 border-rose-200'
+              }`}
+            >
+              {c.type === 'BUY' ? '🟢 Koopkruising' : '🔴 Verkoopkruising'} op {c.date} ({formatCurrency ? formatCurrency(c.price) : c.price} • {c.type === 'BUY' ? (c.underZero ? 'onder 0' : 'boven 0') : (c.aboveZero ? 'boven 0' : 'onder 0')})
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const StrategyAdvisorTab = () => {
   const uid = localStorage.getItem('userID') || 1;
   const userRole = localStorage.getItem('role') || 'user';
-  const isAdmin = Number(uid) === 1 || userRole === 'admin';
+  const isRealAdmin = Number(uid) === 1 || userRole === 'admin';
+  const [previewRole, setPreviewRole] = useState(() => localStorage.getItem('admin_preview_role') || '');
+  const isPreviewMode = isRealAdmin && Boolean(previewRole);
+  const isAdmin = isRealAdmin && !isPreviewMode;
   const isIncognito = useIncognito();
 
+  useEffect(() => {
+    const syncPreview = () => setPreviewRole(localStorage.getItem('admin_preview_role') || '');
+    window.addEventListener('adminPreviewChanged', syncPreview);
+    window.addEventListener('permissionsUpdated', syncPreview);
+    return () => {
+      window.removeEventListener('adminPreviewChanged', syncPreview);
+      window.removeEventListener('permissionsUpdated', syncPreview);
+    };
+  }, []);
+
   const userPermissions = useMemo(() => {
-    if (isAdmin) {
+    if (isRealAdmin && localStorage.getItem('admin_preview_role')) {
+      try {
+        const p = localStorage.getItem('admin_preview_permissions');
+        if (p) return JSON.parse(p);
+      } catch {}
+      return { canUseStockStrategy: false, canUseEtfStrategy: false, canViewFormulas: false };
+    }
+    if (isRealAdmin) {
       return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: true };
     }
     try {
@@ -108,7 +511,7 @@ const StrategyAdvisorTab = () => {
     } catch {
       return { canUseStockStrategy: true, canUseEtfStrategy: true, canViewFormulas: false };
     }
-  }, [isAdmin]);
+  }, [isRealAdmin, previewRole]);
 
   // Gecombineerde state voor Aandelen + ETF strategieën
   const [stockData, setStockData] = useState(() => {
@@ -144,6 +547,7 @@ const StrategyAdvisorTab = () => {
   // Detail Modals (voor klikken op een rij op desktop of mobiel, net als bij de holdingstabel op Common)
   const [selectedNotificationModal, setSelectedNotificationModal] = useState(null);
   const [selectedRadarModal, setSelectedRadarModal] = useState(null);
+  const [selectedProgressionTicker, setSelectedProgressionTicker] = useState('');
 
   const formatCurrency = useCallback((val) => {
     if (val === null || val === undefined || isNaN(val)) return '€ 0,00';
@@ -209,10 +613,27 @@ const StrategyAdvisorTab = () => {
 
   const hideFormulas = !isAdmin && (stockData?.isBlackBoxMode || !userPermissions.canViewFormulas);
 
-  // Actieve strategieën samenvatting voor de compacte header
+  // Voor normale gebruikers: dwing altijd de eenvoudige 'notifications' sectie af (geen Donuts/Koopkans-Radar of Matrix)
+  useEffect(() => {
+    if (!isAdmin && activeSection !== 'notifications') {
+      setActiveSection('notifications');
+    }
+  }, [isAdmin, activeSection]);
+
+  // Actieve strategieën:
+  // - Als er geen strategie geselecteerd is in myStrategyConfig.activeStrategies, blijft de lijst leeg voor normale gebruikers!
   const activeStrategiesList = useMemo(() => {
-    if (Array.isArray(myStrategyConfig?.activeStrategies) && myStrategyConfig.activeStrategies.length > 0) {
-      return myStrategyConfig.activeStrategies;
+    if (Array.isArray(myStrategyConfig?.activeStrategies)) {
+      if (myStrategyConfig.activeStrategies.length > 0) {
+        return myStrategyConfig.activeStrategies;
+      }
+      // Voor normale gebruikers (of als er expliciet 0 strategieën geselecteerd zijn): toon niets
+      if (!isAdmin) {
+        return [];
+      }
+    }
+    if (!isAdmin) {
+      return [];
     }
     const fallback = [];
     if (stockData?.activeStrategyConfig?.name) {
@@ -232,7 +653,131 @@ const StrategyAdvisorTab = () => {
       });
     }
     return fallback;
-  }, [myStrategyConfig, stockData, etfData]);
+  }, [myStrategyConfig, stockData, etfData, isAdmin]);
+
+  const hasSelectedStrategy = activeStrategiesList.length > 0;
+  const selectedStrategyTypes = useMemo(() => {
+    return new Set(activeStrategiesList.map(s => String(s.strategy_type || 'STOCKS').toUpperCase()));
+  }, [activeStrategiesList]);
+
+  // Exacte Euro-Kapitaalverdeling per Actieve Strategie (Waterval #1 -> #2 -> #3)
+  // Vertaalt elke inlegmethode (vast maandbedrag, % van beschikbare cash, % van totale waarde, of vrije cash + rotatie)
+  // naar concrete euro-bedragen vandaag zodat de gebruiker in één oogopslag ziet over welk bedrag het gaat per strategie.
+  const strategyCapitalCards = useMemo(() => {
+    const totalBrokerCash = Number(stockData?.cashAllocation?.totalBrokerCash ?? etfData?.cashAllocation?.totalBrokerCash ?? 0);
+    const etfReservedPot = Number(etfData?.cashAllocation?.etfReservedCash ?? stockData?.cashAllocation?.etfReservedCash ?? 0);
+    const stocksInvestedVal = Number(stockData?.totalPortfolioValue || 0);
+    const etfInvestedVal = (etfData?.etfs || []).reduce((sum, e) => sum + Number(e.actualPortfolio?.currentValue || 0), 0);
+    const cryptoCashPot = Number(cryptoData?.activeStrategyConfig?.availableCryptoCash || 450);
+    const cryptoInvestedVal = (cryptoData?.coins || []).reduce((sum, c) => sum + Number(c.ownedValueEur || 0), 0);
+
+    // Bereken rotatie-capaciteit voor losse aandelen (posities die gesnoeid kunnen worden bij een betere 5/5 kans)
+    const rotatableHoldingsVal = (stockData?.holdings || [])
+      .filter(h => h.assetType !== 'ETF' && (Number(h.score || 5) < 5 || h.isWvDropping || Number(h.waardeVerdeling || 0) < 25))
+      .reduce((sum, h) => sum + (Number(h.score || 5) < 5 ? Number(h.holdingValue || 0) : Number(h.holdingValue || 0) * 0.35), 0);
+
+    let remainingWaterfallCash = totalBrokerCash;
+
+    return activeStrategiesList.map((strat, idx) => {
+      const sType = String(strat.strategy_type || 'STOCKS').toUpperCase();
+      const prio = Number(strat.priority_order || idx + 1);
+      const mode = strat.funding_mode || (sType === 'ETF' ? 'monthly_amount' : sType === 'CRYPTO' ? 'available_cash' : 'available_cash');
+      const budgetVal = Number(strat.monthly_budget ?? (sType === 'ETF' ? 450 : 500));
+
+      if (sType === 'CRYPTO') {
+        const trancheEur = Math.max(50, Math.min(cryptoCashPot, +(cryptoCashPot * 0.30).toFixed(2)));
+        return {
+          key: strat.active_entry_id || `cap-crypto-${idx}`,
+          prio,
+          name: strat.name,
+          type: 'CRYPTO',
+          icon: '🪙',
+          modeLabel: `Gesloten Coinbase Pot (30% tranche • Min. €50)`,
+          directBuyEur: cryptoCashPot,
+          directBuyLabel: 'Vrije Coinbase Cash',
+          investedEur: cryptoInvestedVal,
+          extraEur: cryptoCashPot >= 50 ? trancheEur : 0,
+          extraLabel: 'Eerstvolgende 1.0x order',
+          summaryLine: `${formatCurrency(cryptoCashPot)} direct vrij op Coinbase • ${formatCurrency(cryptoInvestedVal)} belegd`
+        };
+      }
+
+      if (sType === 'ETF') {
+        const reservedNow = Math.min(remainingWaterfallCash > 0 ? remainingWaterfallCash : etfReservedPot, etfReservedPot);
+        remainingWaterfallCash = Math.max(0, remainingWaterfallCash - reservedNow);
+        const mBudget = budgetVal > 0 ? budgetVal : Number(etfData?.cashAllocation?.monthlyEtfBudget || 450);
+        const dailyRate = +(mBudget / 30).toFixed(2);
+        return {
+          key: strat.active_entry_id || `cap-etf-${idx}`,
+          prio,
+          name: strat.name,
+          type: 'ETF',
+          icon: '📈',
+          modeLabel: mode === 'monthly_amount'
+            ? `📅 Vast bedrag (${formatCurrency(mBudget)}/mnd • €${dailyRate}/dag)`
+            : mode === 'pct_total_portfolio'
+            ? `📊 ${budgetVal}% van Totale Waarde`
+            : `💰 ${budgetVal || 100}% van Vrije Cash`,
+          directBuyEur: etfReservedPot,
+          directBuyLabel: 'Opgebouwde ETF Kooppot',
+          investedEur: etfInvestedVal,
+          extraEur: mBudget,
+          extraLabel: 'Maandbudget',
+          summaryLine: `Pot vandaag: ${formatCurrency(etfReservedPot)} klaar voor aankoop (uit ${formatCurrency(mBudget)}/mnd) • Belegd: ${formatCurrency(etfInvestedVal)}`
+        };
+      }
+
+      // LOSSE AANDELEN STRATEGIE (STOCKS)
+      let directCashForStrat = remainingWaterfallCash;
+      let modeLabel = '💵 100% van Resterende Vrije Cash';
+      let extraEur = 0;
+      let extraLabel = '';
+
+      if (mode === 'monthly_amount') {
+        const mBudget = budgetVal > 0 ? budgetVal : 500;
+        directCashForStrat = Math.min(remainingWaterfallCash, mBudget);
+        modeLabel = `📅 Vast Maandbudget (${formatCurrency(mBudget)}/mnd)`;
+        extraEur = mBudget;
+        extraLabel = 'Maandplafond';
+      } else if (mode === 'pct_available_cash') {
+        const pct = Math.max(1, Math.min(100, budgetVal || 100));
+        directCashForStrat = +(remainingWaterfallCash * (pct / 100)).toFixed(2);
+        modeLabel = `💰 ${pct}% van Beschikbare Vrije Cash`;
+      } else if (mode === 'pct_total_portfolio') {
+        const pct = Math.max(1, Math.min(100, budgetVal || 50));
+        const totalWealth = stocksInvestedVal + etfInvestedVal + totalBrokerCash;
+        const targetCap = +(totalWealth * (pct / 100)).toFixed(2);
+        directCashForStrat = Math.min(remainingWaterfallCash, Math.max(0, +(targetCap - stocksInvestedVal).toFixed(2)));
+        modeLabel = `📊 ${pct}% van Totale Waarde (Doel: ${formatCurrency(targetCap)})`;
+        extraEur = targetCap;
+        extraLabel = `Doelplafond (${pct}%)`;
+      } else if (mode === 'cash_plus_rotation') {
+        directCashForStrat = remainingWaterfallCash;
+        modeLabel = '🔄 Vrije Cash + Actieve Rotatie (Snoeien)';
+        extraEur = +rotatableHoldingsVal.toFixed(2);
+        extraLabel = 'Extra via Rotatie/Snoei';
+      }
+
+      remainingWaterfallCash = Math.max(0, remainingWaterfallCash - directCashForStrat);
+
+      return {
+        key: strat.active_entry_id || `cap-stocks-${idx}`,
+        prio,
+        name: strat.name,
+        type: 'STOCKS',
+        icon: '💎',
+        modeLabel,
+        directBuyEur: directCashForStrat,
+        directBuyLabel: 'Direct Vrije Koopcash',
+        investedEur: stocksInvestedVal,
+        extraEur,
+        extraLabel,
+        summaryLine: mode === 'cash_plus_rotation'
+          ? `${formatCurrency(directCashForStrat)} direct vrij + tot ${formatCurrency(extraEur)} vrij te maken via rotatie • Belegd: ${formatCurrency(stocksInvestedVal)}`
+          : `${formatCurrency(directCashForStrat)} direct vrij voor aankopen • Belegd: ${formatCurrency(stocksInvestedVal)}`
+      };
+    });
+  }, [activeStrategiesList, stockData, etfData, cryptoData, formatCurrency]);
 
   // ============================================================================
   // GECOMBINEERDE MELDINGEN & TIJDLIJN (Aandelen + ETF's + Vorige Strategieën)
@@ -565,8 +1110,23 @@ const StrategyAdvisorTab = () => {
       });
     });
 
-    return items;
-  }, [stockData, etfData, cryptoData, formatCurrency]);
+    if (isAdmin) {
+      return items;
+    }
+
+    // Voor normale gebruikers:
+    // 1. Als er geen strategie geselecteerd is -> leeg
+    if (!hasSelectedStrategy) return [];
+
+    // 2. Toon ENKEL meldingen van de geselecteerde strategieën én enkel daadwerkelijke Koop-, Verkoop- of Uitgevoerde (Tijdlijn) meldingen
+    //    (Geen complexe 'Onder Toezicht' debug-meldingen waar niets gekocht hoeft te worden)
+    return items.filter(item => {
+      if (!selectedStrategyTypes.has(String(item.strategyType || '').toUpperCase())) return false;
+      if (item.statusCategory === 'SUPERVISION') return false;
+      if (!item.isMatched && !item.isSell && item.shares <= 0) return false;
+      return ['BUY', 'SELL', 'MATCHED', 'EXPIRED'].includes(item.statusCategory);
+    });
+  }, [stockData, etfData, cryptoData, formatCurrency, isAdmin, hasSelectedStrategy, selectedStrategyTypes]);
 
   // Beschikbare strategienamen voor de filterknoppen
   const distinctStrategies = useMemo(() => {
@@ -800,9 +1360,12 @@ const StrategyAdvisorTab = () => {
 
     const etfRadar = (etfData?.etfs || []).map(etf => {
       const isBuyNow = Boolean(etf.isBuyCrossoverNow);
-      const isUnderZero = Number(etf.macdLine || 0) < 0;
-      const isTurning = isUnderZero && Number(etf.histogram || 0) > -0.15;
-      const radarStatus = isBuyNow ? 'BUY_NOW' : isTurning ? 'WATCH_TURNING_GREEN' : isUnderZero ? 'WATCH_IN_RED' : 'WAIT_FOR_DIP';
+      const isRed = !etf.isMacdBullish;
+      const isTurning = Boolean(etf.wasRedAndTurningGreen || (isRed && etf.isTurningUpInRed));
+      const dynamicRecoveryPct = etf.recoveryPct !== undefined
+        ? Number(etf.recoveryPct)
+        : (isBuyNow || etf.isMacdBullish ? 100 : 0);
+      const radarStatus = isBuyNow ? 'BUY_NOW' : isTurning ? 'WATCH_TURNING_GREEN' : isRed ? 'WATCH_IN_RED' : 'WAIT_FOR_DIP';
 
       return {
         stockId: `etf-${etf.ticker}`,
@@ -815,23 +1378,32 @@ const StrategyAdvisorTab = () => {
         targetWeightPct: etf.targetWeightPct,
         targetValueEur: etf.availablePot || 0,
         targetShares: etf.sharesToBuyNow || 0,
-        currentShares: etf.ownedShares || 0,
+        currentShares: etf.actualPortfolio?.quantity || etf.ownedShares || 0,
         currentWeightPct: etf.targetWeightPct,
         diffValueEur: etf.availablePot || 0,
         diffShares: etf.sharesToBuyNow || 0,
+        sparkline: etf.sparkline || [],
         opportunityRadar: {
           status: radarStatus,
           priorityRank: isBuyNow ? 1 : isTurning ? 2 : 3,
-          badge: etf.statusBadge || (isBuyNow ? '🟢 Koopkans Nu' : isTurning ? '🔥 MACD Draait' : '⏳ Pot Groeit Aan'),
+          badge: etf.statusBadge || (isBuyNow ? '🟢 Koopkans Nu' : isTurning ? `🔥 MACD Draait (${dynamicRecoveryPct}%)` : '⏳ Pot Groeit Aan'),
           reason: `DCA Pot: ${formatCurrency(etf.availablePot || 0)} (${etf.targetWeightPct}% weging)`
         },
         macdStatus: {
           isGreenCrossover: isBuyNow,
           wasRedAndTurningGreen: isTurning,
-          isRed: !etf.isMacdBullish,
-          recoveryPct: isBuyNow ? 100 : isTurning ? 75 : 35,
-          badge: etf.statusBadge || (etf.isMacdBullish ? '🟢 MACD Bullish' : '🔴 MACD Onder Signaal'),
-          detail: `MACD: ${Number(etf.macdLine || 0).toFixed(2)} / Signaal: ${Number(etf.signalLine || 0).toFixed(2)}`
+          isRed,
+          daysInRed: etf.daysInRed || 0,
+          recoveryPct: dynamicRecoveryPct,
+          badge: isBuyNow
+            ? '🟢 Net Groen Gekruist!'
+            : isTurning
+            ? `🔥 Rood ➔ Draait Groen (${dynamicRecoveryPct}%)`
+            : isRed
+            ? `🔴 MACD Rood (${etf.daysInRed || 0}d • ${dynamicRecoveryPct}%)`
+            : '🔵 MACD Groen (Bullish)',
+          detail: `MACD: ${Number(etf.macd ?? etf.macdLine ?? 0).toFixed(2)} / Signaal: ${Number(etf.signal ?? etf.signalLine ?? 0).toFixed(2)}`,
+          historySeries: etf.sparkline || []
         },
         valuationStatus: {
           isUndervaluedEnough: true,
@@ -898,7 +1470,8 @@ const StrategyAdvisorTab = () => {
           isRed: !coin.isMacdBullish,
           recoveryPct: coin.recoveryPct || 0,
           badge: coin.isMacdBullish ? '🟢 MACD > Signaal' : isTurning ? '🔄 Draait omhoog' : '🔴 MACD < Signaal',
-          detail: `MACD: ${coin.macdLine} / Signaal: ${coin.signalLine} (Hist: ${coin.histogram})`
+          detail: `MACD: ${coin.macdLine} / Signaal: ${coin.signalLine} (Hist: ${coin.histogram})`,
+          historySeries: coin.historySeries || []
         },
         valuationStatus: {
           isUndervaluedEnough: true,
@@ -1010,93 +1583,143 @@ const StrategyAdvisorTab = () => {
     );
   }
 
+  // Als er geen actieve strategie is geselecteerd, blijft dit tabblad leeg (met directe link om een strategie te kiezen)
+  if (!hasSelectedStrategy) {
+    return (
+      <div className="bg-white rounded-2xl p-12 border border-gray-200 shadow-2xs flex flex-col items-center justify-center text-center space-y-3">
+        <div className="w-12 h-12 rounded-2xl bg-gray-100 text-gray-400 flex items-center justify-center text-2xl">
+          🔔
+        </div>
+        <h3 className="text-base font-black text-gray-800">Geen actieve strategie geselecteerd</h3>
+        <p className="text-xs text-gray-500 max-w-md">
+          Er is momenteel geen strategie gekoppeld aan je account. Selecteer een strategie in de Strategie Bibliotheek of stel je actieve strategieën &amp; prioriteit in om koop- en verkoopmeldingen te ontvangen.
+        </p>
+        <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+          <Link
+            to="/analysis?tab=strategies"
+            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-black shadow-xs transition-all flex items-center gap-1.5"
+          >
+            <i className="ph-bold ph-compass text-sm"></i>
+            <span>Zoek &amp; Selecteer Strategie (Analyse)</span>
+          </Link>
+          <Link
+            to="/strategy-builder"
+            state={{ tab: 'active' }}
+            className="px-4 py-2 rounded-xl bg-purple-50 hover:bg-purple-100 text-purple-900 border border-purple-200 text-xs font-extrabold transition-all flex items-center gap-1.5"
+          >
+            <i className="ph-fill ph-target text-sm text-purple-600"></i>
+            <span>Mijn Actieve Strategieën &amp; Prioriteit</span>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
-      {/* 🧭 TOP BALK (Exact in de stijl van de Common pagina) */}
+      {/* 🧭 TOP BALK (Voor beheerder: alle weergaven + builder link; Voor externe gebruikers: compact & rustig enkel meldingen) */}
       <div className="bg-white p-3.5 sm:p-4 rounded-2xl border border-gray-200/90 shadow-2xs space-y-3">
-        {/* Rij 1: Weergave-knoppen (links) + Actieve Strategieën & Link naar Strategie Builder (rechts) */}
         <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-          {/* Weergave Keuze */}
-          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
-            <span className="hidden sm:flex text-xs font-bold text-gray-400 uppercase tracking-wider mr-1 items-center gap-1">
-              <i className="ph-bold ph-sparkle text-sm text-gray-500"></i>
-              <span>Weergave:</span>
-            </span>
+          {isAdmin ? (
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
+              <span className="hidden sm:flex text-xs font-bold text-gray-400 uppercase tracking-wider mr-1 items-center gap-1">
+                <i className="ph-bold ph-sparkle text-sm text-gray-500"></i>
+                <span>Weergave:</span>
+              </span>
 
-            {[
-              {
-                id: 'notifications',
-                label: 'Meldingen & Tijdlijn',
-                icon: '🔔',
-                badge: notifCounts.actionRequired > 0 ? `${notifCounts.actionRequired} actie` : unifiedNotifications.length
-              },
-              {
-                id: 'donuts',
-                label: 'Donuts & Koopkans-Radar',
-                icon: '🍩',
-                badge: combinedRadarItems.filter(i => ['BUY_NOW', 'WATCH_TURNING_GREEN'].includes(i.opportunityRadar?.status)).length || null
-              },
-              {
-                id: 'matrix',
-                label: 'Posities Matrix',
-                icon: '📋',
-                badge: holdings.length
-              }
-            ].map(tab => {
-              const isActive = activeSection === tab.id;
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => setActiveSection(tab.id)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shrink-0 ${
-                    isActive
-                      ? 'bg-slate-900 text-white border-slate-900 shadow-2xs font-black'
-                      : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
-                  }`}
-                >
-                  <span>{tab.icon}</span>
-                  <span>{tab.label}</span>
-                  {tab.badge !== null && (
-                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+              {[
+                {
+                  id: 'notifications',
+                  label: 'Meldingen & Tijdlijn',
+                  icon: '🔔',
+                  badge: notifCounts.actionRequired > 0 ? `${notifCounts.actionRequired} actie` : unifiedNotifications.length
+                },
+                {
+                  id: 'donuts',
+                  label: 'Donuts & Koopkans-Radar',
+                  icon: '🍩',
+                  badge: combinedRadarItems.filter(i => ['BUY_NOW', 'WATCH_TURNING_GREEN'].includes(i.opportunityRadar?.status)).length || null
+                },
+                {
+                  id: 'matrix',
+                  label: 'Posities Matrix',
+                  icon: '📋',
+                  badge: holdings.length
+                }
+              ].map(tab => {
+                const isActive = activeSection === tab.id;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => setActiveSection(tab.id)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border shrink-0 ${
                       isActive
-                        ? 'bg-blue-500 text-white'
-                        : tab.id === 'notifications' && notifCounts.actionRequired > 0
-                        ? 'bg-amber-500 text-white'
-                        : 'bg-gray-200 text-gray-700'
-                    }`}>
-                      {tab.badge}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+                        ? 'bg-slate-900 text-white border-slate-900 shadow-2xs font-black'
+                        : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
+                    }`}
+                  >
+                    <span>{tab.icon}</span>
+                    <span>{tab.label}</span>
+                    {tab.badge !== null && (
+                      <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-black ${
+                        isActive
+                          ? 'bg-blue-500 text-white'
+                          : tab.id === 'notifications' && notifCounts.actionRequired > 0
+                          ? 'bg-amber-500 text-white'
+                          : 'bg-gray-200 text-gray-700'
+                      }`}>
+                        {tab.badge}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <span className="text-base">🔔</span>
+              <div>
+                <h2 className="text-sm sm:text-base font-black text-gray-900 leading-tight">
+                  Koop- &amp; Verkoopmeldingen
+                </h2>
+                <p className="text-xs text-gray-500">
+                  Overzicht en tijdlijn van wanneer er gekocht of (deels) verkocht moet worden volgens je strategie.
+                </p>
+              </div>
+            </div>
+          )}
 
-          {/* Rechts: Actieve Strategie Badges + Directe Link naar Strategie Builder */}
+          {/* Rechts: Actieve Strategie Badges + (Alleen voor Beheerder) Link naar Strategie Builder */}
           <div className="flex items-center justify-between lg:justify-end gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 flex-wrap">
               {activeStrategiesList.map((strat, idx) => {
                 const sType = (strat.strategy_type || '').toUpperCase();
                 const isEtf = sType === 'ETF';
                 const isCrypto = sType === 'CRYPTO';
-                return (
+                const badgeClass = `px-2.5 py-1 rounded-xl text-[11px] font-extrabold border flex items-center gap-1 ${
+                  isCrypto
+                    ? 'bg-amber-50 text-amber-900 border-amber-200'
+                    : isEtf
+                    ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
+                    : 'bg-indigo-50 text-indigo-900 border-indigo-200'
+                }`;
+                return isAdmin ? (
                   <Link
                     key={strat.entry_id || idx}
                     to="/strategy-builder"
                     state={{ tab: 'active' }}
                     title="Klik om deze strategie te bekijken in de Strategie Builder"
-                    className={`px-2.5 py-1 rounded-xl text-[11px] font-extrabold border flex items-center gap-1 transition-all hover:opacity-90 ${
-                      isCrypto
-                        ? 'bg-amber-50 text-amber-900 border-amber-200'
-                        : isEtf
-                        ? 'bg-emerald-50 text-emerald-900 border-emerald-200'
-                        : 'bg-indigo-50 text-indigo-900 border-indigo-200'
-                    }`}
+                    className={`${badgeClass} transition-all hover:opacity-90`}
                   >
                     <span>{isCrypto ? '🪙' : isEtf ? '📈' : '💎'}</span>
                     <span className="truncate max-w-[155px]">{strat.name}</span>
                   </Link>
+                ) : (
+                  <span key={strat.entry_id || idx} className={badgeClass}>
+                    <span>{isCrypto ? '🪙' : isEtf ? '📈' : '💎'}</span>
+                    <span className="truncate max-w-[175px]">{strat.name}</span>
+                  </span>
                 );
               })}
             </div>
@@ -1104,11 +1727,12 @@ const StrategyAdvisorTab = () => {
             <div className="flex items-center gap-1.5">
               <Link
                 to="/strategy-builder"
+                state={{ tab: isAdmin ? 'builder' : 'active' }}
                 className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-black transition-all shadow-2xs flex items-center gap-1.5 shrink-0"
-                title="Bekijk en beheer je strategieën in de Strategie Builder"
+                title={isAdmin ? 'Bekijk en beheer je strategieën in de Strategie Builder' : 'Beheer je actieve strategieën, kapitaalverdeling en prioriteit'}
               >
-                <i className="ph-bold ph-sliders-horizontal text-sm"></i>
-                <span>Strategie Builder</span>
+                <i className={`ph-bold ${isAdmin ? 'ph-sliders-horizontal' : 'ph-target'} text-sm`}></i>
+                <span>{isAdmin ? 'Strategie Builder' : 'Actieve Strategieën & Prioriteit'}</span>
               </Link>
 
               <button
@@ -1125,8 +1749,100 @@ const StrategyAdvisorTab = () => {
           </div>
         </div>
 
-        {/* Rij 2: Filters per Strategie (indien in Meldingen weergave) */}
-        {activeSection === 'notifications' && distinctStrategies.length > 0 && (
+        {/* Rij 2: Duidelijk Euro-Bedrag & Kapitaal-Overzicht per Actieve Strategie (Waterval #1 ➔ #2 ➔ #3) */}
+        {strategyCapitalCards.length > 0 && (
+          <div className="pt-3 border-t border-gray-100 space-y-2">
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <span className="text-[11px] font-black text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                <i className="ph-fill ph-coins text-amber-500 text-sm"></i>
+                <span>Kapitaal &amp; Beschikbaar Bedrag per Strategie (100% Verdeeld op Prioriteit):</span>
+              </span>
+              {strategyFilter !== 'ALL' && (
+                <button
+                  type="button"
+                  onClick={() => setStrategyFilter('ALL')}
+                  className="text-[11px] font-extrabold text-blue-600 hover:underline"
+                >
+                  Toon alle strategieën ({unifiedNotifications.length}) ✕
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-2.5">
+              {strategyCapitalCards.map((card) => {
+                const isSelected = strategyFilter === card.name;
+                const isEtf = card.type === 'ETF';
+                const isCrypto = card.type === 'CRYPTO';
+                return (
+                  <div
+                    key={card.key}
+                    onClick={() => setStrategyFilter(isSelected ? 'ALL' : card.name)}
+                    title="Klik om meldingen te filteren op deze strategie"
+                    className={`p-3 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                      isSelected
+                        ? 'bg-blue-50/90 border-blue-500 ring-2 ring-blue-500/15 shadow-2xs'
+                        : isCrypto
+                        ? 'bg-amber-50/40 hover:bg-amber-50/80 border-amber-200/90'
+                        : isEtf
+                        ? 'bg-emerald-50/40 hover:bg-emerald-50/80 border-emerald-200/90'
+                        : 'bg-indigo-50/40 hover:bg-indigo-50/80 border-indigo-200/90'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className={`px-1.5 py-0.5 rounded-md text-[10px] font-black shrink-0 ${
+                          card.prio === 1 ? 'bg-amber-400 text-amber-950' : 'bg-slate-800 text-white'
+                        }`}>
+                          #{card.prio}
+                        </span>
+                        <span className="text-sm shrink-0">{card.icon}</span>
+                        <span className="font-black text-xs text-gray-900 truncate" title={card.name}>
+                          {card.name}
+                        </span>
+                      </div>
+                      <span className="px-2 py-0.5 rounded-md bg-white/90 border border-black/10 text-[10px] font-extrabold text-gray-700 shrink-0">
+                        {card.modeLabel}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 pt-1.5 border-t border-black/5 text-xs">
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-500 block">{card.directBuyLabel}</span>
+                        <span className="font-black text-emerald-700 text-xs sm:text-sm privacy-blur">
+                          {isIncognito ? '€ •••' : formatCurrency(card.directBuyEur)}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-[10px] font-bold text-gray-500 block">Reeds Belegd</span>
+                        <span className="font-black text-gray-900 text-xs sm:text-sm privacy-blur">
+                          {isIncognito ? '€ •••' : formatCurrency(card.investedEur)}
+                        </span>
+                      </div>
+                      {card.extraEur > 0 ? (
+                        <div>
+                          <span className="text-[10px] font-bold text-gray-500 block">{card.extraLabel}</span>
+                          <span className="font-black text-indigo-700 text-xs sm:text-sm privacy-blur">
+                            {isIncognito ? '€ •••' : formatCurrency(card.extraEur)}
+                          </span>
+                        </div>
+                      ) : (
+                        <div>
+                          <span className="text-[10px] font-bold text-gray-500 block">Totaal Strategie</span>
+                          <span className="font-black text-indigo-700 text-xs sm:text-sm privacy-blur">
+                            {isIncognito ? '€ •••' : formatCurrency(card.directBuyEur + card.investedEur)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {/* Rij 3: Filters per Strategie (indien er ook historische/oude strategie-meldingen zijn) */}
+        {activeSection === 'notifications' && distinctStrategies.length > 1 && (
           <div className="pt-2.5 border-t border-gray-100 flex items-center justify-between gap-2 flex-wrap">
             <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
               <span className="text-[11px] font-bold text-gray-400 uppercase tracking-wider mr-1 shrink-0">
@@ -1258,7 +1974,7 @@ const StrategyAdvisorTab = () => {
               </div>
             </div>
 
-            {/* Status Filter Knoppen */}
+            {/* Status Filter Knoppen (Voor externe gebruikers zonder 'Onder Toezicht') */}
             <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar">
               {[
                 { id: 'ALL', label: `Alles (${notifCounts.all})` },
@@ -1266,7 +1982,7 @@ const StrategyAdvisorTab = () => {
                 { id: 'BUY', label: `🟢 Koopkansen (${notifCounts.buy})` },
                 { id: 'SELL', label: `🔴 Verkoop (${notifCounts.sell})` },
                 { id: 'MATCHED', label: `✅ Gekoppeld (${notifCounts.matched})` },
-                { id: 'SUPERVISION', label: `⚠️ Toezicht / Op Doel (${notifCounts.supervision})` },
+                ...(isAdmin ? [{ id: 'SUPERVISION', label: `⚠️ Toezicht / Op Doel (${notifCounts.supervision})` }] : []),
                 { id: 'EXPIRED', label: `⚪ Verlopen (${notifCounts.expired})` }
               ].map(f => {
                 const isActive = statusFilter === f.id;
@@ -1659,6 +2375,80 @@ const StrategyAdvisorTab = () => {
             </div>
           </div>
 
+          {/* 1B. INTERACTIEVE KOOP/VERKOOPMOMENT GESCHIEDENIS GRAFIEK (60 Handelsdagen MACD & Signaallijn Verloop) */}
+          {filteredRadarItems.length > 0 && (() => {
+            const activeProgItem =
+              filteredRadarItems.find(i => i.ticker === selectedProgressionTicker) ||
+              filteredRadarItems.find(i => (i.macdStatus?.historySeries || []).length >= 5) ||
+              filteredRadarItems[0];
+            return (
+              <div className="bg-white p-4 sm:p-5 rounded-2xl shadow-sm border border-gray-200 space-y-4">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-gray-100 pb-3">
+                  <div>
+                    <h3 className="text-base sm:text-lg font-black text-gray-900 flex items-center gap-2">
+                      <span>📈 Koop/Verkoopmoment Geschiedenis &amp; MACD Verloop</span>
+                      <span className="px-2.5 py-0.5 rounded-full text-[11px] font-black bg-blue-50 text-blue-700 border border-blue-200">
+                        Laatste 60 Handelsdagen
+                      </span>
+                    </h3>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      Volg visueel hoe de MACD-lijn (blauw) en Signaallijn (oranje) naar elkaar toegroeien en wanneer een kruising écht bijna plaatsvindt.
+                    </p>
+                  </div>
+
+                  {/* Snelkeuze dropdown + pills voor de top koopkansen */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-[11px] font-bold text-gray-400 uppercase">Kies Asset:</span>
+                    <select
+                      value={activeProgItem?.ticker || ''}
+                      onChange={(e) => setSelectedProgressionTicker(e.target.value)}
+                      className="px-3 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-black border border-slate-900 focus:outline-none cursor-pointer"
+                    >
+                      {filteredRadarItems.map(rItem => (
+                        <option key={rItem.stockId} value={rItem.ticker}>
+                          {rItem.ticker} — {rItem.opportunityRadar?.badge || ''} ({rItem.macdStatus?.recoveryPct ?? 0}% MACD)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Snel-knoppen voor de meest interessante bijna-koopkansen */}
+                <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pb-1">
+                  {filteredRadarItems.slice(0, 12).map(rItem => {
+                    const isSel = activeProgItem?.ticker === rItem.ticker;
+                    const rStatus = rItem.opportunityRadar?.status;
+                    return (
+                      <button
+                        key={rItem.stockId}
+                        type="button"
+                        onClick={() => setSelectedProgressionTicker(rItem.ticker)}
+                        className={`px-2.5 py-1 rounded-xl text-xs font-extrabold transition-all shrink-0 border flex items-center gap-1.5 ${
+                          isSel
+                            ? 'bg-blue-600 text-white border-blue-700 shadow-2xs'
+                            : rStatus === 'BUY_NOW'
+                            ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-200'
+                            : rStatus === 'WATCH_TURNING_GREEN'
+                            ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-200'
+                            : 'bg-gray-50 hover:bg-gray-100 text-gray-700 border-gray-200'
+                        }`}
+                      >
+                        <span>{rItem.ticker}</span>
+                        <span className={`text-[10px] px-1 rounded ${isSel ? 'bg-white/20 text-white' : 'bg-black/5'}`}>
+                          {rItem.macdStatus?.recoveryPct ?? 0}%
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {activeProgItem && (
+                  <MacdProgressionChart item={activeProgItem} formatCurrency={formatCurrency} />
+                )}
+              </div>
+            );
+          })()}
+
           {/* 2. "WAAR ZIT EEN KOOPKANS AAN TE KOMEN?" (Koopkans-Radar: Desktop Tabel + Mobiele Kliklijst) */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-gray-100 space-y-3">
@@ -1801,8 +2591,8 @@ const StrategyAdvisorTab = () => {
                           )}
                         </td>
 
-                        {/* 3. Pijler 1: MACD + Voortgangsbalk */}
-                        <td className="py-3 px-3 min-w-[175px]">
+                        {/* 3. Pijler 1: MACD + Voortgangsbalk + 30d Sparkline */}
+                        <td className="py-3 px-3 min-w-[185px]">
                           <div className="space-y-1">
                             <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[11px] font-extrabold border ${
                               macd.isGreenCrossover
@@ -1833,6 +2623,11 @@ const StrategyAdvisorTab = () => {
                                   />
                                 </div>
                               </div>
+                            )}
+
+                            {/* 30-daagse MACD & Signaallijn mini-grafiek */}
+                            {macd.historySeries?.length >= 5 && (
+                              <MacdMiniSparkline series={macd.historySeries} />
                             )}
                           </div>
                         </td>
@@ -2110,7 +2905,7 @@ const StrategyAdvisorTab = () => {
             className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity"
             onClick={() => setSelectedNotificationModal(null)}
           />
-          <div className="relative bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[88vh] overflow-y-auto shadow-2xl p-5 space-y-4 z-10 animate-slide-up">
+          <div className="relative bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl p-5 space-y-4 z-10 animate-slide-up">
             {/* Modal Header */}
             <div className="flex items-start justify-between border-b border-gray-100 pb-3">
               <div className="flex items-center gap-3">
@@ -2311,7 +3106,7 @@ const StrategyAdvisorTab = () => {
             className="fixed inset-0 bg-black/50 backdrop-blur-xs transition-opacity"
             onClick={() => setSelectedRadarModal(null)}
           />
-          <div className="relative bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-lg max-h-[88vh] overflow-y-auto shadow-2xl p-5 space-y-4 z-10 animate-slide-up">
+          <div className="relative bg-white rounded-t-3xl sm:rounded-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-2xl p-5 space-y-4 z-10 animate-slide-up">
             <div className="flex items-start justify-between border-b border-gray-100 pb-3">
               <div>
                 <div className="flex items-center gap-2">
@@ -2351,13 +3146,21 @@ const StrategyAdvisorTab = () => {
               </div>
             )}
 
-            {/* De 3 Pijlers */}
+            {/* De 3 Pijlers + Interactieve MACD Geschiedenis Grafiek */}
             <div className="space-y-2.5 text-xs">
-              <div className="p-3 bg-slate-50 rounded-xl border border-gray-200 space-y-1">
-                <span className="text-[10px] font-bold text-gray-400 uppercase block">1. MACD Status</span>
-                <div className="font-black text-gray-900">{selectedRadarModal.macdStatus?.badge}</div>
-                {selectedRadarModal.macdStatus?.detail && (
-                  <p className="text-[11px] text-gray-600">{selectedRadarModal.macdStatus.detail}</p>
+              <div className="p-3 bg-slate-50 rounded-xl border border-gray-200 space-y-2">
+                <div>
+                  <span className="text-[10px] font-bold text-gray-400 uppercase block">1. MACD Status &amp; Koop/Verkoopmoment Verloop</span>
+                  <div className="font-black text-gray-900">{selectedRadarModal.macdStatus?.badge}</div>
+                  {selectedRadarModal.macdStatus?.detail && (
+                    <p className="text-[11px] text-gray-600">{selectedRadarModal.macdStatus.detail}</p>
+                  )}
+                </div>
+
+                {selectedRadarModal.macdStatus?.historySeries?.length >= 5 && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <MacdProgressionChart item={selectedRadarModal} formatCurrency={formatCurrency} />
+                  </div>
                 )}
               </div>
 

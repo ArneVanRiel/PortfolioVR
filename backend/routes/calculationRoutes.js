@@ -5,6 +5,9 @@ const calculationController = require('../controllers/calculationController');
 // Route to get the latest calculations summary for all stocks
 router.get('/latest-summary', calculationController.getLatestCalculationsSummary);
 
+// Route to get general market explorer data (ATH drawdown, 52W range, general fundamentals, Belgian TOB & ETF tax rules)
+router.get('/market-explorer', calculationController.getMarketExplorerData);
+
 // Route to get calculations summary by date
 router.get('/summary-by-date', calculationController.getSummaryByDate);
 
